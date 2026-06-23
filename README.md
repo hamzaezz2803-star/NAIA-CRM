@@ -1,36 +1,99 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Qarizmi OS
 
-## Getting Started
+Qarizmi OS is the internal operating system and AI workflow platform for Qarizmi. It starts as a pragmatic modular monolith for the Qarizmi team and keeps enough structure to support future client-facing modules.
 
-First, run the development server:
+## Current Scope
+
+This repository currently contains the platform shell and shared foundations:
+
+- Responsive authenticated app shell and `/login` scaffold.
+- Navigation for Dashboard, CRM, Meetings, Proposals, Projects, HR, Finance, Automations, Integrations, and Settings.
+- Honest Dashboard empty state with no fake business metrics.
+- CRM route and handoff boundary for Hamza's Sprint 1.
+- Shared module registry, permissions, domain events, integration contracts, workflow approvals, and Supabase migration foundation.
+- Documentation, CI workflow, issue templates, and local quality scripts.
+
+CRM business functionality is intentionally not implemented in this shell task.
+
+## Stack
+
+- Next.js App Router with TypeScript
+- React
+- Tailwind CSS
+- Supabase for PostgreSQL, authentication, storage, and backend primitives
+- Vitest for foundation tests
+- ESLint and Prettier
+- npm for package management
+
+## Local Setup
+
+```bash
+npm install
+cp .env.example .env.local
+npm run dev
+```
+
+Open http://localhost:3000.
+
+The app runs with a local auth scaffold when Supabase variables are blank.
+
+## Environment Variables
+
+Copy `.env.example` to `.env.local`.
+
+Required for real Supabase authentication:
+
+- `NEXT_PUBLIC_SUPABASE_URL`
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `SUPABASE_SERVICE_ROLE_KEY` for server-only privileged tasks when implemented
+
+Do not commit `.env.local`, service keys, refresh tokens, provider secrets, or real client data.
+
+## Database Setup
+
+Supabase migrations live in `supabase/migrations`.
+
+The initial migration creates organization, profile, membership, audit, integration, workflow, approval, file reference, and domain-event outbox foundations with RLS enabled.
+
+When a Supabase project exists:
+
+```bash
+supabase link --project-ref <project-ref>
+supabase db push
+```
+
+Install the Supabase CLI separately if it is not already available.
+
+## Commands
 
 ```bash
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+npm run format:check
+npm run lint
+npm run typecheck
+npm run test
+npm run build
+npm run ci
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+## Contribution Workflow
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Use `main` as the protected baseline. Build substantial work on feature branches, open a pull request, and keep platform changes separate from CRM feature work where possible.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Hamza should start from `docs/crm-handoff.md` and work primarily in:
 
-## Learn More
+- `src/app/(app)/crm`
+- `src/features/crm`
+- CRM-specific Supabase migrations
 
-To learn more about Next.js, take a look at the following resources:
+## Deployment Overview
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+Deploy the Next.js app to Vercel after GitHub is connected. Connect Supabase through environment variables in Vercel. Hosted Supabase and Vercel project creation require authenticated accounts and should not be guessed from local setup.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Documentation
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `docs/architecture.md`
+- `docs/product-scope.md`
+- `docs/crm-handoff.md`
+- `docs/onboarding.md`
+- `docs/adr/0001-platform-stack.md`
