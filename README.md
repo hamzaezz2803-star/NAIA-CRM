@@ -52,6 +52,10 @@ Current hosted Supabase project:
 - Project URL: `https://juqhonvapkrlylvseolu.supabase.co`
 - Project ref: `juqhonvapkrlylvseolu`
 
+Production application URL:
+
+- `https://os.qarizmi.com`
+
 Do not commit `.env.local`, service keys, refresh tokens, provider secrets, or real client data.
 
 ## Database Setup
@@ -93,7 +97,7 @@ Hamza should start from `docs/crm-handoff.md` and work primarily in:
 
 ## Deployment Overview
 
-Deploy the Next.js app to Vercel after GitHub is connected. Connect Supabase through environment variables in Vercel. Hosted Supabase and Vercel project creation require authenticated accounts and should not be guessed from local setup.
+The production app is deployed on Vercel at `https://os.qarizmi.com`. Connect Supabase through environment variables in Vercel. Hosted Supabase and Vercel project ownership should remain under Qarizmi-controlled accounts.
 
 ## Documentation
 

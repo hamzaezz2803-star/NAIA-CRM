@@ -45,6 +45,8 @@ Supabase is the intended authentication provider. The current app runs with a lo
 
 The current hosted Supabase project ref is `juqhonvapkrlylvseolu`.
 
+The current production application URL is `https://os.qarizmi.com`.
+
 Roles are modeled as `owner`, `admin`, `member`, and `viewer` in `src/platform/core/permissions.ts` and in the initial database migration.
 
 ## Workflows And Integrations

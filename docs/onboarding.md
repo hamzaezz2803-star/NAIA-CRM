@@ -20,6 +20,8 @@ npm run dev
 
 Open http://localhost:3000.
 
+Production app: https://os.qarizmi.com.
+
 ## Quality Checks
 
 Run the same checks as CI:
