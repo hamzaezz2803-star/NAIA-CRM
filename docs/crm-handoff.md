@@ -2,9 +2,13 @@
 
 This document is Hamza's starting point for CRM Sprint 1.
 
+For the day-to-day implementation plan, also read `docs/hamza-crm-sprint-1-guide.md`.
+
 ## Objective
 
 Build the first native Qarizmi CRM with no runtime Trello dependency, inspired by how Qarizmi currently manages leads in Trello.
+
+Trello references in older planning notes are historical context only. Do not add a Trello runtime dependency in Sprint 1.
 
 ## Hamza Owns
 

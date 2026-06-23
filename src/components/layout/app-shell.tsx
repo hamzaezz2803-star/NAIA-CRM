@@ -16,6 +16,7 @@ import {
   Users,
   X,
 } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState, type ComponentType, type ReactNode } from "react";
@@ -212,8 +213,16 @@ function ShellSidebar({
 function Brand() {
   return (
     <Link className="flex items-center gap-3" href="/dashboard">
-      <span className="flex h-9 w-9 items-center justify-center rounded-md bg-stone-950 text-sm font-semibold text-white">
-        Q
+      <span className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-md bg-stone-950">
+        <Image
+          alt=""
+          aria-hidden="true"
+          className="h-7 w-7 object-contain"
+          height={28}
+          priority
+          src="/brand/qarizmi-q.png"
+          width={28}
+        />
       </span>
       <span>
         <span className="block text-sm font-semibold text-stone-950">

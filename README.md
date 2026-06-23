@@ -104,5 +104,6 @@ The production app is deployed on Vercel at `https://os.qarizmi.com`. Connect Su
 - `docs/architecture.md`
 - `docs/product-scope.md`
 - `docs/crm-handoff.md`
+- `docs/hamza-crm-sprint-1-guide.md`
 - `docs/onboarding.md`
 - `docs/adr/0001-platform-stack.md`

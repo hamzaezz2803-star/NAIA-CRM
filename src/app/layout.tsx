@@ -16,6 +16,10 @@ export const metadata: Metadata = {
   title: "Qarizmi OS",
   description:
     "Internal operating system and AI workflow platform for Qarizmi.",
+  icons: {
+    icon: "/brand/qarizmi-q.png",
+    apple: "/brand/qarizmi-q.png",
+  },
 };
 
 export default function RootLayout({

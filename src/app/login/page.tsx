@@ -1,4 +1,5 @@
 import { LockKeyhole, ShieldCheck } from "lucide-react";
+import Image from "next/image";
 import Link from "next/link";
 
 import { PageHeader } from "@/components/layout/page-header";
@@ -13,6 +14,14 @@ export default function LoginPage() {
     <main className="min-h-screen bg-stone-50 px-4 py-10 md:px-8">
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-5xl items-center">
         <section className="w-full rounded-lg border border-stone-200 bg-white p-6 shadow-sm md:p-10">
+          <Image
+            alt="Qarizmi"
+            className="mb-8 h-auto w-44"
+            height={58}
+            priority
+            src="/brand/qarizmi-logo-small.png"
+            width={180}
+          />
           <PageHeader
             actions={
               configured ? (
