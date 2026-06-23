@@ -41,7 +41,9 @@ CRM-specific tables should be introduced in a later CRM migration and include `o
 
 ## Authentication And Permissions
 
-Supabase is the intended authentication provider. The current app runs with a local auth scaffold until Supabase project variables are connected.
+Supabase is the intended authentication provider. The current app runs with a local auth scaffold until Supabase project variables are connected. Client code uses `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, with a legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` fallback for older projects.
+
+The current hosted Supabase project ref is `juqhonvapkrlylvseolu`.
 
 Roles are modeled as `owner`, `admin`, `member`, and `viewer` in `src/platform/core/permissions.ts` and in the initial database migration.
 

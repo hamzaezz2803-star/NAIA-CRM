@@ -44,8 +44,13 @@ Copy `.env.example` to `.env.local`.
 Required for real Supabase authentication:
 
 - `NEXT_PUBLIC_SUPABASE_URL`
-- `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+- `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY` for server-only privileged tasks when implemented
+
+Current hosted Supabase project:
+
+- Project URL: `https://juqhonvapkrlylvseolu.supabase.co`
+- Project ref: `juqhonvapkrlylvseolu`
 
 Do not commit `.env.local`, service keys, refresh tokens, provider secrets, or real client data.
 

@@ -109,7 +109,7 @@ export function AppShell({
               </p>
               <p className="hidden text-xs text-stone-500 sm:block">
                 {session.isSupabaseConfigured
-                  ? "Supabase authentication configured"
+                  ? "Supabase project configured"
                   : "Local auth scaffold"}
               </p>
             </div>

@@ -56,4 +56,6 @@ After Ali links the project:
 supabase db push
 ```
 
+Hosted project ref: `juqhonvapkrlylvseolu`.
+
 Never commit `.env.local` or any service key.

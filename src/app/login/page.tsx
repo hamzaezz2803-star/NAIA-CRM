@@ -16,12 +16,16 @@ export default function LoginPage() {
           <PageHeader
             actions={
               configured ? (
-                <StatusBadge status="live" />
+                <StatusBadge status="ready-for-build" />
               ) : (
                 <StatusBadge status="ready-for-build" />
               )
             }
-            description="Supabase authentication is scaffolded. Local development remains available until the hosted project and environment variables are connected."
+            description={
+              configured
+                ? "The Supabase project is connected through local environment variables. Real sign-in is still scaffolded until the session flow is implemented."
+                : "Supabase authentication is scaffolded. Local development remains available until the hosted project and environment variables are connected."
+            }
             eyebrow="Authentication"
             title="Sign in to Qarizmi OS"
           />
@@ -32,8 +36,8 @@ export default function LoginPage() {
                 Supabase email authentication
               </h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                Configure the Supabase URL and anon key to replace this scaffold
-                with real sign-in.
+                Configure the Supabase URL and publishable key, then replace
+                this scaffold with real sign-in.
               </p>
             </div>
             <div className="rounded-lg border border-stone-200 p-5">

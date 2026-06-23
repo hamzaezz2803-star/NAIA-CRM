@@ -2,7 +2,7 @@ import { isSupabaseConfigured } from "@/platform/auth/config";
 import type { OrganizationRole } from "@/platform/core/permissions";
 
 export type AppSession = {
-  authMode: "local-scaffold" | "supabase";
+  authMode: "local-scaffold" | "supabase-project-configured";
   isSupabaseConfigured: boolean;
   user: {
     name: string;
@@ -19,7 +19,7 @@ export async function getAppSession(): Promise<AppSession> {
   const configured = isSupabaseConfigured();
 
   return {
-    authMode: configured ? "supabase" : "local-scaffold",
+    authMode: configured ? "supabase-project-configured" : "local-scaffold",
     isSupabaseConfigured: configured,
     user: {
       name: "Ali El Abbassy",
