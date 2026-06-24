@@ -32,13 +32,17 @@ export default function TasksPage() {
       const today = new Date().toISOString().split("T")[0];
 
       const items: TaskItem[] = leads
-        .filter((l) => l.nextAction && l.status !== "won" && l.status !== "dead-end")
+        .filter(
+          (l) => l.nextAction && l.status !== "won" && l.status !== "dead-end",
+        )
         .map((lead) => ({
           leadId: lead.id,
           topic: lead.topic,
           action: lead.nextAction!,
           date: lead.nextActionDate,
-          isOverdue: Boolean(lead.nextActionDate && lead.nextActionDate < today),
+          isOverdue: Boolean(
+            lead.nextActionDate && lead.nextActionDate < today,
+          ),
           isToday: lead.nextActionDate === today,
         }))
         .sort((a, b) => {
@@ -74,11 +78,22 @@ export default function TasksPage() {
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
         {[
           { label: "En retard", value: overdue.length, color: "text-red-600" },
-          { label: "Aujourd'hui", value: today.length, color: "text-amber-600" },
+          {
+            label: "Aujourd'hui",
+            value: today.length,
+            color: "text-amber-600",
+          },
           { label: "À venir", value: upcoming.length, color: "text-teal-700" },
-          { label: "Sans date", value: noDueDate.length, color: "text-stone-500" },
+          {
+            label: "Sans date",
+            value: noDueDate.length,
+            color: "text-stone-500",
+          },
         ].map((s) => (
-          <div key={s.label} className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+          <div
+            key={s.label}
+            className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm"
+          >
             <p className="text-sm text-stone-500">{s.label}</p>
             <p className={`mt-1 text-2xl font-bold ${s.color}`}>{s.value}</p>
           </div>
@@ -88,7 +103,9 @@ export default function TasksPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-5 w-5 animate-spin text-teal-600" />
-          <span className="ml-3 text-sm text-stone-500">Chargement des tâches…</span>
+          <span className="ml-3 text-sm text-stone-500">
+            Chargement des tâches…
+          </span>
         </div>
       ) : tasks.length === 0 ? (
         <div className="rounded-lg border border-stone-200 bg-white p-12 text-center shadow-sm">
@@ -99,8 +116,8 @@ export default function TasksPage() {
             Aucune tâche en attente
           </h3>
           <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-stone-500">
-            Toutes les actions de suivi sont à jour. L&apos;IA ajoutera automatiquement
-            des relances basées sur vos leads.
+            Toutes les actions de suivi sont à jour. L&apos;IA ajoutera
+            automatiquement des relances basées sur vos leads.
           </p>
         </div>
       ) : (
@@ -175,7 +192,9 @@ function TaskGroup({
           {label} ({tasks.length})
         </h2>
       </div>
-      <div className={`divide-y divide-stone-100 overflow-hidden rounded-lg border ${borderMap[variant]} bg-white shadow-sm`}>
+      <div
+        className={`divide-y divide-stone-100 overflow-hidden rounded-lg border ${borderMap[variant]} bg-white shadow-sm`}
+      >
         {tasks.map((task) => (
           <div key={task.leadId} className="flex items-start gap-4 px-5 py-4">
             <div className="mt-0.5 flex-none">
@@ -195,8 +214,8 @@ function TaskGroup({
                   task.isOverdue
                     ? "bg-red-50 text-red-700"
                     : task.isToday
-                    ? "bg-amber-50 text-amber-700"
-                    : "bg-stone-100 text-stone-600"
+                      ? "bg-amber-50 text-amber-700"
+                      : "bg-stone-100 text-stone-600"
                 }`}
               >
                 {task.date}

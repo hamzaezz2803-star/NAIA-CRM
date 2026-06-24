@@ -37,8 +37,7 @@ function getIntegrations(): Integration[] {
       name: "Supabase",
       description:
         "Base de données PostgreSQL, authentification et Row Level Security pour toutes les données Qarizmi OS.",
-      status:
-        supabaseUrl && supabaseKey ? "connected" : "not-configured",
+      status: supabaseUrl && supabaseKey ? "connected" : "not-configured",
       icon: <Database className="h-5 w-5" />,
       detail: supabaseUrl
         ? `URL: ${supabaseUrl}`
@@ -61,9 +60,7 @@ function getIntegrations(): Integration[] {
       description:
         "Création automatique de dossiers clients, stockage des propositions, contrats et notes de réunion.",
       status:
-        googleClientId && googleClientSecret
-          ? "partial"
-          : "not-configured",
+        googleClientId && googleClientSecret ? "partial" : "not-configured",
       icon: <FolderOpen className="h-5 w-5" />,
       detail:
         googleClientId && googleClientSecret
@@ -76,9 +73,7 @@ function getIntegrations(): Integration[] {
       description:
         "Envoi de relances et propositions par email directement depuis le CRM avec validation humaine.",
       status:
-        googleClientId && googleClientSecret
-          ? "partial"
-          : "not-configured",
+        googleClientId && googleClientSecret ? "partial" : "not-configured",
       icon: <Mail className="h-5 w-5" />,
       detail:
         googleClientId && googleClientSecret

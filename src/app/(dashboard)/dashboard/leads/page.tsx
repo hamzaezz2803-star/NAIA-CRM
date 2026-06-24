@@ -39,13 +39,48 @@ const COLUMNS: {
   color: string;
   dot: string;
 }[] = [
-  { label: "À contacter", status: "lead-to-contact", color: "bg-blue-50 text-blue-700 border-blue-200", dot: "bg-blue-500" },
-  { label: "Contacté", status: "contacted", color: "bg-stone-50 text-stone-600 border-stone-200", dot: "bg-stone-400" },
-  { label: "À relancer", status: "to-follow-up", color: "bg-amber-50 text-amber-700 border-amber-200", dot: "bg-amber-500" },
-  { label: "Meeting fixé", status: "meeting-booked", color: "bg-indigo-50 text-indigo-700 border-indigo-200", dot: "bg-indigo-500" },
-  { label: "Propale envoyée", status: "proposal-sent", color: "bg-emerald-50 text-emerald-700 border-emerald-200", dot: "bg-emerald-500" },
-  { label: "Gagné ✓", status: "won", color: "bg-teal-50 text-teal-700 border-teal-200", dot: "bg-teal-500" },
-  { label: "Dead end", status: "dead-end", color: "bg-red-50 text-red-700 border-red-200", dot: "bg-red-400" },
+  {
+    label: "À contacter",
+    status: "lead-to-contact",
+    color: "bg-blue-50 text-blue-700 border-blue-200",
+    dot: "bg-blue-500",
+  },
+  {
+    label: "Contacté",
+    status: "contacted",
+    color: "bg-stone-50 text-stone-600 border-stone-200",
+    dot: "bg-stone-400",
+  },
+  {
+    label: "À relancer",
+    status: "to-follow-up",
+    color: "bg-amber-50 text-amber-700 border-amber-200",
+    dot: "bg-amber-500",
+  },
+  {
+    label: "Meeting fixé",
+    status: "meeting-booked",
+    color: "bg-indigo-50 text-indigo-700 border-indigo-200",
+    dot: "bg-indigo-500",
+  },
+  {
+    label: "Propale envoyée",
+    status: "proposal-sent",
+    color: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    dot: "bg-emerald-500",
+  },
+  {
+    label: "Gagné ✓",
+    status: "won",
+    color: "bg-teal-50 text-teal-700 border-teal-200",
+    dot: "bg-teal-500",
+  },
+  {
+    label: "Dead end",
+    status: "dead-end",
+    color: "bg-red-50 text-red-700 border-red-200",
+    dot: "bg-red-400",
+  },
 ];
 
 // ────────────────────────────────────────────────────────────
@@ -76,13 +111,17 @@ export default function LeadsPage() {
   const [formNotes, setFormNotes] = useState("");
   const [formNextAction, setFormNextAction] = useState("");
   const [formNextActionDate, setFormNextActionDate] = useState("");
-  const [formStatus, setFormStatus] = useState<CrmLeadStatus>("lead-to-contact");
+  const [formStatus, setFormStatus] =
+    useState<CrmLeadStatus>("lead-to-contact");
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Follow-up draft
   const [draftLead, setDraftLead] = useState<CrmLeadSummary | null>(null);
-  const [drafts, setDrafts] = useState<{ email: string; whatsapp: string } | null>(null);
+  const [drafts, setDrafts] = useState<{
+    email: string;
+    whatsapp: string;
+  } | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
 
   // ── Load leads ──────────────────────────────────────────
@@ -125,7 +164,10 @@ export default function LeadsPage() {
   // ── Create lead ─────────────────────────────────────────
   async function handleCreateLead(e: React.FormEvent) {
     e.preventDefault();
-    if (!formTopic.trim()) { setFormError("Le sujet est obligatoire."); return; }
+    if (!formTopic.trim()) {
+      setFormError("Le sujet est obligatoire.");
+      return;
+    }
     setIsSubmitting(true);
     setFormError(null);
 
@@ -135,13 +177,16 @@ export default function LeadsPage() {
       topic: formTopic,
       source: formSource || undefined,
       status: formStatus,
-      notes: [
-        formCompanyName && `Entreprise: ${formCompanyName}`,
-        formContactName && `Contact: ${formContactName}`,
-        formEmail && `Email: ${formEmail}`,
-        formPhone && `Tél: ${formPhone}`,
-        formNotes,
-      ].filter(Boolean).join("\n") || undefined,
+      notes:
+        [
+          formCompanyName && `Entreprise: ${formCompanyName}`,
+          formContactName && `Contact: ${formContactName}`,
+          formEmail && `Email: ${formEmail}`,
+          formPhone && `Tél: ${formPhone}`,
+          formNotes,
+        ]
+          .filter(Boolean)
+          .join("\n") || undefined,
       nextAction: formNextAction || undefined,
       nextActionDate: formNextActionDate || undefined,
     });
@@ -157,17 +202,31 @@ export default function LeadsPage() {
   }
 
   function resetForm() {
-    setNaturalText(""); setFormTopic(""); setFormCompanyName(""); setFormContactName("");
-    setFormEmail(""); setFormPhone(""); setFormSource(""); setFormNotes("");
-    setFormNextAction(""); setFormNextActionDate(""); setFormStatus("lead-to-contact");
-    setFormError(null); setExtractError(null);
+    setNaturalText("");
+    setFormTopic("");
+    setFormCompanyName("");
+    setFormContactName("");
+    setFormEmail("");
+    setFormPhone("");
+    setFormSource("");
+    setFormNotes("");
+    setFormNextAction("");
+    setFormNextActionDate("");
+    setFormStatus("lead-to-contact");
+    setFormError(null);
+    setExtractError(null);
   }
 
   // ── Move lead to next status ────────────────────────────
-  async function handleMoveStatus(lead: CrmLeadSummary, newStatus: CrmLeadStatus) {
+  async function handleMoveStatus(
+    lead: CrmLeadSummary,
+    newStatus: CrmLeadStatus,
+  ) {
     startTransition(async () => {
       await updateLeadStatusAction(lead.id, newStatus);
-      setLeads((prev) => prev.map((l) => l.id === lead.id ? { ...l, status: newStatus } : l));
+      setLeads((prev) =>
+        prev.map((l) => (l.id === lead.id ? { ...l, status: newStatus } : l)),
+      );
     });
   }
 
@@ -200,7 +259,9 @@ export default function LeadsPage() {
   // ── Helpers ─────────────────────────────────────────────
   function getNextStatus(current: CrmLeadStatus): CrmLeadStatus | null {
     const idx = COLUMNS.findIndex((c) => c.status === current);
-    return idx >= 0 && idx < COLUMNS.length - 1 ? COLUMNS[idx + 1].status : null;
+    return idx >= 0 && idx < COLUMNS.length - 1
+      ? COLUMNS[idx + 1].status
+      : null;
   }
 
   function getColumnConfig(status: CrmLeadStatus) {
@@ -208,7 +269,9 @@ export default function LeadsPage() {
   }
 
   const totalLeads = leads.length;
-  const activeLeads = leads.filter((l) => l.status !== "dead-end" && l.status !== "won").length;
+  const activeLeads = leads.filter(
+    (l) => l.status !== "dead-end" && l.status !== "won",
+  ).length;
 
   // ────────────────────────────────────────────────────────
   // Render
@@ -229,10 +292,19 @@ export default function LeadsPage() {
         {[
           { label: "Total leads", value: totalLeads },
           { label: "Actifs", value: activeLeads },
-          { label: "Meetings", value: leads.filter((l) => l.status === "meeting-booked").length },
-          { label: "Gagnés", value: leads.filter((l) => l.status === "won").length },
+          {
+            label: "Meetings",
+            value: leads.filter((l) => l.status === "meeting-booked").length,
+          },
+          {
+            label: "Gagnés",
+            value: leads.filter((l) => l.status === "won").length,
+          },
         ].map((s) => (
-          <div key={s.label} className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm">
+          <div
+            key={s.label}
+            className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm"
+          >
             <p className="text-sm text-stone-500">{s.label}</p>
             <p className="mt-1 text-2xl font-bold text-stone-950">{s.value}</p>
           </div>
@@ -246,7 +318,10 @@ export default function LeadsPage() {
         </h2>
         <Button
           id="btn-add-lead"
-          onClick={() => { resetForm(); setIsAddOpen(true); }}
+          onClick={() => {
+            resetForm();
+            setIsAddOpen(true);
+          }}
           className="gap-2"
         >
           <Plus className="h-4 w-4" />
@@ -258,7 +333,9 @@ export default function LeadsPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
-          <span className="ml-3 text-sm text-stone-500">Chargement des leads…</span>
+          <span className="ml-3 text-sm text-stone-500">
+            Chargement des leads…
+          </span>
         </div>
       ) : (
         <div className="overflow-x-auto pb-4">
@@ -266,10 +343,17 @@ export default function LeadsPage() {
             {COLUMNS.map((col) => {
               const colLeads = leads.filter((l) => l.status === col.status);
               return (
-                <div key={col.status} className="flex w-56 flex-none flex-col gap-3">
+                <div
+                  key={col.status}
+                  className="flex w-56 flex-none flex-col gap-3"
+                >
                   {/* Column header */}
-                  <div className={`flex items-center gap-2 rounded-md border px-3 py-2 ${col.color}`}>
-                    <span className={`h-2 w-2 flex-none rounded-full ${col.dot}`} />
+                  <div
+                    className={`flex items-center gap-2 rounded-md border px-3 py-2 ${col.color}`}
+                  >
+                    <span
+                      className={`h-2 w-2 flex-none rounded-full ${col.dot}`}
+                    />
                     <span className="truncate text-xs font-semibold uppercase tracking-wide">
                       {col.label}
                     </span>
@@ -315,13 +399,14 @@ export default function LeadsPage() {
                 Saisie en langage naturel (IA Groq)
               </div>
               <p className="mt-1 text-xs text-teal-600">
-                Décrivez le lead et l&apos;IA remplira le formulaire automatiquement.
+                Décrivez le lead et l&apos;IA remplira le formulaire
+                automatiquement.
               </p>
               <textarea
                 id="natural-text-input"
                 className="mt-3 w-full rounded-md border border-teal-200 bg-white px-3 py-2 text-sm text-stone-800 placeholder:text-stone-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20"
                 rows={3}
-                placeholder="Ex: &quot;J'ai parlé à Karim Saidi de Atlas Telecom pour un projet IA CRM, à relancer lundi.&quot;"
+                placeholder='Ex: "J&apos;ai parlé à Karim Saidi de Atlas Telecom pour un projet IA CRM, à relancer lundi."'
                 value={naturalText}
                 onChange={(e) => setNaturalText(e.target.value)}
               />
@@ -338,9 +423,15 @@ export default function LeadsPage() {
                 onClick={handleExtract}
               >
                 {isExtracting ? (
-                  <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Extraction…</>
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />{" "}
+                    Extraction…
+                  </>
                 ) : (
-                  <><Sparkles className="mr-1.5 h-3.5 w-3.5" /> Extraire avec l&apos;IA</>
+                  <>
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Extraire avec
+                    l&apos;IA
+                  </>
                 )}
               </Button>
             </div>
@@ -362,10 +453,14 @@ export default function LeadsPage() {
                   id="form-status"
                   className={inputCls}
                   value={formStatus}
-                  onChange={(e) => setFormStatus(e.target.value as CrmLeadStatus)}
+                  onChange={(e) =>
+                    setFormStatus(e.target.value as CrmLeadStatus)
+                  }
                 >
                   {COLUMNS.map((c) => (
-                    <option key={c.status} value={c.status}>{c.label}</option>
+                    <option key={c.status} value={c.status}>
+                      {c.label}
+                    </option>
                   ))}
                 </select>
               </FormField>
@@ -462,12 +557,18 @@ export default function LeadsPage() {
             )}
 
             <div className="flex justify-end gap-3 border-t border-stone-100 pt-4">
-              <Button type="button" variant="outline" onClick={() => setIsAddOpen(false)}>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setIsAddOpen(false)}
+              >
                 Annuler
               </Button>
               <Button type="submit" disabled={isSubmitting}>
                 {isSubmitting ? (
-                  <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Création…</>
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Création…
+                  </>
                 ) : (
                   "Créer le lead"
                 )}
@@ -481,7 +582,11 @@ export default function LeadsPage() {
       {selectedLead && (
         <Modal
           title={selectedLead.topic}
-          onClose={() => { setSelectedLead(null); setDrafts(null); setDraftLead(null); }}
+          onClose={() => {
+            setSelectedLead(null);
+            setDrafts(null);
+            setDraftLead(null);
+          }}
         >
           <div className="space-y-4">
             {/* Status badge */}
@@ -489,7 +594,9 @@ export default function LeadsPage() {
               {(() => {
                 const cfg = getColumnConfig(selectedLead.status);
                 return (
-                  <span className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${cfg.color}`}>
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold ${cfg.color}`}
+                  >
                     <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
                     {cfg.label}
                   </span>
@@ -508,7 +615,9 @@ export default function LeadsPage() {
               <div className="flex items-start gap-2 text-sm text-stone-600">
                 <Calendar className="mt-0.5 h-4 w-4 flex-none text-teal-600" />
                 <div>
-                  <span className="font-medium text-stone-800">Prochaine action : </span>
+                  <span className="font-medium text-stone-800">
+                    Prochaine action :{" "}
+                  </span>
                   {selectedLead.nextAction}
                   {selectedLead.nextActionDate && (
                     <span className="ml-2 rounded bg-amber-50 px-1.5 py-0.5 text-xs text-amber-700">
@@ -520,7 +629,9 @@ export default function LeadsPage() {
             )}
 
             {selectedLead.source && (
-              <p className="text-xs text-stone-400">Source : {selectedLead.source}</p>
+              <p className="text-xs text-stone-400">
+                Source : {selectedLead.source}
+              </p>
             )}
 
             {/* Move status */}
@@ -535,7 +646,8 @@ export default function LeadsPage() {
                 }}
               >
                 <MoveRight className="h-4 w-4" />
-                Passer à : {getColumnConfig(getNextStatus(selectedLead.status)!).label}
+                Passer à :{" "}
+                {getColumnConfig(getNextStatus(selectedLead.status)!).label}
               </Button>
             )}
 
@@ -547,9 +659,14 @@ export default function LeadsPage() {
               disabled={isGenerating}
             >
               {isGenerating ? (
-                <><Loader2 className="h-4 w-4 animate-spin" /> Génération en cours…</>
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Génération en
+                  cours…
+                </>
               ) : (
-                <><Bot className="h-4 w-4" /> Générer une relance (IA)</>
+                <>
+                  <Bot className="h-4 w-4" /> Générer une relance (IA)
+                </>
               )}
             </Button>
 
@@ -618,7 +735,9 @@ function Modal({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm">
       <div className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl">
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4">
-          <h2 className="text-base font-semibold text-stone-950 truncate">{title}</h2>
+          <h2 className="text-base font-semibold text-stone-950 truncate">
+            {title}
+          </h2>
           <button
             type="button"
             onClick={onClose}
@@ -651,17 +770,19 @@ function LeadCard({
 }) {
   // Parse notes to extract company / contact lines
   const noteLines = (lead.notes ?? "").split("\n");
-  const companyLine = noteLines.find((l) => l.startsWith("Entreprise:"))?.replace("Entreprise:", "").trim();
-  const contactLine = noteLines.find((l) => l.startsWith("Contact:"))?.replace("Contact:", "").trim();
+  const companyLine = noteLines
+    .find((l) => l.startsWith("Entreprise:"))
+    ?.replace("Entreprise:", "")
+    .trim();
+  const contactLine = noteLines
+    .find((l) => l.startsWith("Contact:"))
+    ?.replace("Contact:", "")
+    .trim();
 
   return (
     <article className="group relative rounded-lg border border-stone-200 bg-white p-3 shadow-sm transition hover:border-teal-300 hover:shadow-md">
       {/* Topic */}
-      <button
-        type="button"
-        className="w-full text-left"
-        onClick={onSelect}
-      >
+      <button type="button" className="w-full text-left" onClick={onSelect}>
         <p className="text-sm font-semibold leading-snug text-stone-950 line-clamp-2">
           {lead.topic}
         </p>

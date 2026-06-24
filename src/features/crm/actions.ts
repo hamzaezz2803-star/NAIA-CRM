@@ -2,7 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-import type { CrmLeadStatus, CrmLeadSummary, CrmCompanySummary, CrmContactSummary } from "./contracts";
+import type {
+  CrmLeadStatus,
+  CrmLeadSummary,
+  CrmCompanySummary,
+  CrmContactSummary,
+} from "./contracts";
 
 // ────────────────────────────────────────────────────────────
 // Types for DB rows (aligned with 20260624120000_crm_tables.sql)
@@ -219,8 +224,12 @@ export async function updateLeadAction(
       ...(updates.topic !== undefined && { topic: updates.topic }),
       ...(updates.status !== undefined && { status: updates.status }),
       ...(updates.notes !== undefined && { notes: updates.notes }),
-      ...(updates.nextAction !== undefined && { next_action: updates.nextAction }),
-      ...(updates.nextActionDate !== undefined && { next_action_date: updates.nextActionDate }),
+      ...(updates.nextAction !== undefined && {
+        next_action: updates.nextAction,
+      }),
+      ...(updates.nextActionDate !== undefined && {
+        next_action_date: updates.nextActionDate,
+      }),
       ...(updates.source !== undefined && { source: updates.source }),
       ...(updates.companyId !== undefined && { company_id: updates.companyId }),
       ...(updates.contactId !== undefined && { contact_id: updates.contactId }),
@@ -343,7 +352,10 @@ export async function updateCompanyDriveFolderAction(
 
   const { error } = await supabase
     .from("crm_companies")
-    .update({ drive_folder_url: driveFolderUrl, updated_at: new Date().toISOString() })
+    .update({
+      drive_folder_url: driveFolderUrl,
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", companyId)
     .eq("organization_id", orgId);
 

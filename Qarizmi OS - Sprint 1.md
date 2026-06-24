@@ -9,9 +9,9 @@
 - **Google Drive + Gmail API** ensuite
 - **Vercel** pour déployer vite
 
-Next.js App Router est le standard actuel côté full-stack React, Supabase couvre DB/auth/functions, et Trello a une REST API exploitable pour lire/créer/modifier cards/lists.  
+Next.js App Router est le standard actuel côté full-stack React, Supabase couvre DB/auth/functions, et Trello a une REST API exploitable pour lire/créer/modifier cards/lists.
 
-------
+---
 
 # **Mission Hamza cette semaine**
 
@@ -19,7 +19,7 @@ Next.js App Router est le standard actuel côté full-stack React, Supabase couv
 
 Construire le **Qarizmi OS v0.1 = mini CRM + agent lead intake**.
 
-------
+---
 
 # **Priorité 1 — Import Trello → Supabase**
 
@@ -46,7 +46,7 @@ documents
 
 Chaque Trello card devient un `lead`.
 
-------
+---
 
 # **Priorité 2 — Interface mini CRM**
 
@@ -73,7 +73,7 @@ Avec fiche lead :
 - notes
 - #Trello link not needed
 
-------
+---
 
 # **Priorité 3 — Agent “Add Lead”**
 
@@ -100,7 +100,7 @@ Puis crée :
 - lead dans Supabase
 - #card Trello dans la bonne colonne => affichage du lead dans le dashboard du CRM
 
-------
+---
 
 # **Priorité 4 — Agent “Follow-up”**
 
@@ -118,7 +118,7 @@ L’agent génère :
 
 Pas d’envoi automatique au début. Juste brouillon. Agent génère le draft et human clique pour valider l'envoi avec un seul bouton
 
-------
+---
 
 # **Priorité 5 — Google Drive folder creator**
 
@@ -141,7 +141,7 @@ Client - Company Name
 
 Puis sauvegarde le lien Drive dans le CRM.
 
-------
+---
 
 # **Planning semaine Hamza**
 
@@ -158,7 +158,7 @@ DB schema v0
 .env configured
 ```
 
-------
+---
 
 ## **Mardi**
 
@@ -170,7 +170,7 @@ Livrable :
 Import all existing Trello leads into Supabase
 ```
 
-------
+---
 
 ## **Mercredi**
 
@@ -182,7 +182,7 @@ Livrable :
 Lead board + lead detail page
 ```
 
-------
+---
 
 ## **Jeudi**
 
@@ -194,7 +194,7 @@ Livrable :
 Chat/form → structured lead → Supabase + Trello card
 ```
 
-------
+---
 
 ## **Vendredi**
 
@@ -206,7 +206,7 @@ Livrable :
 Generate WhatsApp/email follow-up for any lead
 ```
 
-------
+---
 
 # **Pas pour cette semaine / focus later**
 
@@ -222,7 +222,7 @@ Pas de :
 - gros backend custom
 - design parfait
 
-------
+---
 
 # **Définition du succès vendredi**
 
@@ -234,4 +234,3 @@ Pas de :
 5. Il génère une relance WhatsApp/email
 6. Il crée le dossier Drive client
 ```
-

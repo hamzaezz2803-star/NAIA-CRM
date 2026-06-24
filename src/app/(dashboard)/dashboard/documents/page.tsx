@@ -48,8 +48,8 @@ export default function DocumentsPage() {
               Intégration Google Drive
             </h3>
             <p className="mt-1 text-sm leading-6 text-teal-700">
-              Les dossiers Drive sont créés automatiquement depuis la fiche lead.
-              Configurez votre connexion Google dans{" "}
+              Les dossiers Drive sont créés automatiquement depuis la fiche
+              lead. Configurez votre connexion Google dans{" "}
               <span className="font-medium">Paramètres → Intégrations</span>.
             </p>
           </div>
@@ -59,7 +59,9 @@ export default function DocumentsPage() {
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
           <Loader2 className="h-5 w-5 animate-spin text-teal-600" />
-          <span className="ml-3 text-sm text-stone-500">Chargement des dossiers…</span>
+          <span className="ml-3 text-sm text-stone-500">
+            Chargement des dossiers…
+          </span>
         </div>
       ) : (
         <div className="space-y-6">
@@ -116,7 +118,9 @@ export default function DocumentsPage() {
                       <p className="truncate text-sm font-medium text-stone-700">
                         {company.name}
                       </p>
-                      <p className="text-xs text-stone-400">Pas de dossier Drive</p>
+                      <p className="text-xs text-stone-400">
+                        Pas de dossier Drive
+                      </p>
                     </div>
                   </div>
                 ))}

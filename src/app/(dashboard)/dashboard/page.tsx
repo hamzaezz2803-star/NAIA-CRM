@@ -71,7 +71,9 @@ export default async function DashboardPage() {
               key={stat.name}
               className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm"
             >
-              <div className={`inline-flex h-10 w-10 items-center justify-center rounded-md ${stat.bg}`}>
+              <div
+                className={`inline-flex h-10 w-10 items-center justify-center rounded-md ${stat.bg}`}
+              >
                 <Icon className={`h-5 w-5 ${stat.color}`} />
               </div>
               <p className="mt-3 text-2xl font-bold text-stone-950">
@@ -104,12 +106,16 @@ export default async function DashboardPage() {
 
           {recentLeads.length === 0 ? (
             <div className="p-8 text-center text-sm text-stone-400">
-              Aucun lead encore. Commencez par en ajouter un dans le pipeline CRM.
+              Aucun lead encore. Commencez par en ajouter un dans le pipeline
+              CRM.
             </div>
           ) : (
             <div className="divide-y divide-stone-100">
               {recentLeads.map((lead) => (
-                <div key={lead.id} className="flex items-center justify-between px-5 py-3">
+                <div
+                  key={lead.id}
+                  className="flex items-center justify-between px-5 py-3"
+                >
                   <div className="min-w-0">
                     <p className="truncate text-sm font-medium text-stone-950">
                       {lead.topic}
@@ -142,27 +148,36 @@ export default async function DashboardPage() {
               <span className="mb-1 block font-semibold text-teal-700">
                 Exemple de saisie :
               </span>
-              &ldquo;J&apos;ai parlé à Karim de Atlas Telecom pour un projet IA CRM, à
-              relancer vendredi.&rdquo;
+              &ldquo;J&apos;ai parlé à Karim de Atlas Telecom pour un projet IA
+              CRM, à relancer vendredi.&rdquo;
             </p>
 
             <Link
               href="/dashboard/leads"
-              className={buttonVariants({ variant: "outline" }) + " w-full justify-start gap-2 text-xs"}
+              className={
+                buttonVariants({ variant: "outline" }) +
+                " w-full justify-start gap-2 text-xs"
+              }
             >
               <Users2 className="h-4 w-4 text-teal-600" />
               Ajouter un lead (langage naturel)
             </Link>
             <Link
               href="/dashboard/leads"
-              className={buttonVariants({ variant: "outline" }) + " w-full justify-start gap-2 text-xs"}
+              className={
+                buttonVariants({ variant: "outline" }) +
+                " w-full justify-start gap-2 text-xs"
+              }
             >
               <Bot className="h-4 w-4 text-indigo-500" />
               Générer une relance (WhatsApp/Email)
             </Link>
             <Link
               href="/dashboard/documents"
-              className={buttonVariants({ variant: "outline" }) + " w-full justify-start gap-2 text-xs"}
+              className={
+                buttonVariants({ variant: "outline" }) +
+                " w-full justify-start gap-2 text-xs"
+              }
             >
               <FolderOpen className="h-4 w-4 text-amber-500" />
               Voir les dossiers Drive
@@ -178,13 +193,11 @@ export default async function DashboardPage() {
             Pipeline CRM complet
           </p>
           <p className="text-sm text-teal-700">
-            {leads.length} lead{leads.length !== 1 ? "s" : ""} au total dans votre pipeline.
+            {leads.length} lead{leads.length !== 1 ? "s" : ""} au total dans
+            votre pipeline.
           </p>
         </div>
-        <Link
-          href="/dashboard/leads"
-          className={buttonVariants() + " gap-2"}
-        >
+        <Link href="/dashboard/leads" className={buttonVariants() + " gap-2"}>
           Accéder au CRM
           <ArrowRight className="h-4 w-4" />
         </Link>
