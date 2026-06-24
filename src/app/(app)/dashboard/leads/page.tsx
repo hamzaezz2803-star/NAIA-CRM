@@ -38,6 +38,7 @@ import {
   disconnectGoogleAuthAction,
   createGoogleDriveFolderAction,
   updateLeadAction,
+  syncLeadToGoogleCalendarAction,
 } from "@/features/crm/actions";
 import type { CrmLeadSummary, CrmLeadStatus } from "@/features/crm/contracts";
 

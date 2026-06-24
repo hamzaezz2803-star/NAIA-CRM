@@ -1093,3 +1093,35 @@ async function syncLeadToGoogleCalendar(
     console.error("Error syncing to Google Calendar:", err);
   }
 }
+
+export async function syncLeadToGoogleCalendarAction(
+  leadId: string,
+): Promise<{ success: boolean; error?: string; calendarLink?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  await syncLeadToGoogleCalendar(supabase, orgId, leadId);
+
+  // Fetch updated lead notes to find the new link
+  const { data: lead } = await supabase
+    .from("crm_leads")
+    .select("notes")
+    .eq("id", leadId)
+    .eq("organization_id", orgId)
+    .single();
+
+  const notesStr = lead?.notes || "";
+  const eventIdMatch = notesStr.match(
+    /\[Google Calendar Event Link:\s*([^\]]+)\]/,
+  );
+  const link = eventIdMatch ? eventIdMatch[1].trim() : undefined;
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return { success: true, calendarLink: link };
+}
+
