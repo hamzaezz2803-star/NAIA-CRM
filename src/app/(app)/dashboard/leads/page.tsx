@@ -392,6 +392,7 @@ export default function LeadsPage() {
     setDrafts(null);
     setIsGenerating(true);
     setModalError(null);
+    const draftToastId = toast.loading("Génération des brouillons de relance...");
 
     // Parse company & contact from notes string
     const noteLines = (lead.notes ?? "").split("\n");
@@ -414,8 +415,11 @@ export default function LeadsPage() {
 
     if (res.success && res.drafts) {
       setDrafts(res.drafts);
+      toast.success("Brouillons générés !", { id: draftToastId });
     } else {
-      setModalError(res.error || "Erreur de génération du brouillon.");
+      const err = res.error || "Erreur de génération du brouillon.";
+      setModalError(err);
+      toast.error(err, { id: draftToastId });
     }
     setIsGenerating(false);
   }
@@ -426,14 +430,18 @@ export default function LeadsPage() {
     setDriveLink(null);
 
     if (!isGoogleConnected) {
-      setModalError(
-        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenêtre...",
-      );
+      const errMsg =
+        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenêtre...";
+      setModalError(errMsg);
+      toast.error(errMsg);
       handleConnectGoogle();
       return;
     }
 
     setIsCreatingFolder(true);
+    const driveToastId = toast.loading(
+      "Création du dossier client sur Google Drive...",
+    );
 
     // Parse company name from notes or default to lead topic
     const noteLines = (lead.notes ?? "").split("\n");
@@ -457,9 +465,14 @@ export default function LeadsPage() {
       setSelectedLead(updatedLead);
       setLeads(leads.map((l) => (l.id === lead.id ? updatedLead : l)));
 
+      toast.success("Dossier client et sous-dossiers créés !", {
+        id: driveToastId,
+      });
       window.open(res.folderLink, "_blank");
     } else {
-      setModalError(res.error || "Impossible de créer le dossier Drive.");
+      const err = res.error || "Impossible de créer le dossier Drive.";
+      setModalError(err);
+      toast.error(err, { id: driveToastId });
     }
     setIsCreatingFolder(false);
   }
@@ -470,14 +483,18 @@ export default function LeadsPage() {
     setIsSyncingCalendar(true);
 
     if (!isGoogleConnected) {
-      setModalError(
-        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenêtre...",
-      );
+      const errMsg =
+        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenêtre...";
+      setModalError(errMsg);
+      toast.error(errMsg);
       handleConnectGoogle();
       setIsSyncingCalendar(false);
       return;
     }
 
+    const calendarToastId = toast.loading(
+      "Synchronisation avec Google Calendar...",
+    );
     const res = await syncLeadToGoogleCalendarAction(lead.id);
 
     if (res.success && res.calendarLink) {
@@ -491,10 +508,13 @@ export default function LeadsPage() {
       const updatedLead = { ...lead, notes: updatedNotes };
       setSelectedLead(updatedLead);
       setLeads(leads.map((l) => (l.id === lead.id ? updatedLead : l)));
+      toast.success("Événement Google Calendar créé !", {
+        id: calendarToastId,
+      });
     } else {
-      setModalError(
-        res.error || "Impossible de synchroniser avec Google Calendar.",
-      );
+      const err = res.error || "Impossible de synchroniser avec Google Calendar.";
+      setModalError(err);
+      toast.error(err, { id: calendarToastId });
     }
     setIsSyncingCalendar(false);
   }
