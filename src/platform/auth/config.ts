@@ -40,3 +40,7 @@ export function getSupabasePublicKey(env = getPublicEnv()) {
     null
   );
 }
+
+export function getAppBaseUrl(env = getPublicEnv()) {
+  return env.NEXT_PUBLIC_APP_URL ?? "https://os.qarizmi.com";
+}

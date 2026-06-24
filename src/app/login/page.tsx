@@ -1,11 +1,14 @@
-import { LockKeyhole, ShieldCheck } from "lucide-react";
+import { LockKeyhole, Mail, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { redirect } from "next/navigation";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { signInWithPasswordAction } from "@/platform/auth/actions";
+import {
+  requestMagicLinkAction,
+  signInWithPasswordAction,
+} from "@/platform/auth/actions";
 import { isAuthorizedUser } from "@/platform/auth/access";
 import { isSupabaseConfigured } from "@/platform/auth/config";
 import { sanitizeRedirectPath } from "@/platform/auth/safe-redirect";
@@ -14,6 +17,7 @@ import { getCurrentSupabaseUser } from "@/platform/auth/supabase-server";
 type LoginPageProps = {
   searchParams?: Promise<{
     error?: string;
+    notice?: string;
     redirectedFrom?: string;
   }>;
 };
@@ -29,6 +33,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   }
 
   const errorMessage = getLoginErrorMessage(params?.error);
+  const noticeMessage = getLoginNoticeMessage(params?.notice);
 
   return (
     <main className="min-h-screen bg-stone-50 px-4 py-10 md:px-8">
@@ -59,65 +64,119 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             title="Sign in to Qarizmi OS"
           />
           <div className="mt-8 grid gap-6 md:grid-cols-[minmax(0,1fr)_18rem]">
-            <form
-              action={signInWithPasswordAction}
-              className="rounded-lg border border-stone-200 p-5"
-            >
-              <input
-                name="redirectedFrom"
-                type="hidden"
-                value={redirectedFrom}
-              />
-              <div className="space-y-2">
-                <label
-                  className="text-sm font-medium text-stone-800"
-                  htmlFor="email"
-                >
-                  Email
-                </label>
-                <input
-                  autoComplete="email"
-                  className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
-                  disabled={!configured}
-                  id="email"
-                  name="email"
-                  required
-                  type="email"
-                />
-              </div>
-              <div className="mt-4 space-y-2">
-                <label
-                  className="text-sm font-medium text-stone-800"
-                  htmlFor="password"
-                >
-                  Password
-                </label>
-                <input
-                  autoComplete="current-password"
-                  className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
-                  disabled={!configured}
-                  id="password"
-                  name="password"
-                  required
-                  type="password"
-                />
-              </div>
-              {errorMessage ? (
-                <p
-                  className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
-                  role="alert"
-                >
-                  {errorMessage}
-                </p>
-              ) : null}
-              <Button
-                className="mt-5 w-full"
-                disabled={!configured}
-                type="submit"
+            <div className="space-y-4">
+              <form
+                action={requestMagicLinkAction}
+                className="rounded-lg border border-stone-200 p-5"
               >
-                Sign in
-              </Button>
-            </form>
+                <input
+                  name="redirectedFrom"
+                  type="hidden"
+                  value={redirectedFrom}
+                />
+                <Mail className="h-5 w-5 text-teal-700" />
+                <h2 className="mt-4 text-base font-semibold text-stone-950">
+                  Email sign-in link
+                </h2>
+                <div className="mt-4 space-y-2">
+                  <label
+                    className="text-sm font-medium text-stone-800"
+                    htmlFor="magic-email"
+                  >
+                    Email
+                  </label>
+                  <input
+                    autoComplete="email"
+                    className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
+                    disabled={!configured}
+                    id="magic-email"
+                    name="email"
+                    required
+                    type="email"
+                  />
+                </div>
+                {noticeMessage ? (
+                  <p
+                    className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
+                    role="status"
+                  >
+                    {noticeMessage}
+                  </p>
+                ) : null}
+                {errorMessage ? (
+                  <p
+                    className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
+                    role="alert"
+                  >
+                    {errorMessage}
+                  </p>
+                ) : null}
+                <Button
+                  className="mt-5 w-full"
+                  disabled={!configured}
+                  type="submit"
+                >
+                  Send sign-in link
+                </Button>
+              </form>
+              <form
+                action={signInWithPasswordAction}
+                className="rounded-lg border border-stone-200 p-5"
+              >
+                <input
+                  name="redirectedFrom"
+                  type="hidden"
+                  value={redirectedFrom}
+                />
+                <h2 className="text-base font-semibold text-stone-950">
+                  Password sign-in
+                </h2>
+                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                  <div className="space-y-2">
+                    <label
+                      className="text-sm font-medium text-stone-800"
+                      htmlFor="password-email"
+                    >
+                      Email
+                    </label>
+                    <input
+                      autoComplete="email"
+                      className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
+                      disabled={!configured}
+                      id="password-email"
+                      name="email"
+                      required
+                      type="email"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <label
+                      className="text-sm font-medium text-stone-800"
+                      htmlFor="password"
+                    >
+                      Password
+                    </label>
+                    <input
+                      autoComplete="current-password"
+                      className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
+                      disabled={!configured}
+                      id="password"
+                      name="password"
+                      required
+                      type="password"
+                    />
+                  </div>
+                </div>
+                <Button
+                  className="mt-5"
+                  disabled={!configured}
+                  type="submit"
+                  variant="secondary"
+                >
+                  Sign in with password
+                </Button>
+              </form>
+            </div>
             <div className="rounded-lg border border-stone-200 p-5">
               <LockKeyhole className="h-5 w-5 text-teal-700" />
               <h2 className="mt-4 text-base font-semibold text-stone-950">
@@ -151,8 +210,23 @@ function getLoginErrorMessage(error: string | undefined) {
       return "The email or password is incorrect.";
     case "missing":
       return "Enter your email and password.";
+    case "missing-email":
+      return "Enter your Qarizmi email.";
+    case "magic-link":
+      return "A sign-in link could not be sent for that email.";
+    case "invalid-link":
+      return "That sign-in link is invalid or expired.";
     case "unauthorized":
       return "This account is not authorized for Qarizmi OS.";
+    default:
+      return null;
+  }
+}
+
+function getLoginNoticeMessage(notice: string | undefined) {
+  switch (notice) {
+    case "sent":
+      return "Check your Qarizmi inbox for a sign-in link.";
     default:
       return null;
   }

@@ -19,7 +19,8 @@ npm run dev
 ```
 
 Open http://localhost:3000 and sign in with a Supabase Auth user that is
-allowed by the local access policy.
+allowed by the local access policy. The production login supports emailed magic
+links for approved Qarizmi users.
 
 Production app: https://os.qarizmi.com.
 
@@ -65,5 +66,8 @@ Hosted project ref: `juqhonvapkrlylvseolu`.
 In production, keep Supabase public email signups disabled and create or invite
 users from the Supabase Auth dashboard. Use `AUTH_ALLOWED_EMAILS` when access
 should be restricted to an exact list of people.
+
+Current production admins are `ali@qarizmi.com`, `nabil@qarizmi.com`,
+`hamza@qarizmi.com`, and `wissal@qarizmi.com`.
 
 Never commit `.env.local` or any service key.

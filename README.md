@@ -107,6 +107,16 @@ For production, create users in Supabase Auth and disable public email signups
 in the Supabase dashboard. Set `AUTH_ALLOWED_EMAILS` in Vercel when access
 should be limited to exact people instead of the whole Qarizmi domain.
 
+Current production access is limited to:
+
+- `ali@qarizmi.com`
+- `nabil@qarizmi.com`
+- `hamza@qarizmi.com`
+- `wissal@qarizmi.com`
+
+These users can sign in with an emailed magic link. Password sign-in remains
+available for accounts with a password.
+
 ## Documentation
 
 - `docs/architecture.md`
