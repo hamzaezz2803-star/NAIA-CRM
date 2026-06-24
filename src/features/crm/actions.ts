@@ -927,7 +927,7 @@ async function syncLeadToGoogleCalendar(
   supabase: SupabaseClient,
   orgId: string,
   leadId: string,
-): Promise<void> {
+): Promise<{ success: boolean; error?: string }> {
   try {
     const { data: lead, error: leadError } = await supabase
       .from("crm_leads")
@@ -936,7 +936,9 @@ async function syncLeadToGoogleCalendar(
       .eq("organization_id", orgId)
       .single();
 
-    if (leadError || !lead) return;
+    if (leadError || !lead) {
+      return { success: false, error: "Lead introuvable" };
+    }
 
     const notesStr = lead.notes || "";
     const eventIdMatch = notesStr.match(
@@ -953,20 +955,30 @@ async function syncLeadToGoogleCalendar(
       .limit(1)
       .maybeSingle();
 
-    if (!connection || connection.status !== "connected") return;
+    if (!connection || connection.status !== "connected") {
+      return {
+        success: false,
+        error: "Google Workspace non connecté. Veuillez connecter votre compte Google.",
+      };
+    }
 
     const accessToken = await getOrRefreshGoogleToken(
       supabase,
       orgId,
       connection,
     );
-    if (!accessToken) return;
+    if (!accessToken) {
+      return {
+        success: false,
+        error: "Session Google expirée ou invalide. Veuillez déconnecter et reconnecter votre compte Google.",
+      };
+    }
 
     // If nextActionDate is cleared but an event exists, delete it
     if (!lead.next_action_date) {
       if (existingEventId) {
         try {
-          await fetch(
+          const delRes = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
             {
               method: "DELETE",
@@ -975,6 +987,11 @@ async function syncLeadToGoogleCalendar(
               },
             },
           );
+
+          if (!delRes.ok) {
+            const errText = await delRes.text();
+            console.error("Google Calendar delete failed:", errText);
+          }
 
           // Remove the event ID and link tags from notes
           const updatedNotes = notesStr
@@ -993,7 +1010,7 @@ async function syncLeadToGoogleCalendar(
           console.error("Failed to delete cleared Calendar event:", err);
         }
       }
-      return;
+      return { success: true };
     }
 
     // Otherwise, create or update the event
@@ -1051,7 +1068,13 @@ async function syncLeadToGoogleCalendar(
             })
             .eq("id", leadId);
         }
-        return;
+        return { success: true };
+      } else {
+        const errText = await updateRes.text();
+        return {
+          success: false,
+          error: `Erreur API Google Calendar (Update) : ${errText}`,
+        };
       }
     }
 
@@ -1088,9 +1111,19 @@ async function syncLeadToGoogleCalendar(
           updated_at: new Date().toISOString(),
         })
         .eq("id", leadId);
+
+      return { success: true };
+    } else {
+      const errText = await createRes.text();
+      return {
+        success: false,
+        error: `Erreur API Google Calendar (Create) : ${errText}`,
+      };
     }
   } catch (err) {
+    const msg = err instanceof Error ? err.message : "Erreur inconnue";
     console.error("Error syncing to Google Calendar:", err);
+    return { success: false, error: msg };
   }
 }
 
@@ -1103,7 +1136,10 @@ export async function syncLeadToGoogleCalendarAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  await syncLeadToGoogleCalendar(supabase, orgId, leadId);
+  const syncRes = await syncLeadToGoogleCalendar(supabase, orgId, leadId);
+  if (!syncRes.success) {
+    return { success: false, error: syncRes.error };
+  }
 
   // Fetch updated lead notes to find the new link
   const { data: lead } = await supabase
