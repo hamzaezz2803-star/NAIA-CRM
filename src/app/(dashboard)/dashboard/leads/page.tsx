@@ -322,7 +322,7 @@ export default function LeadsPage() {
                 id="natural-text-input"
                 className="mt-3 w-full rounded-md border border-teal-200 bg-white px-3 py-2 text-sm text-stone-800 placeholder:text-stone-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20"
                 rows={3}
-                placeholder='Ex: "J'ai parlé à Karim Saidi de Atlas Telecom pour un projet IA CRM, à relancer lundi."'
+                placeholder="Ex: &quot;J'ai parlé à Karim Saidi de Atlas Telecom pour un projet IA CRM, à relancer lundi.&quot;"
                 value={naturalText}
                 onChange={(e) => setNaturalText(e.target.value)}
               />
