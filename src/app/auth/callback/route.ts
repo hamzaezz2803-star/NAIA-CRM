@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
           });
         },
       },
-    }
+    },
   );
 
   console.log("[auth-callback] Exchanging code for session...");
@@ -57,7 +57,10 @@ export async function GET(request: NextRequest) {
   } = await supabase.auth.getUser();
 
   if (!user || !isAuthorizedUser(user)) {
-    console.warn("[auth-callback] User not authorized or not found:", user?.email);
+    console.warn(
+      "[auth-callback] User not authorized or not found:",
+      user?.email,
+    );
     await supabase.auth.signOut();
     const signOutResponse = redirectToLogin(request, "unauthorized", next);
     // Propagate cookie clearance to the sign out response
