@@ -41,6 +41,7 @@ import {
   syncLeadToGoogleCalendarAction,
 } from "@/features/crm/actions";
 import type { CrmLeadSummary, CrmLeadStatus } from "@/features/crm/contracts";
+import toast from "react-hot-toast";
 
 // ────────────────────────────────────────────────────────────
 // Column config aligned with DB status values
@@ -189,6 +190,7 @@ export default function LeadsPage() {
       if (event.data?.type === "GOOGLE_AUTH_SUCCESS") {
         setIsGoogleConnected(true);
         setFormError(null);
+        toast.success("Google Workspace connecté avec succès !");
       }
     };
     window.addEventListener("message", handleMessage);
@@ -225,6 +227,9 @@ export default function LeadsPage() {
     const res = await disconnectGoogleAuthAction();
     if (res.success) {
       setIsGoogleConnected(false);
+      toast.success("Compte Google Workspace déconnecté.");
+    } else {
+      toast.error("Erreur de déconnexion Google.");
     }
   };
 
