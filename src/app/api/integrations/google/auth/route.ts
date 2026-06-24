@@ -8,7 +8,8 @@ export async function GET() {
   }
 
   const redirectUri = `${getAppBaseUrl()}/api/integrations/google/callback`;
-  const scope = "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events";
+  const scope =
+    "https://www.googleapis.com/auth/drive.file https://www.googleapis.com/auth/calendar.events";
 
   const googleAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   googleAuthUrl.searchParams.set("response_type", "code");
