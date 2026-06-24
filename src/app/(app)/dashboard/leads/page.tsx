@@ -238,6 +238,7 @@ export default function LeadsPage() {
     if (!naturalText.trim()) return;
     setIsExtracting(true);
     setExtractError(null);
+    const extractToastId = toast.loading("Analyse et extraction en cours...");
 
     const res = await extractLeadFromNaturalTextAction(naturalText);
 
@@ -255,8 +256,11 @@ export default function LeadsPage() {
       if (e.nextActionDate) {
         setFormStatus("to-follow-up");
       }
+      toast.success("Informations du lead extraites !", { id: extractToastId });
     } else {
-      setExtractError(res.error ?? "Extraction échouée");
+      const err = res.error ?? "Extraction échouée";
+      setExtractError(err);
+      toast.error("Échec de l'extraction : " + err, { id: extractToastId });
     }
     setIsExtracting(false);
   }
@@ -270,6 +274,7 @@ export default function LeadsPage() {
     }
     setIsSubmitting(true);
     setFormError(null);
+    const createToastId = toast.loading("Création du lead...");
 
     // Concat company info inside notes for simple display
     const res = await createLeadAction({
@@ -294,8 +299,11 @@ export default function LeadsPage() {
       setLeads((prev) => [res.lead!, ...prev]);
       resetForm();
       setIsAddOpen(false);
+      toast.success("Lead créé avec succès !", { id: createToastId });
     } else {
-      setFormError(res.error ?? "Impossible de créer le lead.");
+      const err = res.error ?? "Impossible de créer le lead.";
+      setFormError(err);
+      toast.error(err, { id: createToastId });
     }
     setIsSubmitting(false);
   }
