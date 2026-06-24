@@ -179,10 +179,16 @@ export async function createLeadAction(input: {
     return { success: false, error: error?.message ?? "Insert failed" };
   }
 
+  const row = data as DbLead;
+
+  // Sync to Google Calendar if nextActionDate is set
+  if (input.nextActionDate) {
+    await syncLeadToGoogleCalendar(supabase, orgId, row.id);
+  }
+
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
 
-  const row = data as DbLead;
   return {
     success: true,
     lead: {
@@ -266,6 +272,8 @@ export async function updateLeadAction(
 
   if (error) return { success: false, error: error.message };
 
+  await syncLeadToGoogleCalendar(supabase, orgId, leadId);
+
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
   return { success: true };
@@ -279,6 +287,57 @@ export async function deleteLeadAction(
 
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
+
+  // Fetch lead to get the event ID first for deletion from Google Calendar
+  const { data: lead } = await supabase
+    .from("crm_leads")
+    .select("notes")
+    .eq("id", leadId)
+    .eq("organization_id", orgId)
+    .single();
+
+  if (lead && lead.notes) {
+    const eventIdMatch = lead.notes.match(
+      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
+    );
+    const eventId = eventIdMatch ? eventIdMatch[1].trim() : null;
+
+    if (eventId) {
+      const { data: connection } = await supabase
+        .from("integration_connections")
+        .select("*")
+        .eq("organization_id", orgId)
+        .eq("provider", "google")
+        .limit(1)
+        .maybeSingle();
+
+      if (connection && connection.status === "connected") {
+        const accessToken = await getOrRefreshGoogleToken(
+          supabase,
+          orgId,
+          connection,
+        );
+        if (accessToken) {
+          try {
+            await fetch(
+              `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
+              {
+                method: "DELETE",
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                },
+              },
+            );
+          } catch (err) {
+            console.error(
+              "Failed to delete Google Calendar event during lead deletion:",
+              err,
+            );
+          }
+        }
+      }
+    }
+  }
 
   const { error } = await supabase
     .from("crm_leads")
@@ -861,5 +920,149 @@ async function getOrRefreshGoogleToken(
     return data.access_token;
   } catch {
     return null;
+  }
+}
+
+async function syncLeadToGoogleCalendar(
+  supabase: SupabaseClient,
+  orgId: string,
+  leadId: string,
+): Promise<void> {
+  try {
+    const { data: lead, error: leadError } = await supabase
+      .from("crm_leads")
+      .select("*")
+      .eq("id", leadId)
+      .eq("organization_id", orgId)
+      .single();
+
+    if (leadError || !lead) return;
+
+    const notesStr = lead.notes || "";
+    const eventIdMatch = notesStr.match(
+      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
+    );
+    const existingEventId = eventIdMatch ? eventIdMatch[1].trim() : null;
+
+    // Fetch google connection
+    const { data: connection } = await supabase
+      .from("integration_connections")
+      .select("*")
+      .eq("organization_id", orgId)
+      .eq("provider", "google")
+      .limit(1)
+      .maybeSingle();
+
+    if (!connection || connection.status !== "connected") return;
+
+    const accessToken = await getOrRefreshGoogleToken(
+      supabase,
+      orgId,
+      connection,
+    );
+    if (!accessToken) return;
+
+    // If nextActionDate is cleared but an event exists, delete it
+    if (!lead.next_action_date) {
+      if (existingEventId) {
+        try {
+          await fetch(
+            `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
+            {
+              method: "DELETE",
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+              },
+            },
+          );
+
+          // Remove the event ID tag from notes
+          const updatedNotes = notesStr
+            .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/, "")
+            .trim();
+
+          await supabase
+            .from("crm_leads")
+            .update({
+              notes: updatedNotes || null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", leadId);
+        } catch (err) {
+          console.error("Failed to delete cleared Calendar event:", err);
+        }
+      }
+      return;
+    }
+
+    // Otherwise, create or update the event
+    const startDate = lead.next_action_date;
+    const startDay = new Date(startDate);
+    const nextDay = new Date(startDay.getTime() + 24 * 60 * 60 * 1000);
+    const endDate = nextDay.toISOString().split("T")[0];
+
+    const cleanNotes = notesStr
+      .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]/g, "")
+      .trim();
+
+    const eventPayload = {
+      summary: `Suivi : ${lead.topic}`,
+      description: `Action prévue : ${lead.next_action || "Aucune description"}\n\nNotes :\n${cleanNotes}`,
+      start: {
+        date: startDate,
+      },
+      end: {
+        date: endDate,
+      },
+    };
+
+    if (existingEventId) {
+      const updateRes = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
+        {
+          method: "PUT",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(eventPayload),
+        },
+      );
+
+      if (updateRes.ok) {
+        return;
+      }
+    }
+
+    const createRes = await fetch(
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(eventPayload),
+      },
+    );
+
+    if (createRes.ok) {
+      const event = await createRes.json();
+      const newEventId = event.id;
+
+      const updatedNotes = notesStr
+        ? `${notesStr}\n[Google Calendar Event ID: ${newEventId}]`
+        : `[Google Calendar Event ID: ${newEventId}]`;
+
+      await supabase
+        .from("crm_leads")
+        .update({
+          notes: updatedNotes,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", leadId);
+    }
+  } catch (err) {
+    console.error("Error syncing to Google Calendar:", err);
   }
 }

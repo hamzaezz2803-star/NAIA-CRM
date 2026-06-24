@@ -114,7 +114,10 @@ export async function GET(request: NextRequest) {
           provider: "google",
           status: "connected",
           external_account_label: externalAccountLabel,
-          scopes: ["https://www.googleapis.com/auth/drive.file"],
+          scopes: [
+            "https://www.googleapis.com/auth/drive.file",
+            "https://www.googleapis.com/auth/calendar.events",
+          ],
           encrypted_token_reference: JSON.stringify(tokenData),
           connected_by_profile_id: user.id,
           connected_at: new Date().toISOString(),

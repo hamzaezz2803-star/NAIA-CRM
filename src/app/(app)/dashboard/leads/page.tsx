@@ -25,6 +25,7 @@ import {
   CalendarDays,
   ChevronLeft,
   ChevronRight,
+  List,
 } from "lucide-react";
 import {
   fetchLeadsAction,
@@ -112,7 +113,9 @@ export default function LeadsPage() {
   const [, startTransition] = useTransition();
 
   // Mode & Google auth states
-  const [viewMode, setViewMode] = useState<"kanban" | "calendar">("kanban");
+  const [viewMode, setViewMode] = useState<"kanban" | "calendar" | "list">(
+    "kanban",
+  );
   const [calendarDate, setCalendarDate] = useState(new Date());
   const [isGoogleConnected, setIsGoogleConnected] = useState(false);
 
@@ -500,6 +503,17 @@ export default function LeadsPage() {
             >
               <CalendarDays className="h-3.5 w-3.5 text-stone-500" />
               Calendrier
+            </button>
+            <button
+              onClick={() => setViewMode("list")}
+              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+                viewMode === "list"
+                  ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
+                  : "text-stone-500 hover:text-stone-900"
+              }`}
+            >
+              <List className="h-3.5 w-3.5 text-stone-500" />
+              Liste
             </button>
           </div>
         </div>
