@@ -73,55 +73,75 @@ alter table public.crm_contacts enable row level security;
 alter table public.crm_leads enable row level security;
 
 -- crm_companies policies
+drop policy if exists "members can read crm companies" on public.crm_companies;
 create policy "members can read crm companies"
 on public.crm_companies for select
 using (public.is_org_member(organization_id));
 
+drop policy if exists "members can create crm companies" on public.crm_companies;
 create policy "members can create crm companies"
 on public.crm_companies for insert
 with check (public.is_org_member(organization_id));
 
+drop policy if exists "members can update crm companies" on public.crm_companies;
 create policy "members can update crm companies"
 on public.crm_companies for update
 using (public.is_org_member(organization_id))
 with check (public.is_org_member(organization_id));
 
+drop policy if exists "admins can delete crm companies" on public.crm_companies;
 create policy "admins can delete crm companies"
 on public.crm_companies for delete
 using (public.is_org_admin(organization_id));
 
 -- crm_contacts policies
+drop policy if exists "members can read crm contacts" on public.crm_contacts;
 create policy "members can read crm contacts"
 on public.crm_contacts for select
 using (public.is_org_member(organization_id));
 
+drop policy if exists "members can create crm contacts" on public.crm_contacts;
 create policy "members can create crm contacts"
 on public.crm_contacts for insert
 with check (public.is_org_member(organization_id));
 
+drop policy if exists "members can update crm contacts" on public.crm_contacts;
 create policy "members can update crm contacts"
 on public.crm_contacts for update
 using (public.is_org_member(organization_id))
 with check (public.is_org_member(organization_id));
 
+drop policy if exists "admins can delete crm contacts" on public.crm_contacts;
 create policy "admins can delete crm contacts"
 on public.crm_contacts for delete
 using (public.is_org_admin(organization_id));
 
 -- crm_leads policies
+drop policy if exists "members can read crm leads" on public.crm_leads;
 create policy "members can read crm leads"
 on public.crm_leads for select
 using (public.is_org_member(organization_id));
 
+drop policy if exists "members can create crm leads" on public.crm_leads;
 create policy "members can create crm leads"
 on public.crm_leads for insert
 with check (public.is_org_member(organization_id));
 
+drop policy if exists "members can update crm leads" on public.crm_leads;
 create policy "members can update crm leads"
 on public.crm_leads for update
 using (public.is_org_member(organization_id))
 with check (public.is_org_member(organization_id));
 
+drop policy if exists "admins can delete crm leads" on public.crm_leads;
 create policy "admins can delete crm leads"
 on public.crm_leads for delete
 using (public.is_org_admin(organization_id));
+
+grant select, insert, update, delete
+on public.crm_companies, public.crm_contacts, public.crm_leads
+to authenticated;
+
+grant all privileges
+on public.crm_companies, public.crm_contacts, public.crm_leads
+to service_role;

@@ -9,12 +9,12 @@ describe("platform module registry", () => {
     expect(new Set(routes).size).toBe(routes.length);
   });
 
-  it("keeps CRM registered as Hamza's build boundary", () => {
+  it("keeps CRM registered as Hamza's live workspace", () => {
     const crm = requireModule("crm");
 
-    expect(crm.href).toBe("/crm");
+    expect(crm.href).toBe("/dashboard/leads");
     expect(crm.owner).toBe("crm");
-    expect(crm.status).toBe("ready-for-build");
+    expect(crm.status).toBe("live");
     expect(crm.handoffPath).toBe("docs/crm-handoff.md");
   });
 });
