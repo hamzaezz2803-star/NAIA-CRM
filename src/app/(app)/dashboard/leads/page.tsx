@@ -159,7 +159,8 @@ export default function LeadsPage() {
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
   const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
-  const [isFormStatusDropdownOpen, setIsFormStatusDropdownOpen] = useState(false);
+  const [isFormStatusDropdownOpen, setIsFormStatusDropdownOpen] =
+    useState(false);
 
   // Helper: extract a Google Drive link already stored in lead notes
   const extractDriveLinkFromNotes = (notes?: string): string | null => {
@@ -1166,12 +1167,18 @@ export default function LeadsPage() {
                   <div className="relative">
                     <button
                       type="button"
-                      onClick={() => setIsFormStatusDropdownOpen(!isFormStatusDropdownOpen)}
+                      onClick={() =>
+                        setIsFormStatusDropdownOpen(!isFormStatusDropdownOpen)
+                      }
                       className="flex h-10 w-full items-center justify-between rounded-md border border-stone-305 bg-white px-3 py-2 text-sm font-medium text-stone-900 hover:bg-stone-50 transition focus:outline-none focus:ring-2 focus:ring-teal-700/20"
                     >
                       <span className="flex items-center gap-2">
-                        <span className={`h-2 w-2 rounded-full ${currentCfg.dot}`} />
-                        <span className={`px-2 py-0.5 rounded border text-[11px] font-bold ${currentCfg.color}`}>
+                        <span
+                          className={`h-2 w-2 rounded-full ${currentCfg.dot}`}
+                        />
+                        <span
+                          className={`px-2 py-0.5 rounded border text-[11px] font-bold ${currentCfg.color}`}
+                        >
                           {currentCfg.label}
                         </span>
                       </span>
@@ -1197,8 +1204,12 @@ export default function LeadsPage() {
                               }}
                               className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-stone-50 transition-colors"
                             >
-                              <span className={`h-2 w-2 rounded-full ${c.dot}`} />
-                              <span className={`px-2 py-0.5 rounded border text-[11px] font-bold ${c.color}`}>
+                              <span
+                                className={`h-2 w-2 rounded-full ${c.dot}`}
+                              />
+                              <span
+                                className={`px-2 py-0.5 rounded border text-[11px] font-bold ${c.color}`}
+                              >
                                 {c.label}
                               </span>
                             </button>
@@ -1389,12 +1400,18 @@ export default function LeadsPage() {
                     <div className="relative">
                       <button
                         type="button"
-                        onClick={() => setIsStatusDropdownOpen(!isStatusDropdownOpen)}
+                        onClick={() =>
+                          setIsStatusDropdownOpen(!isStatusDropdownOpen)
+                        }
                         className="flex h-9 w-full items-center justify-between rounded-md border border-stone-205 bg-white px-3 py-1.5 text-xs font-semibold text-stone-850 hover:bg-stone-50 transition focus:outline-none"
                       >
                         <span className="flex items-center gap-2">
-                          <span className={`h-2 w-2 rounded-full ${currentCfg.dot}`} />
-                          <span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${currentCfg.color}`}>
+                          <span
+                            className={`h-2 w-2 rounded-full ${currentCfg.dot}`}
+                          />
+                          <span
+                            className={`px-2 py-0.5 rounded border text-[10px] font-bold ${currentCfg.color}`}
+                          >
                             {currentCfg.label}
                           </span>
                         </span>
@@ -1420,8 +1437,12 @@ export default function LeadsPage() {
                                 }}
                                 className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-stone-50 transition-colors"
                               >
-                                <span className={`h-2 w-2 rounded-full ${c.dot}`} />
-                                <span className={`px-2 py-0.5 rounded border text-[10px] font-bold ${c.color}`}>
+                                <span
+                                  className={`h-2 w-2 rounded-full ${c.dot}`}
+                                />
+                                <span
+                                  className={`px-2 py-0.5 rounded border text-[10px] font-bold ${c.color}`}
+                                >
                                   {c.label}
                                 </span>
                               </button>

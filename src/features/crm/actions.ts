@@ -958,7 +958,8 @@ async function syncLeadToGoogleCalendar(
     if (!connection || connection.status !== "connected") {
       return {
         success: false,
-        error: "Google Workspace non connecté. Veuillez connecter votre compte Google.",
+        error:
+          "Google Workspace non connecté. Veuillez connecter votre compte Google.",
       };
     }
 
@@ -970,7 +971,8 @@ async function syncLeadToGoogleCalendar(
     if (!accessToken) {
       return {
         success: false,
-        error: "Session Google expirée ou invalide. Veuillez déconnecter et reconnecter votre compte Google.",
+        error:
+          "Session Google expirée ou invalide. Veuillez déconnecter et reconnecter votre compte Google.",
       };
     }
 
