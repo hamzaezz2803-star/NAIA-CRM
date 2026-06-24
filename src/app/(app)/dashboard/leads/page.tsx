@@ -392,7 +392,9 @@ export default function LeadsPage() {
     setDrafts(null);
     setIsGenerating(true);
     setModalError(null);
-    const draftToastId = toast.loading("Génération des brouillons de relance...");
+    const draftToastId = toast.loading(
+      "Génération des brouillons de relance...",
+    );
 
     // Parse company & contact from notes string
     const noteLines = (lead.notes ?? "").split("\n");
@@ -512,7 +514,8 @@ export default function LeadsPage() {
         id: calendarToastId,
       });
     } else {
-      const err = res.error || "Impossible de synchroniser avec Google Calendar.";
+      const err =
+        res.error || "Impossible de synchroniser avec Google Calendar.";
       setModalError(err);
       toast.error(err, { id: calendarToastId });
     }
