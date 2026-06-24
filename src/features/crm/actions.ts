@@ -1,0 +1,583 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import type { CrmLeadStatus, CrmLeadSummary, CrmCompanySummary, CrmContactSummary } from "./contracts";
+
+// ────────────────────────────────────────────────────────────
+// Types for DB rows (aligned with 20260624120000_crm_tables.sql)
+// ────────────────────────────────────────────────────────────
+
+type DbLead = {
+  id: string;
+  organization_id: string;
+  company_id: string | null;
+  contact_id: string | null;
+  topic: string;
+  source: string | null;
+  status: CrmLeadStatus;
+  notes: string | null;
+  next_action: string | null;
+  next_action_date: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type DbCompany = {
+  id: string;
+  organization_id: string;
+  name: string;
+  industry: string | null;
+  website: string | null;
+  drive_folder_url: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+type DbContact = {
+  id: string;
+  organization_id: string;
+  company_id: string | null;
+  name: string;
+  email: string | null;
+  phone: string | null;
+  job_title: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+// ────────────────────────────────────────────────────────────
+// Helpers
+// ────────────────────────────────────────────────────────────
+
+async function getOrgId(): Promise<string | null> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return null;
+
+  const {
+    data: { user },
+    error: authError,
+  } = await supabase.auth.getUser();
+  if (authError || !user) return null;
+
+  const { data: membership } = await supabase
+    .from("organization_memberships")
+    .select("organization_id")
+    .eq("profile_id", user.id)
+    .limit(1)
+    .single();
+
+  return membership?.organization_id ?? null;
+}
+
+// ────────────────────────────────────────────────────────────
+// LEADS
+// ────────────────────────────────────────────────────────────
+
+export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_leads")
+    .select("*")
+    .eq("organization_id", orgId)
+    .order("created_at", { ascending: false });
+
+  if (error || !data) return [];
+
+  return (data as DbLead[]).map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    companyId: row.company_id ?? undefined,
+    contactId: row.contact_id ?? undefined,
+    topic: row.topic,
+    source: row.source ?? undefined,
+    status: row.status,
+    notes: row.notes ?? undefined,
+    nextAction: row.next_action ?? undefined,
+    nextActionDate: row.next_action_date ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function createLeadAction(input: {
+  topic: string;
+  companyId?: string;
+  contactId?: string;
+  source?: string;
+  status?: CrmLeadStatus;
+  notes?: string;
+  nextAction?: string;
+  nextActionDate?: string;
+}): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data, error } = await supabase
+    .from("crm_leads")
+    .insert({
+      organization_id: orgId,
+      topic: input.topic,
+      company_id: input.companyId ?? null,
+      contact_id: input.contactId ?? null,
+      source: input.source ?? null,
+      status: input.status ?? "lead-to-contact",
+      notes: input.notes ?? null,
+      next_action: input.nextAction ?? null,
+      next_action_date: input.nextActionDate ?? null,
+      created_by_profile_id: user?.id ?? null,
+    })
+    .select()
+    .single();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" };
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  const row = data as DbLead;
+  return {
+    success: true,
+    lead: {
+      id: row.id,
+      organizationId: row.organization_id,
+      companyId: row.company_id ?? undefined,
+      contactId: row.contact_id ?? undefined,
+      topic: row.topic,
+      source: row.source ?? undefined,
+      status: row.status,
+      notes: row.notes ?? undefined,
+      nextAction: row.next_action ?? undefined,
+      nextActionDate: row.next_action_date ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    },
+  };
+}
+
+export async function updateLeadStatusAction(
+  leadId: string,
+  status: CrmLeadStatus,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_leads")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", leadId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  return { success: true };
+}
+
+export async function updateLeadAction(
+  leadId: string,
+  updates: Partial<{
+    topic: string;
+    status: CrmLeadStatus;
+    notes: string;
+    nextAction: string;
+    nextActionDate: string;
+    source: string;
+    companyId: string;
+    contactId: string;
+  }>,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_leads")
+    .update({
+      ...(updates.topic !== undefined && { topic: updates.topic }),
+      ...(updates.status !== undefined && { status: updates.status }),
+      ...(updates.notes !== undefined && { notes: updates.notes }),
+      ...(updates.nextAction !== undefined && { next_action: updates.nextAction }),
+      ...(updates.nextActionDate !== undefined && { next_action_date: updates.nextActionDate }),
+      ...(updates.source !== undefined && { source: updates.source }),
+      ...(updates.companyId !== undefined && { company_id: updates.companyId }),
+      ...(updates.contactId !== undefined && { contact_id: updates.contactId }),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", leadId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  return { success: true };
+}
+
+export async function deleteLeadAction(
+  leadId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_leads")
+    .delete()
+    .eq("id", leadId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  return { success: true };
+}
+
+// ────────────────────────────────────────────────────────────
+// COMPANIES
+// ────────────────────────────────────────────────────────────
+
+export async function fetchCompaniesAction(): Promise<CrmCompanySummary[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_companies")
+    .select("id, organization_id, name, drive_folder_url")
+    .eq("organization_id", orgId)
+    .order("name");
+
+  if (error || !data) return [];
+
+  return (data as DbCompany[]).map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    name: row.name,
+    driveFolderUrl: row.drive_folder_url ?? undefined,
+  }));
+}
+
+export async function createCompanyAction(input: {
+  name: string;
+  industry?: string;
+  website?: string;
+  notes?: string;
+}): Promise<{ success: boolean; company?: CrmCompanySummary; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data, error } = await supabase
+    .from("crm_companies")
+    .insert({
+      organization_id: orgId,
+      name: input.name,
+      industry: input.industry ?? null,
+      website: input.website ?? null,
+      notes: input.notes ?? null,
+      created_by_profile_id: user?.id ?? null,
+    })
+    .select()
+    .single();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" };
+  }
+
+  revalidatePath("/crm");
+  const row = data as DbCompany;
+  return {
+    success: true,
+    company: {
+      id: row.id,
+      organizationId: row.organization_id,
+      name: row.name,
+      driveFolderUrl: row.drive_folder_url ?? undefined,
+    },
+  };
+}
+
+export async function updateCompanyDriveFolderAction(
+  companyId: string,
+  driveFolderUrl: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_companies")
+    .update({ drive_folder_url: driveFolderUrl, updated_at: new Date().toISOString() })
+    .eq("id", companyId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/documents");
+  return { success: true };
+}
+
+// ────────────────────────────────────────────────────────────
+// CONTACTS
+// ────────────────────────────────────────────────────────────
+
+export async function fetchContactsAction(): Promise<CrmContactSummary[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_contacts")
+    .select("id, organization_id, company_id, name, email, phone, job_title")
+    .eq("organization_id", orgId)
+    .order("name");
+
+  if (error || !data) return [];
+
+  return (data as DbContact[]).map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    companyId: row.company_id ?? undefined,
+    name: row.name,
+    email: row.email ?? undefined,
+    phone: row.phone ?? undefined,
+    jobTitle: row.job_title ?? undefined,
+  }));
+}
+
+export async function createContactAction(input: {
+  name: string;
+  companyId?: string;
+  email?: string;
+  phone?: string;
+  jobTitle?: string;
+  notes?: string;
+}): Promise<{ success: boolean; contact?: CrmContactSummary; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data, error } = await supabase
+    .from("crm_contacts")
+    .insert({
+      organization_id: orgId,
+      company_id: input.companyId ?? null,
+      name: input.name,
+      email: input.email ?? null,
+      phone: input.phone ?? null,
+      job_title: input.jobTitle ?? null,
+      notes: input.notes ?? null,
+      created_by_profile_id: user?.id ?? null,
+    })
+    .select()
+    .single();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" };
+  }
+
+  revalidatePath("/crm");
+  const row = data as DbContact;
+  return {
+    success: true,
+    contact: {
+      id: row.id,
+      organizationId: row.organization_id,
+      companyId: row.company_id ?? undefined,
+      name: row.name,
+      email: row.email ?? undefined,
+      phone: row.phone ?? undefined,
+      jobTitle: row.job_title ?? undefined,
+    },
+  };
+}
+
+// ────────────────────────────────────────────────────────────
+// GROQ — Lead extraction from natural language
+// ────────────────────────────────────────────────────────────
+
+export async function extractLeadFromNaturalTextAction(text: string): Promise<{
+  success: boolean;
+  extracted?: {
+    topic: string;
+    companyName?: string;
+    contactName?: string;
+    contactEmail?: string;
+    contactPhone?: string;
+    source?: string;
+    notes?: string;
+    nextAction?: string;
+    nextActionDate?: string;
+  };
+  error?: string;
+}> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return { success: false, error: "GROQ_API_KEY not configured" };
+  }
+
+  try {
+    const Groq = (await import("groq-sdk")).default;
+    const groq = new Groq({ apiKey });
+
+    const today = new Date().toISOString().split("T")[0];
+
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: `Tu es un assistant CRM expert. Extrait les informations d'un lead commercial depuis un texte en langage naturel.
+Aujourd'hui: ${today}
+Retourne UNIQUEMENT un objet JSON valide avec ces champs (omets les champs manquants):
+{
+  "topic": "sujet/projet commercial (obligatoire)",
+  "companyName": "nom de l'entreprise",
+  "contactName": "nom du contact",
+  "contactEmail": "email si mentionné",
+  "contactPhone": "téléphone si mentionné",
+  "source": "source du lead (salon, LinkedIn, appel, etc.)",
+  "notes": "notes complémentaires",
+  "nextAction": "prochaine action à faire",
+  "nextActionDate": "date ISO YYYY-MM-DD si mentionnée"
+}`,
+        },
+        {
+          role: "user",
+          content: text,
+        },
+      ],
+      temperature: 0.1,
+      max_tokens: 512,
+    });
+
+    const content = completion.choices[0]?.message?.content ?? "";
+
+    // Extract JSON from response (handle potential markdown code blocks)
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { success: false, error: "Could not parse AI response" };
+    }
+
+    const extracted = JSON.parse(jsonMatch[0]);
+    return { success: true, extracted };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { success: false, error: message };
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// GROQ — Follow-up draft generation
+// ────────────────────────────────────────────────────────────
+
+export async function generateFollowUpDraftAction(lead: {
+  topic: string;
+  contactName?: string;
+  companyName?: string;
+  notes?: string;
+  nextAction?: string;
+}): Promise<{
+  success: boolean;
+  drafts?: { email: string; whatsapp: string };
+  error?: string;
+}> {
+  const apiKey = process.env.GROQ_API_KEY;
+  if (!apiKey) {
+    return { success: false, error: "GROQ_API_KEY not configured" };
+  }
+
+  try {
+    const Groq = (await import("groq-sdk")).default;
+    const groq = new Groq({ apiKey });
+
+    const context = [
+      lead.contactName && `Contact: ${lead.contactName}`,
+      lead.companyName && `Entreprise: ${lead.companyName}`,
+      `Sujet: ${lead.topic}`,
+      lead.notes && `Notes: ${lead.notes}`,
+      lead.nextAction && `Prochaine action prévue: ${lead.nextAction}`,
+    ]
+      .filter(Boolean)
+      .join("\n");
+
+    const completion = await groq.chat.completions.create({
+      model: "llama-3.3-70b-versatile",
+      messages: [
+        {
+          role: "system",
+          content: `Tu es un assistant commercial pour Qarizmi, une agence IA au Maroc.
+Génère des messages de relance professionnels et chaleureux en français.
+Retourne UNIQUEMENT un JSON valide:
+{
+  "email": "corps de l'email de relance (sans objet)",
+  "whatsapp": "message WhatsApp court et direct (max 3 lignes)"
+}`,
+        },
+        {
+          role: "user",
+          content: `Génère une relance pour ce lead:\n${context}`,
+        },
+      ],
+      temperature: 0.7,
+      max_tokens: 800,
+    });
+
+    const content = completion.choices[0]?.message?.content ?? "";
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { success: false, error: "Could not parse AI response" };
+    }
+
+    const drafts = JSON.parse(jsonMatch[0]);
+    return { success: true, drafts };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { success: false, error: message };
+  }
+}
