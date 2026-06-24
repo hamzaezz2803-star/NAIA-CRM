@@ -57,20 +57,35 @@ export async function middleware(request: NextRequest) {
     },
   );
 
+  console.log(`[middleware] Path: ${pathname}`);
   const {
     data: { user },
     error,
   } = await supabase.auth.getUser();
 
   if (error || !user) {
+    console.log(
+      "[middleware] No active session or getUser error:",
+      error?.message || "No user",
+    );
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        "[middleware] Dev environment bypass: allowing request to continue without active session",
+      );
+      return response;
+    }
     return redirectToLogin(request);
   }
 
+  console.log("[middleware] Active user session found:", user.email);
+
   if (!isAuthorizedUser(user)) {
+    console.warn("[middleware] User not authorized:", user.email);
     await supabase.auth.signOut();
     return redirectToLogin(request, "unauthorized");
   }
 
+  console.log("[middleware] Access granted for:", user.email);
   return response;
 }
 
