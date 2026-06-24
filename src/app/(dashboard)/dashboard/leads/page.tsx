@@ -13,7 +13,6 @@ import {
   Sparkles,
   AlertCircle,
   X,
-  ChevronDown,
   MoveRight,
   Trash2,
   Calendar,
@@ -56,7 +55,7 @@ const COLUMNS: {
 export default function LeadsPage() {
   const [leads, setLeads] = useState<CrmLeadSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [isPending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
 
   // Modal states
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -316,7 +315,7 @@ export default function LeadsPage() {
                 Saisie en langage naturel (IA Groq)
               </div>
               <p className="mt-1 text-xs text-teal-600">
-                Décrivez le lead et l'IA remplira le formulaire automatiquement.
+                Décrivez le lead et l&apos;IA remplira le formulaire automatiquement.
               </p>
               <textarea
                 id="natural-text-input"
@@ -334,15 +333,14 @@ export default function LeadsPage() {
               <Button
                 type="button"
                 variant="outline"
-                size="sm"
-                className="mt-2 border-teal-300 text-teal-700 hover:bg-teal-50"
+                className="mt-2 h-8 text-xs px-2.5 border-teal-300 text-teal-700 hover:bg-teal-50"
                 disabled={isExtracting || !naturalText.trim()}
                 onClick={handleExtract}
               >
                 {isExtracting ? (
                   <><Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> Extraction…</>
                 ) : (
-                  <><Sparkles className="mr-1.5 h-3.5 w-3.5" /> Extraire avec l'IA</>
+                  <><Sparkles className="mr-1.5 h-3.5 w-3.5" /> Extraire avec l&apos;IA</>
                 )}
               </Button>
             </div>
@@ -651,8 +649,6 @@ function LeadCard({
   onDelete: (id: string) => void;
   onGenerateDraft: (lead: CrmLeadSummary) => void;
 }) {
-  const [isMenuOpen, setIsMenuOpen] = useState(false);
-
   // Parse notes to extract company / contact lines
   const noteLines = (lead.notes ?? "").split("\n");
   const companyLine = noteLines.find((l) => l.startsWith("Entreprise:"))?.replace("Entreprise:", "").trim();

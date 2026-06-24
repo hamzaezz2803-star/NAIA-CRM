@@ -181,7 +181,7 @@ export default function SettingsPage() {
       {/* Environment variables reference */}
       <section>
         <h2 className="mb-3 text-sm font-semibold text-stone-700">
-          Variables d'environnement attendues
+          Variables d&apos;environnement attendues
         </h2>
         <div className="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm">
           <table className="w-full text-sm">

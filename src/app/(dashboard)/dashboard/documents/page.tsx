@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from "react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Button } from "@/components/ui/button";
 import {
   FolderOpen,
   ExternalLink,
@@ -11,7 +10,6 @@ import {
   Building2,
   FileText,
   Plus,
-  AlertCircle,
 } from "lucide-react";
 import { fetchCompaniesAction } from "@/features/crm/actions";
 import type { CrmCompanySummary } from "@/features/crm/contracts";

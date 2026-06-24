@@ -142,8 +142,8 @@ export default async function DashboardPage() {
               <span className="mb-1 block font-semibold text-teal-700">
                 Exemple de saisie :
               </span>
-              "J'ai parlé à Karim de Atlas Telecom pour un projet IA CRM, à
-              relancer vendredi."
+              &ldquo;J&apos;ai parlé à Karim de Atlas Telecom pour un projet IA CRM, à
+              relancer vendredi.&rdquo;
             </p>
 
             <Link

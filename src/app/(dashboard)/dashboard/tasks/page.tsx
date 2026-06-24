@@ -1,9 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { Button } from "@/components/ui/button";
 import {
   CheckCircle2,
   Calendar,
@@ -14,7 +12,6 @@ import {
   Circle,
 } from "lucide-react";
 import { fetchLeadsAction } from "@/features/crm/actions";
-import type { CrmLeadSummary } from "@/features/crm/contracts";
 
 type TaskItem = {
   leadId: string;
@@ -101,7 +98,7 @@ export default function TasksPage() {
             Aucune tâche en attente
           </h3>
           <p className="mx-auto mt-2 max-w-sm text-sm leading-6 text-stone-500">
-            Toutes les actions de suivi sont à jour. L'IA ajoutera automatiquement
+            Toutes les actions de suivi sont à jour. L&apos;IA ajoutera automatiquement
             des relances basées sur vos leads.
           </p>
         </div>
