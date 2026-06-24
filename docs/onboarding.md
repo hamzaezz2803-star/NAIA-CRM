@@ -18,7 +18,8 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open http://localhost:3000.
+Open http://localhost:3000 and sign in with a Supabase Auth user that is
+allowed by the local access policy.
 
 Production app: https://os.qarizmi.com.
 
@@ -50,7 +51,8 @@ Open a pull request into `main` after checks pass.
 
 ## Supabase
 
-The app runs without hosted Supabase credentials, but real auth and database work require a Supabase project.
+The app requires hosted Supabase credentials for internal routes. Copy the
+public project URL and publishable key into `.env.local`.
 
 After Ali links the project:
 
@@ -59,5 +61,9 @@ supabase db push
 ```
 
 Hosted project ref: `juqhonvapkrlylvseolu`.
+
+In production, keep Supabase public email signups disabled and create or invite
+users from the Supabase Auth dashboard. Use `AUTH_ALLOWED_EMAILS` when access
+should be restricted to an exact list of people.
 
 Never commit `.env.local` or any service key.

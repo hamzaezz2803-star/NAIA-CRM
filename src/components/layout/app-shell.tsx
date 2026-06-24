@@ -10,6 +10,7 @@ import {
   FileText,
   Handshake,
   LayoutDashboard,
+  LogOut,
   Menu,
   PlugZap,
   Settings,
@@ -109,9 +110,7 @@ export function AppShell({
                 {session.organization.name}
               </p>
               <p className="hidden text-xs text-stone-500 sm:block">
-                {session.isSupabaseConfigured
-                  ? "Supabase project configured"
-                  : "Local auth scaffold"}
+                Signed in with Supabase
               </p>
             </div>
           </div>
@@ -137,6 +136,16 @@ export function AppShell({
               </span>
               <ChevronDown className="hidden h-4 w-4 text-stone-500 sm:block" />
             </button>
+            <form action="/auth/sign-out" method="post">
+              <Button
+                aria-label="Sign out"
+                className="h-9 w-9 px-0"
+                type="submit"
+                variant="ghost"
+              >
+                <LogOut className="h-4 w-4" />
+              </Button>
+            </form>
           </div>
         </header>
         <main className="mx-auto w-full max-w-7xl px-4 py-8 md:px-6 lg:px-8">

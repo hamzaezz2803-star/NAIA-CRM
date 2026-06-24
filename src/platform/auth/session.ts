@@ -1,8 +1,13 @@
+import type { User } from "@supabase/supabase-js";
+import { redirect } from "next/navigation";
+
+import { isAuthorizedUser } from "@/platform/auth/access";
 import { isSupabaseConfigured } from "@/platform/auth/config";
+import { getCurrentSupabaseUser } from "@/platform/auth/supabase-server";
 import type { OrganizationRole } from "@/platform/core/permissions";
 
 export type AppSession = {
-  authMode: "local-scaffold" | "supabase-project-configured";
+  authMode: "supabase";
   isSupabaseConfigured: boolean;
   user: {
     name: string;
@@ -17,13 +22,22 @@ export type AppSession = {
 
 export async function getAppSession(): Promise<AppSession> {
   const configured = isSupabaseConfigured();
+  const user = await getCurrentSupabaseUser();
+
+  if (!configured || !user) {
+    redirect("/login");
+  }
+
+  if (!isAuthorizedUser(user)) {
+    redirect("/login?error=unauthorized");
+  }
 
   return {
-    authMode: configured ? "supabase-project-configured" : "local-scaffold",
+    authMode: "supabase",
     isSupabaseConfigured: configured,
     user: {
-      name: "Ali El Abbassy",
-      email: "ali@qarizmi.com",
+      name: getDisplayName(user),
+      email: user.email ?? "unknown@qarizmi.com",
       role: "owner",
     },
     organization: {
@@ -31,4 +45,23 @@ export async function getAppSession(): Promise<AppSession> {
       slug: "qarizmi",
     },
   };
+}
+
+function getDisplayName(user: User) {
+  const metadataName =
+    getStringMetadata(user, "full_name") ??
+    getStringMetadata(user, "name") ??
+    getStringMetadata(user, "display_name");
+
+  if (metadataName) {
+    return metadataName;
+  }
+
+  return user.email?.split("@")[0] ?? "Qarizmi user";
+}
+
+function getStringMetadata(user: User, key: string) {
+  const value = user.user_metadata[key];
+
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

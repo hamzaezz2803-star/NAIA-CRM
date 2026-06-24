@@ -41,7 +41,9 @@ CRM-specific tables should be introduced in a later CRM migration and include `o
 
 ## Authentication And Permissions
 
-Supabase is the intended authentication provider. The current app runs with a local auth scaffold until Supabase project variables are connected. Client code uses `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, with a legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` fallback for older projects.
+Supabase is the authentication provider. The `(app)` route group is protected by middleware and the app layout reads the authenticated Supabase user before rendering internal pages. Client code uses `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, with a legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` fallback for older projects.
+
+Application access is also checked against `AUTH_ALLOWED_EMAILS` when it is set, otherwise against `AUTH_ALLOWED_EMAIL_DOMAIN`, which defaults to `qarizmi.com`. Production should keep public signup disabled in Supabase and invite users explicitly.
 
 The current hosted Supabase project ref is `juqhonvapkrlylvseolu`.
 
@@ -57,7 +59,7 @@ External actions must flow through human approval before provider execution.
 
 ## Current Trade-offs
 
-- Authentication is scaffolded rather than fully hosted because Supabase project creation requires external account setup.
+- Auth user creation and invite policy still live in the Supabase dashboard.
 - The Dashboard shows foundation state only, not synthetic operational metrics.
 - CRM business tables are not created yet to keep Hamza's implementation isolated.
 - No Trello runtime dependency exists.
@@ -69,5 +71,5 @@ External actions must flow through human approval before provider execution.
 - Trello import.
 - AI assistants.
 - OAuth provider flows.
-- Production Supabase/Vercel projects.
+- Rich profile and organization membership synchronization after login.
 - Complex multi-agent orchestration.

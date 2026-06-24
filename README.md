@@ -6,7 +6,7 @@ Qarizmi OS is the internal operating system and AI workflow platform for Qarizmi
 
 This repository currently contains the platform shell and shared foundations:
 
-- Responsive authenticated app shell and `/login` scaffold.
+- Responsive authenticated app shell and Supabase-backed `/login`.
 - Navigation for Dashboard, CRM, Meetings, Proposals, Projects, HR, Finance, Automations, Integrations, and Settings.
 - Honest Dashboard empty state with no fake business metrics.
 - CRM route and handoff boundary for Hamza's Sprint 1.
@@ -35,7 +35,8 @@ npm run dev
 
 Open http://localhost:3000.
 
-The app runs with a local auth scaffold when Supabase variables are blank.
+The app requires Supabase authentication for all internal routes. Public users
+are redirected to `/login`.
 
 ## Environment Variables
 
@@ -46,6 +47,8 @@ Required for real Supabase authentication:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY` for server-only privileged tasks when implemented
+- `AUTH_ALLOWED_EMAIL_DOMAIN`, defaulting to `qarizmi.com`
+- `AUTH_ALLOWED_EMAILS`, optional comma-separated exact allowlist
 
 Current hosted Supabase project:
 
@@ -98,6 +101,11 @@ Hamza should start from `docs/crm-handoff.md` and work primarily in:
 ## Deployment Overview
 
 The production app is deployed on Vercel at `https://os.qarizmi.com`. Connect Supabase through environment variables in Vercel. Hosted Supabase and Vercel project ownership should remain under Qarizmi-controlled accounts.
+
+Auth is invite-only from the app perspective: there is no public signup UI.
+For production, create users in Supabase Auth and disable public email signups
+in the Supabase dashboard. Set `AUTH_ALLOWED_EMAILS` in Vercel when access
+should be limited to exact people instead of the whole Qarizmi domain.
 
 ## Documentation
 

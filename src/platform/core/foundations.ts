@@ -16,7 +16,8 @@ export const platformFoundations = [
   {
     name: "Authentication",
     status: "pending-external-setup",
-    summary: "Supabase-ready configuration without committed credentials.",
+    summary:
+      "Supabase session enforcement with external user invites and access policy.",
   },
   {
     name: "Organization model",
