@@ -976,9 +976,10 @@ async function syncLeadToGoogleCalendar(
             },
           );
 
-          // Remove the event ID tag from notes
+          // Remove the event ID and link tags from notes
           const updatedNotes = notesStr
             .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/, "")
+            .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/, "")
             .trim();
 
           await supabase
@@ -1003,6 +1004,7 @@ async function syncLeadToGoogleCalendar(
 
     const cleanNotes = notesStr
       .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]/g, "")
+      .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]/g, "")
       .trim();
 
     const eventPayload = {
@@ -1030,6 +1032,25 @@ async function syncLeadToGoogleCalendar(
       );
 
       if (updateRes.ok) {
+        const event = await updateRes.json();
+        const htmlLink = event.htmlLink;
+        if (!notesStr.includes("[Google Calendar Event Link:")) {
+          const cleanLinkNotes = notesStr
+            .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
+            .trim();
+
+          const updatedNotes = cleanLinkNotes
+            ? `${cleanLinkNotes}\n[Google Calendar Event Link: ${htmlLink}]`
+            : `[Google Calendar Event Link: ${htmlLink}]`;
+
+          await supabase
+            .from("crm_leads")
+            .update({
+              notes: updatedNotes,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", leadId);
+        }
         return;
       }
     }
@@ -1049,10 +1070,16 @@ async function syncLeadToGoogleCalendar(
     if (createRes.ok) {
       const event = await createRes.json();
       const newEventId = event.id;
+      const htmlLink = event.htmlLink;
 
-      const updatedNotes = notesStr
-        ? `${notesStr}\n[Google Calendar Event ID: ${newEventId}]`
-        : `[Google Calendar Event ID: ${newEventId}]`;
+      const cleanIdNotes = notesStr
+        .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/g, "")
+        .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
+        .trim();
+
+      const updatedNotes = cleanIdNotes
+        ? `${cleanIdNotes}\n[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Link: ${htmlLink}]`
+        : `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Link: ${htmlLink}]`;
 
       await supabase
         .from("crm_leads")

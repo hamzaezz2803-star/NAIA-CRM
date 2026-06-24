@@ -153,6 +153,7 @@ export default function LeadsPage() {
 
   // Google Drive folder creation state
   const [driveLink, setDriveLink] = useState<string | null>(null);
+  const [calendarLink, setCalendarLink] = useState<string | null>(null);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
 
@@ -163,6 +164,12 @@ export default function LeadsPage() {
       /\[Google Drive Folder:[^\]]*\]\((https:\/\/[^)]+)\)/,
     );
     return match ? match[1] : null;
+  };
+
+  const extractCalendarLinkFromNotes = (notes?: string): string | null => {
+    if (!notes) return null;
+    const match = notes.match(/\[Google Calendar Event Link:\s*([^\]]+)\]/);
+    return match ? match[1].trim() : null;
   };
 
   // Load data on mount
@@ -592,6 +599,9 @@ export default function LeadsPage() {
                           setSelectedLead(lead);
                           setDrafts(null);
                           setDriveLink(extractDriveLinkFromNotes(lead.notes));
+                          setCalendarLink(
+                            extractCalendarLinkFromNotes(lead.notes),
+                          );
                           setModalError(null);
                         }}
                         onMove={handleMoveStatus}
@@ -686,6 +696,9 @@ export default function LeadsPage() {
                               setDriveLink(
                                 extractDriveLinkFromNotes(lead.notes),
                               );
+                              setCalendarLink(
+                                extractCalendarLinkFromNotes(lead.notes),
+                              );
                               setModalError(null);
                             }}
                             className="hover:text-teal-700 hover:underline text-left font-semibold text-stone-900 block"
@@ -763,6 +776,9 @@ export default function LeadsPage() {
                                 setDrafts(null);
                                 setDriveLink(
                                   extractDriveLinkFromNotes(lead.notes),
+                                );
+                                setCalendarLink(
+                                  extractCalendarLinkFromNotes(lead.notes),
                                 );
                                 setModalError(null);
                               }}
@@ -920,6 +936,9 @@ export default function LeadsPage() {
                                 setDrafts(null);
                                 setDriveLink(
                                   extractDriveLinkFromNotes(lead.notes),
+                                );
+                                setCalendarLink(
+                                  extractCalendarLinkFromNotes(lead.notes),
                                 );
                                 setModalError(null);
                               }}
@@ -1202,52 +1221,65 @@ export default function LeadsPage() {
                 Actions d&apos;automatisation
               </h4>
 
-              <div className="grid grid-cols-2 gap-3">
-                <Button
-                  onClick={() => handleGenerateDraft(selectedLead)}
-                  disabled={isGenerating}
-                  variant="outline"
-                  className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50"
-                >
-                  {isGenerating ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                      Génération...
-                    </>
-                  ) : (
-                    <>
-                      <Bot className="mr-2 h-4 w-4" /> Relance IA Draft
-                    </>
-                  )}
-                </Button>
-
-                {driveLink ? (
+              <div className="flex flex-col gap-3">
+                <div className="grid grid-cols-2 gap-3">
                   <Button
-                    onClick={() => window.open(driveLink, "_blank")}
-                    variant="outline"
-                    className="text-xs border-emerald-250 bg-emerald-50/20 text-emerald-750 hover:bg-emerald-50"
-                  >
-                    <FolderPlus className="mr-2 h-4 w-4 text-emerald-600" />
-                    Ouvrir Drive ↗
-                  </Button>
-                ) : (
-                  <Button
-                    onClick={() => handleCreateDriveFolder(selectedLead)}
-                    disabled={isCreatingFolder}
+                    onClick={() => handleGenerateDraft(selectedLead)}
+                    disabled={isGenerating}
                     variant="outline"
                     className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50"
                   >
-                    {isCreatingFolder ? (
+                    {isGenerating ? (
                       <>
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Dossier...
+                        Génération...
                       </>
                     ) : (
                       <>
-                        <FolderPlus className="mr-2 h-4 w-4 text-teal-600" />
-                        Dossier Drive Client
+                        <Bot className="mr-2 h-4 w-4" /> Relance IA Draft
                       </>
                     )}
+                  </Button>
+
+                  {driveLink ? (
+                    <Button
+                      onClick={() => window.open(driveLink, "_blank")}
+                      variant="outline"
+                      className="text-xs border-emerald-255 bg-emerald-50/20 text-emerald-750 hover:bg-emerald-50"
+                    >
+                      <FolderPlus className="mr-2 h-4 w-4 text-emerald-600" />
+                      Ouvrir Drive ↗
+                    </Button>
+                  ) : (
+                    <Button
+                      onClick={() => handleCreateDriveFolder(selectedLead)}
+                      disabled={isCreatingFolder}
+                      variant="outline"
+                      className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50"
+                    >
+                      {isCreatingFolder ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Dossier...
+                        </>
+                      ) : (
+                        <>
+                          <FolderPlus className="mr-2 h-4 w-4 text-teal-600" />
+                          Dossier Drive Client
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
+
+                {calendarLink && (
+                  <Button
+                    onClick={() => window.open(calendarLink, "_blank")}
+                    variant="outline"
+                    className="w-full text-xs border-amber-250 bg-amber-50/20 text-amber-750 hover:bg-amber-50"
+                  >
+                    <Calendar className="mr-2 h-4 w-4 text-amber-600" />
+                    Voir dans Google Calendar ↗
                   </Button>
                 )}
               </div>
