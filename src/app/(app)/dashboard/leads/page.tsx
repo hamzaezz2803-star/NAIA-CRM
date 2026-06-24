@@ -331,17 +331,26 @@ export default function LeadsPage() {
     lead: CrmLeadSummary,
     newStatus: CrmLeadStatus,
   ) {
+    const moveToastId = toast.loading("Mise à jour du statut...");
     startTransition(async () => {
-      await updateLeadStatusAction(lead.id, newStatus);
-      setLeads((prev) =>
-        prev.map((l) => (l.id === lead.id ? { ...l, status: newStatus } : l)),
-      );
+      const res = await updateLeadStatusAction(lead.id, newStatus);
+      if (res.success) {
+        setLeads((prev) =>
+          prev.map((l) => (l.id === lead.id ? { ...l, status: newStatus } : l)),
+        );
+        toast.success("Statut du lead mis à jour !", { id: moveToastId });
+      } else {
+        toast.error(res.error || "Erreur de mise à jour du statut.", {
+          id: moveToastId,
+        });
+      }
     });
   }
 
   // ── Manual status update ────────────────────────
   async function handleUpdateStatus(newStatusVal: CrmLeadStatus) {
     if (!selectedLead) return;
+    const updateToastId = toast.loading("Mise à jour du statut...");
     const res = await updateLeadAction(selectedLead.id, {
       status: newStatusVal,
     });
@@ -352,17 +361,28 @@ export default function LeadsPage() {
           l.id === selectedLead.id ? { ...l, status: newStatusVal } : l,
         ),
       );
+      toast.success("Statut mis à jour avec succès !", { id: updateToastId });
     } else {
-      setModalError(res.error || "Impossible de déplacer le lead.");
+      const err = res.error || "Impossible de déplacer le lead.";
+      setModalError(err);
+      toast.error(err, { id: updateToastId });
     }
   }
 
   // ── Delete lead ─────────────────────────────────────────
   async function handleDelete(leadId: string) {
+    const deleteToastId = toast.loading("Suppression du lead...");
     startTransition(async () => {
-      await deleteLeadAction(leadId);
-      setLeads((prev) => prev.filter((l) => l.id !== leadId));
-      if (selectedLead?.id === leadId) setSelectedLead(null);
+      const res = await deleteLeadAction(leadId);
+      if (res.success) {
+        setLeads((prev) => prev.filter((l) => l.id !== leadId));
+        if (selectedLead?.id === leadId) setSelectedLead(null);
+        toast.success("Lead supprimé avec succès.", { id: deleteToastId });
+      } else {
+        toast.error(res.error || "Impossible de supprimer le lead.", {
+          id: deleteToastId,
+        });
+      }
     });
   }
 
