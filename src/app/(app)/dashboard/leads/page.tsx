@@ -156,6 +156,7 @@ export default function LeadsPage() {
   const [driveLink, setDriveLink] = useState<string | null>(null);
   const [calendarLink, setCalendarLink] = useState<string | null>(null);
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
+  const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
 
   // Helper: extract a Google Drive link already stored in lead notes
@@ -423,6 +424,41 @@ export default function LeadsPage() {
       setModalError(res.error || "Impossible de créer le dossier Drive.");
     }
     setIsCreatingFolder(false);
+  }
+
+  // ── Sync with Google Calendar manually ─────────────────
+  async function handleSyncCalendar(lead: CrmLeadSummary) {
+    setModalError(null);
+    setIsSyncingCalendar(true);
+
+    if (!isGoogleConnected) {
+      setModalError(
+        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenêtre...",
+      );
+      handleConnectGoogle();
+      setIsSyncingCalendar(false);
+      return;
+    }
+
+    const res = await syncLeadToGoogleCalendarAction(lead.id);
+
+    if (res.success && res.calendarLink) {
+      setCalendarLink(res.calendarLink);
+
+      // Update notes in local state
+      const updatedNotes = lead.notes
+        ? `${lead.notes}\n[Google Calendar Event Link: ${res.calendarLink}]`
+        : `[Google Calendar Event Link: ${res.calendarLink}]`;
+
+      const updatedLead = { ...lead, notes: updatedNotes };
+      setSelectedLead(updatedLead);
+      setLeads(leads.map((l) => (l.id === lead.id ? updatedLead : l)));
+    } else {
+      setModalError(
+        res.error || "Impossible de synchroniser avec Google Calendar.",
+      );
+    }
+    setIsSyncingCalendar(false);
   }
 
   // ── Helpers ─────────────────────────────────────────────
@@ -1273,7 +1309,7 @@ export default function LeadsPage() {
                   )}
                 </div>
 
-                {calendarLink && (
+                {calendarLink ? (
                   <Button
                     onClick={() => window.open(calendarLink, "_blank")}
                     variant="outline"
@@ -1282,7 +1318,26 @@ export default function LeadsPage() {
                     <Calendar className="mr-2 h-4 w-4 text-amber-600" />
                     Voir dans Google Calendar ↗
                   </Button>
-                )}
+                ) : selectedLead.nextActionDate ? (
+                  <Button
+                    onClick={() => handleSyncCalendar(selectedLead)}
+                    disabled={isSyncingCalendar}
+                    variant="outline"
+                    className="w-full text-xs border-amber-200 bg-amber-50/15 text-amber-800 hover:bg-amber-50"
+                  >
+                    {isSyncingCalendar ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin text-amber-600" />
+                        Synchronisation...
+                      </>
+                    ) : (
+                      <>
+                        <Calendar className="mr-2 h-4 w-4 text-amber-600" />
+                        Ajouter à Google Calendar
+                      </>
+                    )}
+                  </Button>
+                ) : null}
               </div>
 
               {/* Status workflow selector */}

@@ -1124,4 +1124,3 @@ export async function syncLeadToGoogleCalendarAction(
 
   return { success: true, calendarLink: link };
 }
-
