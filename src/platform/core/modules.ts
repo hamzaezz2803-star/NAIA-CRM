@@ -37,10 +37,10 @@ export const platformModules = [
     id: "crm",
     name: "CRM",
     shortName: "CRM",
-    href: "/crm",
-    status: "ready-for-build",
+    href: "/dashboard/leads",
+    status: "live",
     owner: "crm",
-    summary: "Native sales pipeline module reserved for Hamza's Sprint 1.",
+    summary: "Sales pipeline with AI extraction, drafts, and Google Drive.",
     handoffPath: "docs/crm-handoff.md",
   },
   {

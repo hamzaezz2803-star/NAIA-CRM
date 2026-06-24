@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   CrmLeadStatus,
   CrmLeadSummary,
@@ -75,6 +76,31 @@ async function getOrgId(): Promise<string | null> {
     .single();
 
   return membership?.organization_id ?? null;
+}
+
+function sanitizeJsonString(str: string): string {
+  let inString = false;
+  let result = "";
+  for (let i = 0; i < str.length; i++) {
+    const char = str[i];
+    if (char === '"' && (i === 0 || str[i - 1] !== "\\")) {
+      inString = !inString;
+      result += char;
+    } else if (inString) {
+      if (char === "\n") {
+        result += "\\n";
+      } else if (char === "\r") {
+        result += "\\r";
+      } else if (char === "\t") {
+        result += "\\t";
+      } else {
+        result += char;
+      }
+    } else {
+      result += char;
+    }
+  }
+  return result;
 }
 
 // ────────────────────────────────────────────────────────────
@@ -486,7 +512,7 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
           role: "system",
           content: `Tu es un assistant CRM expert. Extrait les informations d'un lead commercial depuis un texte en langage naturel.
 Aujourd'hui: ${today}
-Retourne UNIQUEMENT un objet JSON valide avec ces champs (omets les champs manquants):
+Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
 {
   "topic": "sujet/projet commercial (obligatoire)",
   "companyName": "nom de l'entreprise",
@@ -504,6 +530,7 @@ Retourne UNIQUEMENT un objet JSON valide avec ces champs (omets les champs manqu
           content: text,
         },
       ],
+      response_format: { type: "json_object" },
       temperature: 0.1,
       max_tokens: 512,
     });
@@ -516,7 +543,8 @@ Retourne UNIQUEMENT un objet JSON valide avec ces champs (omets les champs manqu
       return { success: false, error: "Could not parse AI response" };
     }
 
-    const extracted = JSON.parse(jsonMatch[0]);
+    const sanitizedContent = sanitizeJsonString(jsonMatch[0]);
+    const extracted = JSON.parse(sanitizedContent);
     return { success: true, extracted };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -576,6 +604,7 @@ Retourne UNIQUEMENT un JSON valide:
           content: `Génère une relance pour ce lead:\n${context}`,
         },
       ],
+      response_format: { type: "json_object" },
       temperature: 0.7,
       max_tokens: 800,
     });
@@ -586,10 +615,251 @@ Retourne UNIQUEMENT un JSON valide:
       return { success: false, error: "Could not parse AI response" };
     }
 
-    const drafts = JSON.parse(jsonMatch[0]);
+    const sanitizedContent = sanitizeJsonString(jsonMatch[0]);
+    const drafts = JSON.parse(sanitizedContent);
     return { success: true, drafts };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
+  }
+}
+
+// ────────────────────────────────────────────────────────────
+// GOOGLE DRIVE INTEGRATION ACTIONS
+// ────────────────────────────────────────────────────────────
+
+export async function checkGoogleAuthAction(): Promise<boolean> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return false;
+
+  const orgId = await getOrgId();
+  if (!orgId) return false;
+
+  const { data, error } = await supabase
+    .from("integration_connections")
+    .select("status")
+    .eq("organization_id", orgId)
+    .eq("provider", "google")
+    .limit(1)
+    .maybeSingle();
+
+  if (error || !data) return false;
+
+  return data.status === "connected";
+}
+
+export async function disconnectGoogleAuthAction(): Promise<{
+  success: boolean;
+  error?: string;
+}> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("integration_connections")
+    .delete()
+    .eq("organization_id", orgId)
+    .eq("provider", "google");
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  revalidatePath("/dashboard/settings");
+  revalidatePath("/dashboard/documents");
+
+  return { success: true };
+}
+
+export async function createGoogleDriveFolderAction(
+  leadId: string,
+  companyName: string,
+): Promise<{ success: boolean; folderLink?: string; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  // Fetch google connection details
+  const { data: connection, error: connError } = await supabase
+    .from("integration_connections")
+    .select("*")
+    .eq("organization_id", orgId)
+    .eq("provider", "google")
+    .limit(1)
+    .maybeSingle();
+
+  if (connError || !connection || connection.status !== "connected") {
+    return { success: false, error: "Google integration not connected" };
+  }
+
+  // Get active access token
+  const accessToken = await getOrRefreshGoogleToken(
+    supabase,
+    orgId,
+    connection,
+  );
+  if (!accessToken) {
+    return {
+      success: false,
+      error: "Failed to authenticate with Google APIs",
+    };
+  }
+
+  try {
+    // Create folder in Google Drive
+    const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: `Client - ${companyName}`,
+        mimeType: "application/vnd.google-apps.folder",
+      }),
+    });
+
+    if (!createRes.ok) {
+      const errText = await createRes.text();
+      return { success: false, error: `Google Drive API error: ${errText}` };
+    }
+
+    const folder = await createRes.json();
+    const folderId = folder.id;
+    const folderLink = `https://drive.google.com/drive/folders/${folderId}`;
+
+    // Create subfolders inside the client folder
+    const subfolders = [
+      "01_Pitch",
+      "02_Meeting Notes",
+      "03_Proposal",
+      "04_Contract",
+      "05_Delivery",
+    ];
+
+    for (const subName of subfolders) {
+      await fetch("https://www.googleapis.com/drive/v3/files", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: subName,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: [folderId],
+        }),
+      });
+    }
+
+    // Get lead notes
+    const { data: lead, error: leadError } = await supabase
+      .from("crm_leads")
+      .select("company_id, notes")
+      .eq("id", leadId)
+      .eq("organization_id", orgId)
+      .single();
+
+    if (!leadError && lead) {
+      // Update company drive folder url if company exists
+      if (lead.company_id) {
+        await supabase
+          .from("crm_companies")
+          .update({
+            drive_folder_url: folderLink,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", lead.company_id);
+      }
+
+      // Update lead notes to append the drive link
+      const existingNotes = lead.notes || "";
+      const updatedNotes = existingNotes
+        ? `${existingNotes}\n[Google Drive Folder: Client - ${companyName}](${folderLink})`
+        : `[Google Drive Folder: Client - ${companyName}](${folderLink})`;
+
+      await supabase
+        .from("crm_leads")
+        .update({
+          notes: updatedNotes,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", leadId);
+    }
+
+    revalidatePath("/crm");
+    revalidatePath("/dashboard/leads");
+    revalidatePath("/dashboard/documents");
+
+    return { success: true, folderLink };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return { success: false, error: message };
+  }
+}
+
+async function getOrRefreshGoogleToken(
+  supabase: SupabaseClient,
+  orgId: string,
+  connection: { id: string; encrypted_token_reference: string | null },
+): Promise<string | null> {
+  const tokenData = JSON.parse(connection.encrypted_token_reference || "{}");
+  const now = Date.now();
+
+  // If token is valid for more than 5 minutes, use it
+  if (tokenData.expiry_date && tokenData.expiry_date > now + 300000) {
+    return tokenData.access_token;
+  }
+
+  // Token is expired, refresh it
+  const clientId = process.env.GOOGLE_CLIENT_ID;
+  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
+
+  if (!clientId || !clientSecret || !tokenData.refresh_token) {
+    return null;
+  }
+
+  try {
+    const res = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        refresh_token: tokenData.refresh_token,
+        grant_type: "refresh_token",
+      }),
+    });
+
+    if (!res.ok) {
+      return null;
+    }
+
+    const data = await res.json();
+    const updatedTokenData = {
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || tokenData.refresh_token,
+      expiry_date: Date.now() + data.expires_in * 1000,
+    };
+
+    // Update connection credentials in DB
+    await supabase
+      .from("integration_connections")
+      .update({
+        encrypted_token_reference: JSON.stringify(updatedTokenData),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", connection.id);
+
+    return data.access_token;
+  } catch {
+    return null;
   }
 }

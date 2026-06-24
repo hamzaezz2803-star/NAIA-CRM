@@ -25,10 +25,46 @@ export async function getAppSession(): Promise<AppSession> {
   const user = await getCurrentSupabaseUser();
 
   if (!configured || !user) {
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        "[getAppSession] Dev bypass: no active user session, returning mock developer session",
+      );
+      return {
+        authMode: "supabase",
+        isSupabaseConfigured: configured,
+        user: {
+          name: "Hamza (Dev Bypass)",
+          email: "hamza@qarizmi.com",
+          role: "owner",
+        },
+        organization: {
+          name: "Qarizmi Dev",
+          slug: "qarizmi",
+        },
+      };
+    }
     redirect("/login");
   }
 
   if (!isAuthorizedUser(user)) {
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        "[getAppSession] Dev bypass: unauthorized user, returning mock developer session",
+      );
+      return {
+        authMode: "supabase",
+        isSupabaseConfigured: configured,
+        user: {
+          name: getDisplayName(user),
+          email: user.email ?? "unknown@qarizmi.com",
+          role: "owner",
+        },
+        organization: {
+          name: "Qarizmi Dev",
+          slug: "qarizmi",
+        },
+      };
+    }
     redirect("/login?error=unauthorized");
   }
 

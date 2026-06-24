@@ -68,6 +68,12 @@ export async function middleware(request: NextRequest) {
       "[middleware] No active session or getUser error:",
       error?.message || "No user",
     );
+    if (process.env.NODE_ENV === "development") {
+      console.log(
+        "[middleware] Dev environment bypass: allowing request to continue without active session",
+      );
+      return response;
+    }
     return redirectToLogin(request);
   }
 
