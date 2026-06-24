@@ -605,6 +605,190 @@ export default function LeadsPage() {
             })}
           </div>
         </div>
+      ) : viewMode === "list" ? (
+        <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[800px] border-collapse text-left text-sm">
+              <thead className="border-b border-stone-200 bg-stone-50/75">
+                <tr>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                  >
+                    Sujet
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                  >
+                    Entreprise / Contact
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                  >
+                    Statut
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                  >
+                    Prochaine Action
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                  >
+                    Créé le
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-6 py-3.5 text-right text-xs font-semibold uppercase tracking-wider text-stone-500"
+                  >
+                    Actions
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-stone-100">
+                {leads.length === 0 ? (
+                  <tr>
+                    <td
+                      colSpan={6}
+                      className="px-6 py-10 text-center text-sm text-stone-400"
+                    >
+                      Aucun lead trouvé.
+                    </td>
+                  </tr>
+                ) : (
+                  leads.map((lead) => {
+                    const noteLines = (lead.notes ?? "").split("\n");
+                    const companyName = noteLines
+                      .find((l) => l.startsWith("Entreprise:"))
+                      ?.replace("Entreprise:", "")
+                      .trim();
+                    const contactName = noteLines
+                      .find((l) => l.startsWith("Contact:"))
+                      ?.replace("Contact:", "")
+                      .trim();
+
+                    const colConfig = getColumnConfig(lead.status);
+
+                    return (
+                      <tr
+                        key={lead.id}
+                        className="hover:bg-stone-50/50 transition"
+                      >
+                        <td className="px-6 py-4 font-semibold text-stone-900">
+                          <button
+                            onClick={() => {
+                              setSelectedLead(lead);
+                              setDrafts(null);
+                              setDriveLink(
+                                extractDriveLinkFromNotes(lead.notes),
+                              );
+                              setModalError(null);
+                            }}
+                            className="hover:text-teal-700 hover:underline text-left font-semibold text-stone-900 block"
+                          >
+                            {lead.topic}
+                          </button>
+                        </td>
+                        <td className="px-6 py-4 text-stone-600">
+                          <div className="space-y-0.5">
+                            {companyName && (
+                              <div className="flex items-center gap-1.5 text-xs font-medium text-stone-700">
+                                <Building2 className="h-3.5 w-3.5 text-stone-400" />
+                                {companyName}
+                              </div>
+                            )}
+                            {contactName && (
+                              <div className="flex items-center gap-1.5 text-xs text-stone-500">
+                                <User className="h-3.5 w-3.5 text-stone-400" />
+                                {contactName}
+                              </div>
+                            )}
+                            {!companyName && !contactName && (
+                              <span className="text-xs text-stone-400 italic">
+                                Non spécifié
+                              </span>
+                            )}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <span
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ${colConfig.color}`}
+                          >
+                            <span
+                              className={`h-1.5 w-1.5 rounded-full ${colConfig.dot}`}
+                            />
+                            {colConfig.label}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 text-stone-600">
+                          {lead.nextAction ? (
+                            <div className="space-y-1">
+                              <p className="text-xs font-medium text-stone-800 line-clamp-1">
+                                {lead.nextAction}
+                              </p>
+                              {lead.nextActionDate && (
+                                <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 border border-amber-200/50">
+                                  <Calendar className="h-3 w-3" />
+                                  {lead.nextActionDate}
+                                </span>
+                              )}
+                            </div>
+                          ) : (
+                            <span className="text-xs text-stone-450 italic">
+                              Aucune
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-6 py-4 text-xs text-stone-500">
+                          {lead.createdAt
+                            ? new Date(lead.createdAt).toLocaleDateString(
+                                "fr-FR",
+                                {
+                                  day: "numeric",
+                                  month: "short",
+                                  year: "numeric",
+                                },
+                              )
+                            : "-"}
+                        </td>
+                        <td className="px-6 py-4 text-right">
+                          <div className="flex items-center justify-end gap-2">
+                            <Button
+                              onClick={() => {
+                                setSelectedLead(lead);
+                                setDrafts(null);
+                                setDriveLink(
+                                  extractDriveLinkFromNotes(lead.notes),
+                                );
+                                setModalError(null);
+                              }}
+                              variant="outline"
+                              className="h-8 px-2.5 text-xs border-stone-200 text-stone-700 hover:bg-stone-50"
+                            >
+                              Détails
+                            </Button>
+                            <Button
+                              onClick={() => handleDelete(lead.id)}
+                              variant="ghost"
+                              className="h-8 px-2 text-xs text-red-650 hover:bg-red-50 hover:text-red-700"
+                              title="Supprimer"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
       ) : (
         /* Calendar View rendering */
         (() => {
