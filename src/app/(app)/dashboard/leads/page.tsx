@@ -26,6 +26,13 @@ import {
   ChevronLeft,
   ChevronRight,
   List,
+  Clock,
+  MessageSquare,
+  FileText,
+  XCircle,
+  Trophy,
+  Activity,
+  Users,
 } from "lucide-react";
 import {
   fetchLeadsAction,
@@ -119,7 +126,113 @@ export default function LeadsPage() {
     "kanban",
   );
   const [calendarDate, setCalendarDate] = useState(new Date());
+  const [calendarMode, setCalendarMode] = useState<"month" | "week" | "day">(
+    "month",
+  );
   const [isGoogleConnected, setIsGoogleConnected] = useState(false);
+
+  const hourlyScrollContainerRef = React.useRef<HTMLDivElement>(null);
+
+  // Helper functions for modern calendar views
+  function getDaysOfWeek(date: Date): Date[] {
+    const currentDay = date.getDay(); // 0 is Sunday, 1 is Monday...
+    const distanceToMonday = currentDay === 0 ? -6 : 1 - currentDay;
+    const monday = new Date(date);
+    monday.setDate(date.getDate() + distanceToMonday);
+
+    const days: Date[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(monday);
+      d.setDate(monday.getDate() + i);
+      days.push(d);
+    }
+    return days;
+  }
+
+  const getPeriodLabel = () => {
+    if (calendarMode === "month") {
+      return calendarDate.toLocaleDateString("fr-FR", {
+        month: "long",
+        year: "numeric",
+      });
+    } else if (calendarMode === "week") {
+      const days = getDaysOfWeek(calendarDate);
+      const start = days[0];
+      const end = days[6];
+      const startMonth = start.toLocaleDateString("fr-FR", { month: "short" });
+      const endMonth = end.toLocaleDateString("fr-FR", { month: "short" });
+      const startYear = start.getFullYear();
+      const endYear = end.getFullYear();
+
+      if (startYear !== endYear) {
+        return `${start.getDate()} ${startMonth} ${startYear} – ${end.getDate()} ${endMonth} ${endYear}`;
+      } else if (startMonth !== endMonth) {
+        return `${start.getDate()} ${startMonth} – ${end.getDate()} ${endMonth} ${startYear}`;
+      } else {
+        return `${start.getDate()} – ${end.getDate()} ${startMonth} ${startYear}`;
+      }
+    } else {
+      return calendarDate.toLocaleDateString("fr-FR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+      });
+    }
+  };
+
+  const handlePrevCalendar = () => {
+    if (calendarMode === "month") {
+      setCalendarDate(
+        new Date(calendarDate.getFullYear(), calendarDate.getMonth() - 1, 1),
+      );
+    } else if (calendarMode === "week") {
+      const prevWeek = new Date(calendarDate);
+      prevWeek.setDate(calendarDate.getDate() - 7);
+      setCalendarDate(prevWeek);
+    } else {
+      const prevDay = new Date(calendarDate);
+      prevDay.setDate(calendarDate.getDate() - 1);
+      setCalendarDate(prevDay);
+    }
+  };
+
+  const handleNextCalendar = () => {
+    if (calendarMode === "month") {
+      setCalendarDate(
+        new Date(calendarDate.getFullYear(), calendarDate.getMonth() + 1, 1),
+      );
+    } else if (calendarMode === "week") {
+      const nextWeek = new Date(calendarDate);
+      nextWeek.setDate(calendarDate.getDate() + 7);
+      setCalendarDate(nextWeek);
+    } else {
+      const nextDay = new Date(calendarDate);
+      nextDay.setDate(calendarDate.getDate() + 1);
+      setCalendarDate(nextDay);
+    }
+  };
+
+  const handleCellClick = (dateStr: string) => {
+    resetForm();
+    setFormNextActionDate(dateStr);
+    setFormStatus("to-follow-up");
+    setIsAddOpen(true);
+  };
+
+  // Scroll week/day grid to 08:00
+  useEffect(() => {
+    if (
+      viewMode === "calendar" &&
+      (calendarMode === "week" || calendarMode === "day")
+    ) {
+      setTimeout(() => {
+        if (hourlyScrollContainerRef.current) {
+          hourlyScrollContainerRef.current.scrollTop = 380; // slightly above 8am
+        }
+      }, 50);
+    }
+  }, [viewMode, calendarMode, calendarDate]);
 
   // Modal states
   const [isAddOpen, setIsAddOpen] = useState(false);
@@ -180,8 +293,28 @@ export default function LeadsPage() {
 
   // Load data on mount
   useEffect(() => {
-    loadLeads();
-    checkGoogleAuth();
+    let isMounted = true;
+    async function init() {
+      setIsLoading(true);
+      try {
+        const data = await fetchLeadsAction();
+        const isAuth = await checkGoogleAuthAction();
+        if (isMounted) {
+          setLeads(data);
+          setIsGoogleConnected(isAuth);
+        }
+      } catch (err) {
+        console.error(err);
+      } finally {
+        if (isMounted) {
+          setIsLoading(false);
+        }
+      }
+    }
+    init();
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Listen for Google Auth callback popup messaging
@@ -196,18 +329,6 @@ export default function LeadsPage() {
     window.addEventListener("message", handleMessage);
     return () => window.removeEventListener("message", handleMessage);
   }, []);
-
-  async function loadLeads() {
-    setIsLoading(true);
-    const data = await fetchLeadsAction();
-    setLeads(data);
-    setIsLoading(false);
-  }
-
-  async function checkGoogleAuth() {
-    const isAuth = await checkGoogleAuthAction();
-    setIsGoogleConnected(isAuth);
-  }
 
   // Trigger Google Login popup
   const handleConnectGoogle = () => {
@@ -538,6 +659,54 @@ export default function LeadsPage() {
   const activeLeads = leads.filter(
     (l) => l.status !== "dead-end" && l.status !== "won",
   ).length;
+  const meetingLeads = leads.filter(
+    (l) => l.status === "meeting-booked",
+  ).length;
+  const wonLeads = leads.filter((l) => l.status === "won").length;
+
+  const conversionRate =
+    totalLeads > 0 ? Math.round((wonLeads / totalLeads) * 100) : 0;
+  const activePercentage =
+    totalLeads > 0 ? Math.round((activeLeads / totalLeads) * 100) : 0;
+
+  const STATS_CARDS = [
+    {
+      label: "Total leads",
+      value: totalLeads,
+      description: "Opportunités enregistrées",
+      icon: Users,
+      colorClass:
+        "from-blue-50/50 to-indigo-50/30 border-blue-100/80 hover:border-blue-300",
+      iconColor: "text-blue-600 bg-blue-100/85",
+    },
+    {
+      label: "Actifs",
+      value: activeLeads,
+      description: `${activePercentage}% du total`,
+      icon: Activity,
+      colorClass:
+        "from-amber-50/50 to-orange-50/30 border-amber-100 hover:border-amber-300",
+      iconColor: "text-amber-600 bg-amber-100/85",
+    },
+    {
+      label: "Meetings",
+      value: meetingLeads,
+      description: "Rendez-vous fixés",
+      icon: CalendarDays,
+      colorClass:
+        "from-violet-50/50 to-purple-50/30 border-violet-100 hover:border-violet-300",
+      iconColor: "text-violet-600 bg-violet-100/85",
+    },
+    {
+      label: "Gagnés",
+      value: wonLeads,
+      description: `${conversionRate}% de conversion`,
+      icon: Trophy,
+      colorClass:
+        "from-teal-50/50 to-emerald-50/30 border-teal-100 hover:border-teal-300",
+      iconColor: "text-teal-600 bg-teal-100/85",
+    },
+  ];
 
   return (
     <div className="space-y-8">
@@ -626,26 +795,35 @@ export default function LeadsPage() {
 
       {/* Stats strip */}
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        {[
-          { label: "Total leads", value: totalLeads },
-          { label: "Actifs", value: activeLeads },
-          {
-            label: "Meetings",
-            value: leads.filter((l) => l.status === "meeting-booked").length,
-          },
-          {
-            label: "Gagnés",
-            value: leads.filter((l) => l.status === "won").length,
-          },
-        ].map((s) => (
-          <div
-            key={s.label}
-            className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm"
-          >
-            <p className="text-sm text-stone-500">{s.label}</p>
-            <p className="mt-1 text-2xl font-bold text-stone-950">{s.value}</p>
-          </div>
-        ))}
+        {STATS_CARDS.map((s) => {
+          const Icon = s.icon;
+          return (
+            <div
+              key={s.label}
+              className={`group relative overflow-hidden rounded-xl border border-stone-200 bg-white bg-gradient-to-br p-5 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md ${s.colorClass}`}
+            >
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">
+                    {s.label}
+                  </p>
+                  <p className="mt-2 text-3xl font-extrabold tracking-tight text-stone-900">
+                    {s.value}
+                  </p>
+                </div>
+                <div
+                  className={`rounded-xl p-2.5 transition-transform duration-300 group-hover:scale-105 ${s.iconColor}`}
+                >
+                  <Icon className="h-5 w-5" />
+                </div>
+              </div>
+              <p className="mt-3 text-xs font-semibold text-stone-500 flex items-center gap-1.5">
+                <span className="h-1.5 w-1.5 rounded-full bg-stone-400" />
+                {s.description}
+              </p>
+            </div>
+          );
+        })}
       </div>
 
       {/* Kanban Board View */}
@@ -930,16 +1108,14 @@ export default function LeadsPage() {
           const month = calendarDate.getMonth();
           const firstDay = new Date(year, month, 1).getDay();
           const daysInMonth = new Date(year, month + 1, 0).getDate();
-          const monthName = calendarDate.toLocaleDateString("fr-FR", {
-            month: "long",
-            year: "numeric",
-          });
 
           // Group leads by date string 'YYYY-MM-DD'
           const leadsByDate: Record<string, CrmLeadSummary[]> = {};
           leads.forEach((lead) => {
-            if (!lead.createdAt) return;
-            const d = new Date(lead.createdAt);
+            const d = lead.leadDate
+              ? new Date(lead.leadDate)
+              : new Date(lead.createdAt);
+            if (isNaN(d.getTime())) return;
             const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
             if (!leadsByDate[key]) leadsByDate[key] = [];
             leadsByDate[key].push(lead);
@@ -952,115 +1128,459 @@ export default function LeadsPage() {
             year === today.getFullYear();
 
           const paddedStart = firstDay === 0 ? 6 : firstDay - 1; // Mon-first
+          const dateKey = `${calendarDate.getFullYear()}-${String(calendarDate.getMonth() + 1).padStart(2, "0")}-${String(calendarDate.getDate()).padStart(2, "0")}`;
+          const dayLeads = leadsByDate[dateKey] || [];
+          const isCurrentDay =
+            calendarDate.getDate() === today.getDate() &&
+            calendarDate.getMonth() === today.getMonth() &&
+            calendarDate.getFullYear() === today.getFullYear();
 
           return (
             <div className="rounded-xl border border-stone-200 bg-white overflow-hidden shadow-sm">
               {/* Calendar control header */}
-              <div className="flex items-center justify-between px-5 py-4 border-b border-stone-200">
-                <button
-                  onClick={() => setCalendarDate(new Date(year, month - 1, 1))}
-                  className="p-1.5 rounded-lg border border-stone-200 hover:bg-stone-50 text-stone-500 hover:text-stone-900 transition"
-                >
-                  <ChevronLeft className="h-4 w-4" />
-                </button>
-                <div className="text-center">
-                  <h3 className="text-sm font-bold text-stone-900 capitalize">
-                    {monthName}
-                  </h3>
-                  <p className="text-xs text-stone-500">
-                    {leads.length} lead{leads.length !== 1 ? "s" : ""}
-                  </p>
-                </div>
-                <button
-                  onClick={() => setCalendarDate(new Date(year, month + 1, 1))}
-                  className="p-1.5 rounded-lg border border-stone-200 hover:bg-stone-50 text-stone-500 hover:text-stone-900 transition"
-                >
-                  <ChevronRight className="h-4 w-4" />
-                </button>
-              </div>
-
-              {/* Day Labels */}
-              <div className="grid grid-cols-7 border-b border-stone-200 bg-stone-50/50">
-                {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map((d) => (
-                  <div
-                    key={d}
-                    className="py-2 text-center text-[10px] font-bold text-stone-500 uppercase tracking-wider"
-                  >
-                    {d}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-5 py-4 border-b border-stone-200 bg-stone-50/30">
+                <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={handlePrevCalendar}
+                      className="p-1.5 rounded-lg border border-stone-250 bg-white hover:bg-stone-50 text-stone-550 hover:text-stone-900 transition shadow-sm"
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={handleNextCalendar}
+                      className="p-1.5 rounded-lg border border-stone-250 bg-white hover:bg-stone-50 text-stone-550 hover:text-stone-900 transition shadow-sm"
+                    >
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
                   </div>
-                ))}
+                  <div className="text-left">
+                    <h3 className="text-sm font-bold text-stone-900 capitalize">
+                      {getPeriodLabel()}
+                    </h3>
+                    <p className="text-xs text-stone-500">
+                      {leads.length} lead{leads.length !== 1 ? "s" : ""} au
+                      total
+                    </p>
+                  </div>
+                </div>
+
+                {/* Calendar View Mode Selectors */}
+                <div className="flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1 self-start sm:self-auto">
+                  <button
+                    onClick={() => setCalendarMode("month")}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
+                      calendarMode === "month"
+                        ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
+                        : "text-stone-500 hover:text-stone-900"
+                    }`}
+                  >
+                    Mois
+                  </button>
+                  <button
+                    onClick={() => setCalendarMode("week")}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
+                      calendarMode === "week"
+                        ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
+                        : "text-stone-500 hover:text-stone-900"
+                    }`}
+                  >
+                    Semaine
+                  </button>
+                  <button
+                    onClick={() => setCalendarMode("day")}
+                    className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
+                      calendarMode === "day"
+                        ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
+                        : "text-stone-500 hover:text-stone-900"
+                    }`}
+                  >
+                    Jour
+                  </button>
+                </div>
               </div>
 
-              {/* Calendar Grid */}
-              <div className="grid grid-cols-7">
-                {Array.from({ length: paddedStart }).map((_, i) => (
-                  <div
-                    key={`empty-${i}`}
-                    className="min-h-[100px] border-b border-r border-stone-100 bg-stone-50/20"
-                  />
-                ))}
+              {/* View Rendering based on calendarMode */}
+              {calendarMode === "month" && (
+                <>
+                  {/* Day Labels */}
+                  <div className="grid grid-cols-7 border-b border-stone-200 bg-stone-50/55">
+                    {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map(
+                      (d) => (
+                        <div
+                          key={d}
+                          className="py-2 text-center text-[10px] font-bold text-stone-500 uppercase tracking-wider"
+                        >
+                          {d}
+                        </div>
+                      ),
+                    )}
+                  </div>
 
-                {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(
-                  (day) => {
-                    const dateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
-                    const dayLeads = leadsByDate[dateKey] || [];
-                    const isCurrentDay = isToday(day);
+                  {/* Calendar Grid */}
+                  <div className="grid grid-cols-7">
+                    {Array.from({ length: paddedStart }).map((_, i) => (
+                      <div
+                        key={`empty-${i}`}
+                        className="min-h-[100px] border-b border-r border-stone-100 bg-stone-50/20"
+                      />
+                    ))}
+
+                    {Array.from({ length: daysInMonth }, (_, i) => i + 1).map(
+                      (day) => {
+                        const cellDateKey = `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+                        const cellLeads = leadsByDate[cellDateKey] || [];
+                        const isCurrentDay = isToday(day);
+
+                        return (
+                          <div
+                            key={day}
+                            className={`min-h-[120px] border-b border-r border-stone-150 p-2 flex flex-col gap-1.5 ${
+                              isCurrentDay
+                                ? "bg-teal-50/30"
+                                : "hover:bg-stone-50/30"
+                            } transition-colors group relative`}
+                          >
+                            <div className="flex items-center justify-between">
+                              <span
+                                className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full ${
+                                  isCurrentDay
+                                    ? "bg-teal-750 text-white shadow-sm font-extrabold"
+                                    : "text-stone-550"
+                                }`}
+                              >
+                                {day}
+                              </span>
+                              <button
+                                onClick={() => handleCellClick(cellDateKey)}
+                                className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-stone-100 text-stone-400 hover:text-teal-700 transition"
+                                title="Ajouter un lead pour ce jour"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </button>
+                            </div>
+
+                            <div className="flex flex-col gap-1 overflow-hidden flex-1">
+                              {cellLeads.slice(0, 3).map((lead) => (
+                                <button
+                                  key={lead.id}
+                                  onClick={() => {
+                                    setSelectedLead(lead);
+                                    setDrafts(null);
+                                    setDriveLink(
+                                      extractDriveLinkFromNotes(lead.notes),
+                                    );
+                                    setCalendarLink(
+                                      extractCalendarLinkFromNotes(lead.notes),
+                                    );
+                                    setModalError(null);
+                                  }}
+                                  className={`w-full text-left px-1.5 py-0.5 rounded border text-[9px] font-semibold truncate cursor-pointer hover:opacity-85 transition flex items-center gap-1 ${
+                                    statusBgColor[lead.status]
+                                  }`}
+                                >
+                                  <span
+                                    className={`h-1 w-1 rounded-full shrink-0 ${statusDotColor[lead.status]}`}
+                                  />
+                                  <span className="truncate">{lead.topic}</span>
+                                </button>
+                              ))}
+                              {cellLeads.length > 3 && (
+                                <span className="text-[9px] text-stone-400 pl-1 font-medium">
+                                  +{cellLeads.length - 3} autres
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      },
+                    )}
+                  </div>
+                </>
+              )}
+
+              {calendarMode === "week" && (
+                <div className="grid grid-cols-1 md:grid-cols-7 divide-y md:divide-y-0 md:divide-x divide-stone-200">
+                  {getDaysOfWeek(calendarDate).map((day) => {
+                    const cellDateKey = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+                    const cellLeads = leadsByDate[cellDateKey] || [];
+                    const isCurrentDay =
+                      day.getDate() === today.getDate() &&
+                      day.getMonth() === today.getMonth() &&
+                      day.getFullYear() === today.getFullYear();
+
+                    const formattedDayLabel = day.toLocaleDateString("fr-FR", {
+                      weekday: "short",
+                    });
+                    const formattedDateLabel = day.getDate();
 
                     return (
                       <div
-                        key={day}
-                        className={`min-h-[100px] border-b border-r border-stone-150 p-2 flex flex-col gap-1.5 ${
+                        key={cellDateKey}
+                        className={`min-h-[300px] p-3 flex flex-col gap-3 transition-colors group ${
                           isCurrentDay
-                            ? "bg-teal-50/30"
-                            : "hover:bg-stone-50/50"
-                        } transition-colors`}
+                            ? "bg-teal-50/20"
+                            : "hover:bg-stone-50/20"
+                        }`}
                       >
-                        <div
-                          className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full ${
-                            isCurrentDay
-                              ? "bg-teal-700 text-white"
-                              : "text-stone-500"
-                          }`}
-                        >
-                          {day}
-                        </div>
-
-                        <div className="flex flex-col gap-1 overflow-hidden">
-                          {dayLeads.slice(0, 3).map((lead) => (
-                            <button
-                              key={lead.id}
-                              onClick={() => {
-                                setSelectedLead(lead);
-                                setDrafts(null);
-                                setDriveLink(
-                                  extractDriveLinkFromNotes(lead.notes),
-                                );
-                                setCalendarLink(
-                                  extractCalendarLinkFromNotes(lead.notes),
-                                );
-                                setModalError(null);
-                              }}
-                              className={`w-full text-left px-1.5 py-0.5 rounded border text-[9px] font-semibold truncate cursor-pointer hover:opacity-85 transition flex items-center gap-1 ${
-                                statusBgColor[lead.status]
+                        {/* Day header */}
+                        <div className="flex items-center justify-between border-b border-stone-100 pb-2">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`text-[10px] font-bold uppercase tracking-wider ${isCurrentDay ? "text-teal-700" : "text-stone-400"}`}
+                            >
+                              {formattedDayLabel}
+                            </span>
+                            <span
+                              className={`text-xs font-extrabold h-5 w-5 flex items-center justify-center rounded-full ${
+                                isCurrentDay
+                                  ? "bg-teal-700 text-white shadow-xs font-extrabold"
+                                  : "text-stone-700"
                               }`}
                             >
-                              <span
-                                className={`h-1 w-1 rounded-full shrink-0 ${statusDotColor[lead.status]}`}
-                              />
-                              <span className="truncate">{lead.topic}</span>
-                            </button>
-                          ))}
-                          {dayLeads.length > 3 && (
-                            <span className="text-[9px] text-stone-400 pl-1 font-medium">
-                              +{dayLeads.length - 3} autres
+                              {formattedDateLabel}
                             </span>
+                          </div>
+                          <button
+                            onClick={() => handleCellClick(cellDateKey)}
+                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-stone-100 text-stone-400 hover:text-teal-700 transition"
+                            title="Ajouter un lead pour ce jour"
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
+
+                        {/* Leads list */}
+                        <div className="flex flex-col gap-2 flex-1 overflow-y-auto">
+                          {cellLeads.length === 0 ? (
+                            <button
+                              onClick={() => handleCellClick(cellDateKey)}
+                              className="flex flex-col items-center justify-center border border-dashed border-stone-200 rounded-lg p-3 text-center text-[10px] text-stone-400 hover:border-teal-300 hover:bg-teal-50/5 transition-all flex-1 min-h-[120px]"
+                            >
+                              <Plus className="h-3.5 w-3.5 mb-1 text-stone-300" />
+                              <span>Planifier</span>
+                            </button>
+                          ) : (
+                            cellLeads.map((lead) => (
+                              <button
+                                key={lead.id}
+                                onClick={() => {
+                                  setSelectedLead(lead);
+                                  setDrafts(null);
+                                  setDriveLink(
+                                    extractDriveLinkFromNotes(lead.notes),
+                                  );
+                                  setCalendarLink(
+                                    extractCalendarLinkFromNotes(lead.notes),
+                                  );
+                                  setModalError(null);
+                                }}
+                                className={`w-full text-left p-2 rounded-lg border text-xs font-semibold shadow-xs hover:shadow transition-all flex flex-col gap-1 ${
+                                  statusBgColor[lead.status]
+                                }`}
+                              >
+                                <div className="flex items-center gap-1.5">
+                                  <span
+                                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDotColor[lead.status]}`}
+                                  />
+                                  <span className="truncate font-bold text-[10px]">
+                                    {lead.topic}
+                                  </span>
+                                </div>
+                                {lead.notes && (
+                                  <p className="text-[9px] text-stone-500 font-normal line-clamp-2 pl-3">
+                                    {lead.notes
+                                      .replace(/Entreprise:[^\n]*\n?/, "")
+                                      .replace(/Contact:[^\n]*\n?/, "")
+                                      .replace(/Email:[^\n]*\n?/, "")
+                                      .replace(/Tél:[^\n]*\n?/, "")
+                                      .trim()}
+                                  </p>
+                                )}
+                              </button>
+                            ))
                           )}
                         </div>
                       </div>
                     );
-                  },
-                )}
-              </div>
+                  })}
+                </div>
+              )}
+
+              {calendarMode === "day" && (
+                <div className="p-6 bg-white">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-stone-100 pb-4 mb-6">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h4 className="text-base font-extrabold text-stone-900 capitalize">
+                          {calendarDate.toLocaleDateString("fr-FR", {
+                            weekday: "long",
+                            day: "numeric",
+                            month: "long",
+                            year: "numeric",
+                          })}
+                        </h4>
+                        {isCurrentDay && (
+                          <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-semibold text-teal-800 border border-teal-200">
+                            Aujourd&apos;hui
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-xs text-stone-500 mt-1">
+                        {dayLeads.length} lead{dayLeads.length !== 1 ? "s" : ""}{" "}
+                        planifié{dayLeads.length !== 1 ? "s" : ""} pour ce jour
+                      </p>
+                    </div>
+                    <Button
+                      onClick={() => handleCellClick(dateKey)}
+                      className="text-xs gap-1.5 self-start md:self-auto"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Planifier un lead
+                    </Button>
+                  </div>
+
+                  {dayLeads.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center py-16 border border-dashed border-stone-200 rounded-xl bg-stone-50/20">
+                      <div className="rounded-full bg-stone-100 p-4 text-stone-400 mb-3">
+                        <CalendarDays className="h-8 w-8 text-stone-400" />
+                      </div>
+                      <h5 className="text-sm font-semibold text-stone-700">
+                        Aucun lead planifié
+                      </h5>
+                      <p className="text-xs text-stone-400 mt-1 max-w-sm text-center">
+                        Il n&apos;y a aucun lead ou rappel d&apos;action
+                        enregistré pour cette date. Cliquer ci-dessous pour en
+                        ajouter un.
+                      </p>
+                      <Button
+                        onClick={() => handleCellClick(dateKey)}
+                        variant="outline"
+                        className="mt-4 text-xs gap-1.5 border-stone-200 hover:bg-stone-50 text-stone-700"
+                      >
+                        <Plus className="h-3.5 w-3.5 text-teal-600" />
+                        Nouveau lead
+                      </Button>
+                    </div>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2">
+                      {dayLeads.map((lead) => {
+                        const noteLines = (lead.notes ?? "").split("\n");
+                        const companyName = noteLines
+                          .find((l) => l.startsWith("Entreprise:"))
+                          ?.replace("Entreprise:", "")
+                          .trim();
+                        const contactName = noteLines
+                          .find((l) => l.startsWith("Contact:"))
+                          ?.replace("Contact:", "")
+                          .trim();
+                        const colConfig = getColumnConfig(lead.status);
+
+                        return (
+                          <div
+                            key={lead.id}
+                            className={`rounded-xl border p-4 shadow-xs hover:shadow transition-all flex flex-col justify-between ${
+                              statusBgColor[lead.status]
+                            }`}
+                          >
+                            <div>
+                              <div className="flex items-start justify-between gap-3">
+                                <button
+                                  onClick={() => {
+                                    setSelectedLead(lead);
+                                    setDrafts(null);
+                                    setDriveLink(
+                                      extractDriveLinkFromNotes(lead.notes),
+                                    );
+                                    setCalendarLink(
+                                      extractCalendarLinkFromNotes(lead.notes),
+                                    );
+                                    setModalError(null);
+                                  }}
+                                  className="text-left font-bold text-stone-900 hover:underline hover:text-teal-700 transition leading-snug text-sm"
+                                >
+                                  {lead.topic}
+                                </button>
+                                <span
+                                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[9px] font-bold shrink-0 ${colConfig.color}`}
+                                >
+                                  <span
+                                    className={`h-1.5 w-1.5 rounded-full ${colConfig.dot}`}
+                                  />
+                                  {colConfig.label}
+                                </span>
+                              </div>
+
+                              <div className="mt-3 space-y-1.5 text-xs text-stone-600">
+                                {companyName && (
+                                  <div className="flex items-center gap-1.5 font-medium text-stone-750">
+                                    <Building2 className="h-3.5 w-3.5 text-stone-400" />
+                                    {companyName}
+                                  </div>
+                                )}
+                                {contactName && (
+                                  <div className="flex items-center gap-1.5">
+                                    <User className="h-3.5 w-3.5 text-stone-400" />
+                                    {contactName}
+                                  </div>
+                                )}
+                              </div>
+
+                              {lead.notes && (
+                                <div className="mt-3 text-xs bg-white/60 p-2.5 rounded-lg border border-stone-150/40 text-stone-700 line-clamp-3">
+                                  {lead.notes
+                                    .replace(/Entreprise:[^\n]*\n?/, "")
+                                    .replace(/Contact:[^\n]*\n?/, "")
+                                    .replace(/Email:[^\n]*\n?/, "")
+                                    .replace(/Tél:[^\n]*\n?/, "")
+                                    .trim()}
+                                </div>
+                              )}
+                            </div>
+
+                            <div className="mt-4 flex items-center justify-between border-t border-stone-200/50 pt-3">
+                              <div className="flex items-center gap-1.5">
+                                <Button
+                                  onClick={() => {
+                                    setSelectedLead(lead);
+                                    setDrafts(null);
+                                    setDriveLink(
+                                      extractDriveLinkFromNotes(lead.notes),
+                                    );
+                                    setCalendarLink(
+                                      extractCalendarLinkFromNotes(lead.notes),
+                                    );
+                                    setModalError(null);
+                                  }}
+                                  variant="outline"
+                                  className="h-8 px-2.5 text-[11px] border-stone-200 bg-white hover:bg-stone-50 text-stone-700"
+                                >
+                                  Détails
+                                </Button>
+                                <Button
+                                  onClick={() => handleGenerateDraft(lead)}
+                                  variant="outline"
+                                  className="h-8 px-2 text-[11px] border-teal-200 hover:bg-teal-50 text-teal-700"
+                                >
+                                  <Bot className="h-3.5 w-3.5" />
+                                  Relance IA
+                                </Button>
+                              </div>
+                              <Button
+                                onClick={() => handleDelete(lead.id)}
+                                variant="ghost"
+                                className="h-8 px-2 text-red-650 hover:bg-red-50 hover:text-red-700"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </Button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Legend footer */}
               <div className="px-5 py-3 border-t border-stone-200 bg-stone-50/40 flex flex-wrap gap-4">

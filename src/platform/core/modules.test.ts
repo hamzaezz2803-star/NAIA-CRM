@@ -12,9 +12,9 @@ describe("platform module registry", () => {
   it("keeps CRM registered as Hamza's build boundary", () => {
     const crm = requireModule("crm");
 
-    expect(crm.href).toBe("/crm");
+    expect(crm.href).toBe("/dashboard/leads");
     expect(crm.owner).toBe("crm");
-    expect(crm.status).toBe("ready-for-build");
+    expect(crm.status).toBe("live");
     expect(crm.handoffPath).toBe("docs/crm-handoff.md");
   });
 });
