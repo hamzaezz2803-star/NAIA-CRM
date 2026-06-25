@@ -10,6 +10,7 @@ import type {
   CrmCompanySummary,
   CrmContactSummary,
 } from "./contracts";
+import { inferLeadStatusFromNaturalText } from "./extraction";
 
 // ────────────────────────────────────────────────────────────
 // Types for DB rows (aligned with 20260624120000_crm_tables.sql)
@@ -581,6 +582,7 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
     notes?: string;
     nextAction?: string;
     leadDate?: string;
+    status?: CrmLeadStatus;
   };
   error?: string;
 }> {
@@ -614,7 +616,8 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "source": "source du lead (salon, LinkedIn, appel, etc.)",
   "notes": "notes complémentaires",
   "nextAction": "prochaine action à faire",
-  "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null."
+  "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null.",
+  "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Si le texte dit qu'un meeting/rdv/call/démo est booké, fixé, prévu, calé ou confirmé, utilise meeting-booked. Si le texte dit seulement de relancer/rappeler, utilise to-follow-up. Si le texte dit seulement qu'on a parlé/contacté sans action planifiée, utilise contacted. Si aucune information claire, utilise lead-to-contact."
 }`,
         },
         {
@@ -637,7 +640,21 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
 
     const sanitizedContent = sanitizeJsonString(jsonMatch[0]);
     const extracted = JSON.parse(sanitizedContent);
-    return { success: true, extracted };
+    return {
+      success: true,
+      extracted: {
+        ...extracted,
+        status:
+          inferLeadStatusFromNaturalText({
+            text,
+            topic: extracted.topic,
+            notes: extracted.notes,
+            nextAction: extracted.nextAction,
+            leadDate: extracted.leadDate,
+            status: extracted.status,
+          }) ?? "lead-to-contact",
+      },
+    };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
