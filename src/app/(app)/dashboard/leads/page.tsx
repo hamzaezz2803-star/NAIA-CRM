@@ -423,8 +423,8 @@ export default function LeadsPage() {
       setFormNotes(e.notes ?? "");
       setFormNextAction(e.nextAction ?? "");
       setFormLeadDate(e.leadDate ? formatForInput(e.leadDate) : "");
-      if (e.leadDate) {
-        setFormStatus("to-follow-up");
+      if (e.status) {
+        setFormStatus(e.status);
       }
       toast.success("Informations du lead extraites !", { id: extractToastId });
     } else {
