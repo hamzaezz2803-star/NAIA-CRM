@@ -39,7 +39,7 @@ export type CrmLeadSummary = {
   status: CrmLeadStatus;
   notes?: string;
   nextAction?: string;
-  nextActionDate?: string;
+  leadDate?: string;
   createdAt: string;
   updatedAt: string;
 };

@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import { getAppBaseUrl } from "@/platform/auth/config";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   CrmLeadStatus,
@@ -25,6 +26,7 @@ type DbLead = {
   notes: string | null;
   next_action: string | null;
   next_action_date: string | null;
+  lead_date: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -132,7 +134,7 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
     status: row.status,
     notes: row.notes ?? undefined,
     nextAction: row.next_action ?? undefined,
-    nextActionDate: row.next_action_date ?? undefined,
+    leadDate: row.lead_date ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
@@ -146,7 +148,7 @@ export async function createLeadAction(input: {
   status?: CrmLeadStatus;
   notes?: string;
   nextAction?: string;
-  nextActionDate?: string;
+  leadDate?: string;
 }): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
@@ -169,7 +171,7 @@ export async function createLeadAction(input: {
       status: input.status ?? "lead-to-contact",
       notes: input.notes ?? null,
       next_action: input.nextAction ?? null,
-      next_action_date: input.nextActionDate ?? null,
+      lead_date: input.leadDate ? new Date(input.leadDate).toISOString() : null,
       created_by_profile_id: user?.id ?? null,
     })
     .select()
@@ -181,8 +183,8 @@ export async function createLeadAction(input: {
 
   const row = data as DbLead;
 
-  // Sync to Google Calendar if nextActionDate is set
-  if (input.nextActionDate) {
+  // Sync to Google Calendar if leadDate is set
+  if (input.leadDate) {
     await syncLeadToGoogleCalendar(supabase, orgId, row.id);
   }
 
@@ -201,7 +203,7 @@ export async function createLeadAction(input: {
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      nextActionDate: row.next_action_date ?? undefined,
+      leadDate: row.lead_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     },
@@ -238,12 +240,12 @@ export async function updateLeadAction(
     status: CrmLeadStatus;
     notes: string;
     nextAction: string;
-    nextActionDate: string;
+    leadDate: string;
     source: string;
     companyId: string;
     contactId: string;
   }>,
-): Promise<{ success: boolean; error?: string }> {
+): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
 
@@ -259,8 +261,10 @@ export async function updateLeadAction(
       ...(updates.nextAction !== undefined && {
         next_action: updates.nextAction,
       }),
-      ...(updates.nextActionDate !== undefined && {
-        next_action_date: updates.nextActionDate,
+      ...(updates.leadDate !== undefined && {
+        lead_date: updates.leadDate
+          ? new Date(updates.leadDate).toISOString()
+          : null,
       }),
       ...(updates.source !== undefined && { source: updates.source }),
       ...(updates.companyId !== undefined && { company_id: updates.companyId }),
@@ -274,9 +278,36 @@ export async function updateLeadAction(
 
   await syncLeadToGoogleCalendar(supabase, orgId, leadId);
 
+  const { data: updatedData } = await supabase
+    .from("crm_leads")
+    .select("*")
+    .eq("id", leadId)
+    .eq("organization_id", orgId)
+    .single();
+
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
-  return { success: true };
+
+  let updatedLead: CrmLeadSummary | undefined;
+  if (updatedData) {
+    const row = updatedData as DbLead;
+    updatedLead = {
+      id: row.id,
+      organizationId: row.organization_id,
+      companyId: row.company_id ?? undefined,
+      contactId: row.contact_id ?? undefined,
+      topic: row.topic,
+      source: row.source ?? undefined,
+      status: row.status,
+      notes: row.notes ?? undefined,
+      nextAction: row.next_action ?? undefined,
+      leadDate: row.lead_date ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  return { success: true, lead: updatedLead };
 }
 
 export async function deleteLeadAction(
@@ -549,7 +580,7 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
     source?: string;
     notes?: string;
     nextAction?: string;
-    nextActionDate?: string;
+    leadDate?: string;
   };
   error?: string;
 }> {
@@ -562,7 +593,9 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
     const Groq = (await import("groq-sdk")).default;
     const groq = new Groq({ apiKey });
 
-    const today = new Date().toISOString().split("T")[0];
+    const now = new Date();
+    const today = now.toISOString().split("T")[0];
+    const dayOfWeek = now.toLocaleDateString("fr-FR", { weekday: "long" });
 
     const completion = await groq.chat.completions.create({
       model: "llama-3.3-70b-versatile",
@@ -570,7 +603,7 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
         {
           role: "system",
           content: `Tu es un assistant CRM expert. Extrait les informations d'un lead commercial depuis un texte en langage naturel.
-Aujourd'hui: ${today}
+Aujourd'hui: ${today} (jour de la semaine: ${dayOfWeek})
 Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
 {
   "topic": "sujet/projet commercial (obligatoire)",
@@ -581,7 +614,7 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "source": "source du lead (salon, LinkedIn, appel, etc.)",
   "notes": "notes complémentaires",
   "nextAction": "prochaine action à faire",
-  "nextActionDate": "date ISO YYYY-MM-DD si mentionnée"
+  "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null."
 }`,
         },
         {
@@ -923,6 +956,24 @@ async function getOrRefreshGoogleToken(
   }
 }
 
+function parseGoogleError(errText: string): string {
+  try {
+    const parsed = JSON.parse(errText);
+    const message = parsed?.error?.message || "";
+    if (
+      message.includes("Google Calendar API has not been used in project") ||
+      errText.includes("SERVICE_DISABLED")
+    ) {
+      const projectMatch = message.match(/project (\d+)/);
+      const projectId = projectMatch ? projectMatch[1] : "603718300262";
+      return `L'API Google Calendar n'est pas activée sur votre projet Google Cloud. Veuillez l'activer en visitant ce lien : https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=${projectId} puis réessayez.`;
+    }
+    return message || errText;
+  } catch {
+    return errText;
+  }
+}
+
 async function syncLeadToGoogleCalendar(
   supabase: SupabaseClient,
   orgId: string,
@@ -976,8 +1027,8 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
-    // If nextActionDate is cleared but an event exists, delete it
-    if (!lead.next_action_date) {
+    // If lead_date is not set, delete existing event if any
+    if (!lead.lead_date) {
       if (existingEventId) {
         try {
           const delRes = await fetch(
@@ -1011,31 +1062,65 @@ async function syncLeadToGoogleCalendar(
         } catch (err) {
           console.error("Failed to delete cleared Calendar event:", err);
         }
+        return { success: true };
       }
-      return { success: true };
+      return {
+        success: false,
+        error: "Veuillez d'abord définir une date de relance pour ce lead.",
+      };
     }
 
     // Otherwise, create or update the event
-    const startDate = lead.next_action_date;
-    const startDay = new Date(startDate);
-    const nextDay = new Date(startDay.getTime() + 24 * 60 * 60 * 1000);
-    const endDate = nextDay.toISOString().split("T")[0];
-
+    const leadDateStr = lead.lead_date as string;
+    const isMidnight =
+      !leadDateStr.includes("T") ||
+      leadDateStr.includes("T00:00:00") ||
+      leadDateStr.endsWith(" 00:00:00");
     const cleanNotes = notesStr
       .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]/g, "")
       .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]/g, "")
       .trim();
 
-    const eventPayload = {
-      summary: `Suivi : ${lead.topic}`,
-      description: `Action prévue : ${lead.next_action || "Aucune description"}\n\nNotes :\n${cleanNotes}`,
-      start: {
-        date: startDate,
-      },
-      end: {
-        date: endDate,
-      },
+    const appLink = `${getAppBaseUrl()}/dashboard/leads`;
+    const description = `${cleanNotes ? cleanNotes + "\n\n" : ""}Lien vers le lead dans l'application : ${appLink}`;
+
+    let eventPayload: {
+      summary: string;
+      description: string;
+      start: { date?: string; dateTime?: string };
+      end: { date?: string; dateTime?: string };
     };
+    if (isMidnight) {
+      const startDateStr = leadDateStr.split("T")[0];
+      const startDay = new Date(startDateStr);
+      const nextDay = new Date(startDay.getTime() + 24 * 60 * 60 * 1000);
+      const endDateStr = nextDay.toISOString().split("T")[0];
+      eventPayload = {
+        summary: lead.topic,
+        description,
+        start: {
+          date: startDateStr,
+        },
+        end: {
+          date: endDateStr,
+        },
+      };
+    } else {
+      const startDate = new Date(leadDateStr);
+      const startIso = startDate.toISOString();
+      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour duration
+      const endIso = endDate.toISOString();
+      eventPayload = {
+        summary: lead.topic,
+        description,
+        start: {
+          dateTime: startIso,
+        },
+        end: {
+          dateTime: endIso,
+        },
+      };
+    }
 
     if (existingEventId) {
       const updateRes = await fetch(
@@ -1075,7 +1160,7 @@ async function syncLeadToGoogleCalendar(
         const errText = await updateRes.text();
         return {
           success: false,
-          error: `Erreur API Google Calendar (Update) : ${errText}`,
+          error: parseGoogleError(errText),
         };
       }
     }
@@ -1119,7 +1204,7 @@ async function syncLeadToGoogleCalendar(
       const errText = await createRes.text();
       return {
         success: false,
-        error: `Erreur API Google Calendar (Create) : ${errText}`,
+        error: parseGoogleError(errText),
       };
     }
   } catch (err) {
@@ -1129,9 +1214,12 @@ async function syncLeadToGoogleCalendar(
   }
 }
 
-export async function syncLeadToGoogleCalendarAction(
-  leadId: string,
-): Promise<{ success: boolean; error?: string; calendarLink?: string }> {
+export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
+  success: boolean;
+  lead?: CrmLeadSummary;
+  error?: string;
+  calendarLink?: string;
+}> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
 
@@ -1143,22 +1231,41 @@ export async function syncLeadToGoogleCalendarAction(
     return { success: false, error: syncRes.error };
   }
 
-  // Fetch updated lead notes to find the new link
-  const { data: lead } = await supabase
+  // Fetch updated lead to return it
+  const { data: leadData } = await supabase
     .from("crm_leads")
-    .select("notes")
+    .select("*")
     .eq("id", leadId)
     .eq("organization_id", orgId)
     .single();
 
-  const notesStr = lead?.notes || "";
-  const eventIdMatch = notesStr.match(
-    /\[Google Calendar Event Link:\s*([^\]]+)\]/,
-  );
-  const link = eventIdMatch ? eventIdMatch[1].trim() : undefined;
+  let updatedLead: CrmLeadSummary | undefined;
+  let link: string | undefined;
+  if (leadData) {
+    const row = leadData as DbLead;
+    updatedLead = {
+      id: row.id,
+      organizationId: row.organization_id,
+      companyId: row.company_id ?? undefined,
+      contactId: row.contact_id ?? undefined,
+      topic: row.topic,
+      source: row.source ?? undefined,
+      status: row.status,
+      notes: row.notes ?? undefined,
+      nextAction: row.next_action ?? undefined,
+      leadDate: row.lead_date ?? undefined,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+    const notesStr = row.notes || "";
+    const eventLinkMatch = notesStr.match(
+      /\[Google Calendar Event Link:\s*([^\]]+)\]/,
+    );
+    link = eventLinkMatch ? eventLinkMatch[1].trim() : undefined;
+  }
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
 
-  return { success: true, calendarLink: link };
+  return { success: true, lead: updatedLead, calendarLink: link };
 }
