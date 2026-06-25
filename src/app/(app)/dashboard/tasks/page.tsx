@@ -35,16 +35,19 @@ export default function TasksPage() {
         .filter(
           (l) => l.nextAction && l.status !== "won" && l.status !== "dead-end",
         )
-        .map((lead) => ({
-          leadId: lead.id,
-          topic: lead.topic,
-          action: lead.nextAction!,
-          date: lead.nextActionDate,
-          isOverdue: Boolean(
-            lead.nextActionDate && lead.nextActionDate < today,
-          ),
-          isToday: lead.nextActionDate === today,
-        }))
+        .map((lead) => {
+          const leadDatePart = lead.leadDate
+            ? lead.leadDate.split("T")[0]
+            : undefined;
+          return {
+            leadId: lead.id,
+            topic: lead.topic,
+            action: lead.nextAction!,
+            date: leadDatePart,
+            isOverdue: Boolean(leadDatePart && leadDatePart < today),
+            isToday: leadDatePart === today,
+          };
+        })
         .sort((a, b) => {
           // Overdue first, then by date
           if (a.isOverdue && !b.isOverdue) return -1;

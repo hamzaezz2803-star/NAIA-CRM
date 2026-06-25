@@ -134,7 +134,6 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
     status: row.status,
     notes: row.notes ?? undefined,
     nextAction: row.next_action ?? undefined,
-    nextActionDate: row.next_action_date ?? undefined,
     leadDate: row.lead_date ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -149,7 +148,6 @@ export async function createLeadAction(input: {
   status?: CrmLeadStatus;
   notes?: string;
   nextAction?: string;
-  nextActionDate?: string;
   leadDate?: string;
 }): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
@@ -173,7 +171,6 @@ export async function createLeadAction(input: {
       status: input.status ?? "lead-to-contact",
       notes: input.notes ?? null,
       next_action: input.nextAction ?? null,
-      next_action_date: input.nextActionDate ?? null,
       lead_date: input.leadDate ? new Date(input.leadDate).toISOString() : null,
       created_by_profile_id: user?.id ?? null,
     })
@@ -206,7 +203,6 @@ export async function createLeadAction(input: {
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      nextActionDate: row.next_action_date ?? undefined,
       leadDate: row.lead_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -244,7 +240,6 @@ export async function updateLeadAction(
     status: CrmLeadStatus;
     notes: string;
     nextAction: string;
-    nextActionDate: string;
     leadDate: string;
     source: string;
     companyId: string;
@@ -265,9 +260,6 @@ export async function updateLeadAction(
       ...(updates.notes !== undefined && { notes: updates.notes }),
       ...(updates.nextAction !== undefined && {
         next_action: updates.nextAction,
-      }),
-      ...(updates.nextActionDate !== undefined && {
-        next_action_date: updates.nextActionDate,
       }),
       ...(updates.leadDate !== undefined && {
         lead_date: updates.leadDate
@@ -309,7 +301,6 @@ export async function updateLeadAction(
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      nextActionDate: row.next_action_date ?? undefined,
       leadDate: row.lead_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -589,7 +580,6 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
     source?: string;
     notes?: string;
     nextAction?: string;
-    nextActionDate?: string;
     leadDate?: string;
   };
   error?: string;
@@ -624,8 +614,7 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "source": "source du lead (salon, LinkedIn, appel, etc.)",
   "notes": "notes complémentaires",
   "nextAction": "prochaine action à faire",
-  "nextActionDate": "date ISO YYYY-MM-DD pour la prochaine action/relance si mentionnée",
-  "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null."
+  "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null."
 }`,
         },
         {
@@ -1038,8 +1027,8 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
-    // If neither lead_date nor next_action_date is set, delete existing event if any
-    if (!lead.lead_date && !lead.next_action_date) {
+    // If lead_date is not set, delete existing event if any
+    if (!lead.lead_date) {
       if (existingEventId) {
         try {
           const delRes = await fetch(
@@ -1082,7 +1071,7 @@ async function syncLeadToGoogleCalendar(
     }
 
     // Otherwise, create or update the event
-    const leadDateStr = (lead.lead_date || lead.next_action_date) as string;
+    const leadDateStr = lead.lead_date as string;
     const isMidnight =
       !leadDateStr.includes("T") ||
       leadDateStr.includes("T00:00:00") ||
@@ -1264,7 +1253,6 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      nextActionDate: row.next_action_date ?? undefined,
       leadDate: row.lead_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,

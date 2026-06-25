@@ -26,10 +26,6 @@ import {
   ChevronLeft,
   ChevronRight,
   List,
-  Clock,
-  MessageSquare,
-  FileText,
-  XCircle,
   Trophy,
   Activity,
   Users,
@@ -49,6 +45,59 @@ import {
 } from "@/features/crm/actions";
 import type { CrmLeadSummary, CrmLeadStatus } from "@/features/crm/contracts";
 import toast from "react-hot-toast";
+
+// Helper functions for date formatting
+function formatForInput(dateStr: string): string {
+  if (!dateStr) return "";
+  if (dateStr.length === 10) {
+    // YYYY-MM-DD
+    return `${dateStr}T12:00`; // default to noon
+  }
+  if (dateStr.includes("T")) {
+    return dateStr.substring(0, 16); // YYYY-MM-DDTHH:mm
+  }
+  try {
+    const d = new Date(dateStr);
+    if (!isNaN(d.getTime())) {
+      const Y = d.getFullYear();
+      const M = String(d.getMonth() + 1).padStart(2, "0");
+      const D = String(d.getDate()).padStart(2, "0");
+      const H = String(d.getHours()).padStart(2, "0");
+      const Min = String(d.getMinutes()).padStart(2, "0");
+      return `${Y}-${M}-${D}T${H}:${Min}`;
+    }
+  } catch {}
+  return dateStr;
+}
+
+function formatLeadDateForDisplay(dateStr?: string): string {
+  if (!dateStr) return "";
+  try {
+    const d = new Date(dateStr);
+    if (isNaN(d.getTime())) return "";
+    const isMidnight =
+      dateStr.includes("T00:00:00") ||
+      dateStr.endsWith(" 00:00:00") ||
+      !dateStr.includes("T");
+    if (isMidnight) {
+      return d.toLocaleDateString("fr-FR", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      });
+    } else {
+      return d.toLocaleDateString("fr-FR", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    }
+  } catch {
+    return dateStr;
+  }
+}
 
 // ────────────────────────────────────────────────────────────
 // Column config aligned with DB status values
@@ -215,7 +264,7 @@ export default function LeadsPage() {
 
   const handleCellClick = (dateStr: string) => {
     resetForm();
-    setFormNextActionDate(dateStr);
+    setFormLeadDate(formatForInput(dateStr));
     setFormStatus("to-follow-up");
     setIsAddOpen(true);
   };
@@ -252,7 +301,7 @@ export default function LeadsPage() {
   const [formSource, setFormSource] = useState("");
   const [formNotes, setFormNotes] = useState("");
   const [formNextAction, setFormNextAction] = useState("");
-  const [formNextActionDate, setFormNextActionDate] = useState("");
+  const [formLeadDate, setFormLeadDate] = useState("");
   const [formStatus, setFormStatus] =
     useState<CrmLeadStatus>("lead-to-contact");
   const [formError, setFormError] = useState<string | null>(null);
@@ -373,8 +422,8 @@ export default function LeadsPage() {
       setFormSource(e.source ?? "");
       setFormNotes(e.notes ?? "");
       setFormNextAction(e.nextAction ?? "");
-      setFormNextActionDate(e.nextActionDate ?? "");
-      if (e.nextActionDate) {
+      setFormLeadDate(e.leadDate ? formatForInput(e.leadDate) : "");
+      if (e.leadDate) {
         setFormStatus("to-follow-up");
       }
       toast.success("Informations du lead extraites !", { id: extractToastId });
@@ -413,7 +462,7 @@ export default function LeadsPage() {
           .filter(Boolean)
           .join("\n") || undefined,
       nextAction: formNextAction || undefined,
-      nextActionDate: formNextActionDate || undefined,
+      leadDate: formLeadDate || undefined,
     });
 
     if (res.success && res.lead) {
@@ -439,7 +488,7 @@ export default function LeadsPage() {
     setFormSource("");
     setFormNotes("");
     setFormNextAction("");
-    setFormNextActionDate("");
+    setFormLeadDate("");
     setFormStatus("lead-to-contact");
     setFormError(null);
     setExtractError(null);
@@ -1019,10 +1068,10 @@ export default function LeadsPage() {
                               <p className="text-xs font-medium text-stone-800 line-clamp-1">
                                 {lead.nextAction}
                               </p>
-                              {lead.nextActionDate && (
+                              {lead.leadDate && (
                                 <span className="inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-semibold text-amber-700 border border-amber-200/50">
                                   <Calendar className="h-3 w-3" />
-                                  {lead.nextActionDate}
+                                  {formatLeadDateForDisplay(lead.leadDate)}
                                 </span>
                               )}
                             </div>
@@ -1722,13 +1771,13 @@ export default function LeadsPage() {
                 />
               </FormField>
 
-              <FormField label="Date de relance" id="form-next-action-date">
+              <FormField label="Date planifiée" id="form-lead-date">
                 <input
-                  id="form-next-action-date"
+                  id="form-lead-date"
                   className={inputCls}
-                  type="date"
-                  value={formNextActionDate}
-                  onChange={(e) => setFormNextActionDate(e.target.value)}
+                  type="datetime-local"
+                  value={formLeadDate}
+                  onChange={(e) => setFormLeadDate(e.target.value)}
                 />
               </FormField>
             </div>
@@ -1854,18 +1903,27 @@ export default function LeadsPage() {
               </div>
             )}
 
-            {selectedLead.nextAction && (
+            {(selectedLead.nextAction || selectedLead.leadDate) && (
               <div className="flex items-start gap-2 text-sm text-stone-600 bg-amber-50/50 p-3 rounded-lg border border-amber-200/50">
                 <Calendar className="mt-0.5 h-4 w-4 flex-none text-amber-700" />
                 <div>
-                  <span className="font-semibold text-stone-850">
-                    Prochaine action :{" "}
-                  </span>
-                  {selectedLead.nextAction}
-                  {selectedLead.nextActionDate && (
-                    <span className="ml-2 font-bold text-amber-800">
-                      ({selectedLead.nextActionDate})
-                    </span>
+                  {selectedLead.nextAction && (
+                    <p>
+                      <span className="font-semibold text-stone-850">
+                        Prochaine action :{" "}
+                      </span>
+                      {selectedLead.nextAction}
+                    </p>
+                  )}
+                  {selectedLead.leadDate && (
+                    <p className={selectedLead.nextAction ? "mt-1" : ""}>
+                      <span className="font-semibold text-stone-850">
+                        Date planifiée :{" "}
+                      </span>
+                      <span className="font-bold text-amber-800">
+                        {formatLeadDateForDisplay(selectedLead.leadDate)}
+                      </span>
+                    </p>
                   )}
                 </div>
               </div>
@@ -1943,7 +2001,7 @@ export default function LeadsPage() {
                     <Calendar className="mr-2 h-4 w-4 text-amber-600" />
                     Voir dans Google Calendar ↗
                   </Button>
-                ) : selectedLead.nextActionDate ? (
+                ) : selectedLead.leadDate ? (
                   <Button
                     onClick={() => handleSyncCalendar(selectedLead)}
                     disabled={isSyncingCalendar}
@@ -2251,10 +2309,10 @@ function LeadCard({
             <User className="h-3 w-3 text-stone-400" /> {contactLine}
           </p>
         )}
-        {lead.nextActionDate && (
+        {lead.leadDate && (
           <p className="mt-1.5 flex items-center gap-1 text-xs text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/40 w-fit">
             <Calendar className="h-3 w-3" />
-            {lead.nextActionDate}
+            {formatLeadDateForDisplay(lead.leadDate)}
           </p>
         )}
       </button>
