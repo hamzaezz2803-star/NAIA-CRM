@@ -1,4 +1,6 @@
 -- Migration to allow authenticated users to delete their own notifications or organization-wide notifications.
+drop policy if exists "members can delete notifications" on public.notifications;
+
 create policy "members can delete notifications"
 on public.notifications for delete
 using (

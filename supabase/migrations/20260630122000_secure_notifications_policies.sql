@@ -2,6 +2,7 @@
 -- Only allow users to insert, update, or delete their own notifications (profile_id = auth.uid()).
 -- Drop old policies first:
 drop policy if exists "system can insert notifications" on public.notifications;
+drop policy if exists "members can insert their own notifications" on public.notifications;
 drop policy if exists "members can mark notifications as read" on public.notifications;
 drop policy if exists "members can delete notifications" on public.notifications;
 

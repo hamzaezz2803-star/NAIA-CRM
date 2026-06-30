@@ -25,6 +25,10 @@ create index if not exists notifications_unread_idx
 alter table public.notifications enable row level security;
 
 -- Policies
+drop policy if exists "members can read notifications" on public.notifications;
+drop policy if exists "members can mark notifications as read" on public.notifications;
+drop policy if exists "system can insert notifications" on public.notifications;
+
 create policy "members can read notifications"
 on public.notifications for select
 using (
