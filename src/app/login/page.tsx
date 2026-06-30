@@ -39,10 +39,18 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
         <section className="w-full rounded-lg border border-stone-200 bg-white p-6 shadow-sm md:p-10">
           <Image
             alt="NAIA-os"
-            className="mb-8 h-auto w-44"
+            className="mb-8 h-auto w-44 dark:hidden"
             height={58}
             priority
             src="/brand/naia-os-logo-small.png"
+            width={180}
+          />
+          <Image
+            alt="NAIA-os"
+            className="mb-8 hidden h-auto w-44 dark:block"
+            height={58}
+            priority
+            src="/brand/naia-os-logo-white.png"
             width={180}
           />
           <PageHeader
