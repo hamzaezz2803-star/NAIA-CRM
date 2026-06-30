@@ -10,7 +10,16 @@ export const crmLeadStatuses = [
   "dead-end",
 ] as const;
 
-export type CrmLeadStatus = (typeof crmLeadStatuses)[number];
+export type CrmLeadStatus = string;
+
+export type CrmCategory = {
+  id: string;
+  organizationId: string;
+  name: string;
+  statusKey: string;
+  color: string;
+  position: number;
+};
 
 export type CrmCompanySummary = {
   id: string;

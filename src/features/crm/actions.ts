@@ -10,6 +10,7 @@ import type {
   CrmLeadSummary,
   CrmCompanySummary,
   CrmContactSummary,
+  CrmCategory,
 } from "./contracts";
 import { inferLeadStatusFromNaturalText } from "./extraction";
 
@@ -1320,4 +1321,286 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
   revalidatePath("/dashboard/leads");
 
   return { success: true, lead: updatedLead, calendarLink: link };
+}
+
+// ────────────────────────────────────────────────────────────
+// CRM Categories / Stages Actions
+// ────────────────────────────────────────────────────────────
+
+export async function fetchCategoriesAction(): Promise<CrmCategory[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_categories")
+    .select("*")
+    .eq("organization_id", orgId)
+    .order("position", { ascending: true });
+
+  if (error) {
+    console.error("Error fetching CRM categories:", error);
+    return [];
+  }
+
+  if (data.length === 0) {
+    // Seed default categories
+    const defaults = [
+      {
+        name: "À contacter",
+        status_key: "lead-to-contact",
+        color: "blue",
+        position: 1,
+      },
+      { name: "Contacté", status_key: "contacted", color: "gray", position: 2 },
+      {
+        name: "À relancer",
+        status_key: "to-follow-up",
+        color: "yellow",
+        position: 3,
+      },
+      {
+        name: "Meeting fixé",
+        status_key: "meeting-booked",
+        color: "indigo",
+        position: 4,
+      },
+      {
+        name: "Propale envoyée",
+        status_key: "proposal-sent",
+        color: "emerald",
+        position: 5,
+      },
+      { name: "Gagné ✓", status_key: "won", color: "teal", position: 6 },
+      { name: "Dead end", status_key: "dead-end", color: "red", position: 7 },
+    ];
+
+    const toInsert = defaults.map((d) => ({
+      organization_id: orgId,
+      name: d.name,
+      status_key: d.status_key,
+      color: d.color,
+      position: d.position,
+    }));
+
+    const { data: insertedData, error: insertError } = await supabase
+      .from("crm_categories")
+      .upsert(toInsert, {
+        onConflict: "organization_id,status_key",
+        ignoreDuplicates: false,
+      })
+      .select();
+
+    if (insertError || !insertedData) {
+      console.error("Error seeding default categories:", insertError);
+      return [];
+    }
+
+    return insertedData.map((row) => ({
+      id: row.id,
+      organizationId: row.organization_id,
+      name: row.name,
+      statusKey: row.status_key,
+      color: row.color,
+      position: row.position,
+    }));
+  }
+
+  return data.map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    name: row.name,
+    statusKey: row.status_key,
+    color: row.color,
+    position: row.position,
+  }));
+}
+
+export async function createCategoryAction(
+  name: string,
+  color: string,
+): Promise<{ success: boolean; error?: string; category?: CrmCategory }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase)
+    return { success: false, error: "Authentication client unavailable" };
+
+  const orgId = await getOrgId();
+  if (!orgId)
+    return { success: false, error: "No active organization context" };
+
+  // Get current maximum position
+  const { data: maxPosData } = await supabase
+    .from("crm_categories")
+    .select("position")
+    .eq("organization_id", orgId)
+    .order("position", { ascending: false })
+    .limit(1);
+
+  const nextPosition =
+    maxPosData && maxPosData.length > 0 ? maxPosData[0].position + 1 : 1;
+
+  // Use a random UUID for custom status keys to ensure uniqueness
+  const newStatusKey = crypto.randomUUID();
+
+  const { data, error } = await supabase
+    .from("crm_categories")
+    .insert({
+      organization_id: orgId,
+      name,
+      status_key: newStatusKey,
+      color,
+      position: nextPosition,
+    })
+    .select()
+    .single();
+
+  if (error) {
+    return { success: false, error: error.message };
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return {
+    success: true,
+    category: {
+      id: data.id,
+      organizationId: data.organization_id,
+      name: data.name,
+      statusKey: data.status_key,
+      color: data.color,
+      position: data.position,
+    },
+  };
+}
+
+export async function updateCategoryAction(
+  id: string,
+  updates: { name?: string; color?: string },
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase)
+    return { success: false, error: "Authentication client unavailable" };
+
+  const orgId = await getOrgId();
+  if (!orgId)
+    return { success: false, error: "No active organization context" };
+
+  const { error } = await supabase
+    .from("crm_categories")
+    .update({
+      ...(updates.name && { name: updates.name }),
+      ...(updates.color && { color: updates.color }),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", id)
+    .eq("organization_id", orgId);
+
+  if (error) {
+    return { success: false, error: error.message };
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return { success: true };
+}
+
+export async function deleteCategoryAction(
+  id: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase)
+    return { success: false, error: "Authentication client unavailable" };
+
+  const orgId = await getOrgId();
+  if (!orgId)
+    return { success: false, error: "No active organization context" };
+
+  // Fetch all categories to check size and find a fallback category
+  const categories = await fetchCategoriesAction();
+  if (categories.length <= 1) {
+    return {
+      success: false,
+      error: "Impossible de supprimer la seule catégorie restante.",
+    };
+  }
+
+  const categoryToDelete = categories.find((c) => c.id === id);
+  if (!categoryToDelete) {
+    return { success: false, error: "Catégorie introuvable." };
+  }
+
+  const fallbackCategory = categories.find((c) => c.id !== id);
+  if (!fallbackCategory) {
+    return { success: false, error: "Aucune catégorie de repli disponible." };
+  }
+
+  // Re-assign all leads in the deleted category to the fallback category
+  const { error: updateError } = await supabase
+    .from("crm_leads")
+    .update({
+      status: fallbackCategory.statusKey,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("organization_id", orgId)
+    .eq("status", categoryToDelete.statusKey);
+
+  if (updateError) {
+    return {
+      success: false,
+      error: `Erreur de réassignation des leads : ${updateError.message}`,
+    };
+  }
+
+  // Delete the category
+  const { error: deleteError } = await supabase
+    .from("crm_categories")
+    .delete()
+    .eq("id", id)
+    .eq("organization_id", orgId);
+
+  if (deleteError) {
+    return { success: false, error: deleteError.message };
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return { success: true };
+}
+
+export async function reorderCategoriesAction(
+  orderedIds: string[],
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase)
+    return { success: false, error: "Authentication client unavailable" };
+
+  const orgId = await getOrgId();
+  if (!orgId)
+    return { success: false, error: "No active organization context" };
+
+  // Perform multiple updates sequentially
+  for (let i = 0; i < orderedIds.length; i++) {
+    const { error } = await supabase
+      .from("crm_categories")
+      .update({ position: i + 1, updated_at: new Date().toISOString() })
+      .eq("id", orderedIds[i])
+      .eq("organization_id", orgId);
+
+    if (error) {
+      return {
+        success: false,
+        error: `Erreur lors de la réorganisation : ${error.message}`,
+      };
+    }
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return { success: true };
 }

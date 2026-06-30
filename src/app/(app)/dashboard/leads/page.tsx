@@ -31,6 +31,7 @@ import {
   Users,
   Mic,
   Check,
+  Edit3,
 } from "lucide-react";
 import {
   fetchLeadsAction,
@@ -44,8 +45,17 @@ import {
   createGoogleDriveFolderAction,
   updateLeadAction,
   syncLeadToGoogleCalendarAction,
+  fetchCategoriesAction,
+  createCategoryAction,
+  updateCategoryAction,
+  deleteCategoryAction,
+  reorderCategoriesAction,
 } from "@/features/crm/actions";
-import type { CrmLeadSummary, CrmLeadStatus } from "@/features/crm/contracts";
+import type {
+  CrmLeadSummary,
+  CrmLeadStatus,
+  CrmCategory,
+} from "@/features/crm/contracts";
 import toast from "react-hot-toast";
 
 // Helper functions for date formatting
@@ -105,68 +115,150 @@ function formatLeadDateForDisplay(dateStr?: string): string {
 // Column config aligned with DB status values
 // ────────────────────────────────────────────────────────────
 
-const COLUMNS: {
-  label: string;
-  status: CrmLeadStatus;
-  color: string;
-  dot: string;
-  border: string;
-}[] = [
-  {
-    label: "À contacter",
-    status: "lead-to-contact",
+const categoryColors: Record<
+  string,
+  { color: string; dot: string; border: string }
+> = {
+  blue: {
     color:
       "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/30",
     dot: "bg-blue-500",
     border: "border-blue-200 dark:border-blue-900/30",
   },
-  {
-    label: "Contacté",
-    status: "contacted",
+  gray: {
     color:
       "bg-stone-50 text-stone-600 border-stone-200 dark:bg-stone-900/50 dark:text-stone-400 dark:border-stone-800",
     dot: "bg-stone-400",
     border: "border-stone-200 dark:border-stone-800",
   },
-  {
-    label: "À relancer",
-    status: "to-follow-up",
+  yellow: {
     color:
       "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/30",
     dot: "bg-amber-500",
     border: "border-amber-200 dark:border-amber-900/30",
   },
-  {
-    label: "Meeting fixé",
-    status: "meeting-booked",
+  indigo: {
     color:
       "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/20 dark:text-indigo-400 dark:border-indigo-900/30",
     dot: "bg-indigo-500",
     border: "border-indigo-200 dark:border-indigo-900/30",
   },
-  {
-    label: "Propale envoyée",
-    status: "proposal-sent",
+  emerald: {
     color:
       "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/30",
     dot: "bg-emerald-500",
     border: "border-emerald-200 dark:border-emerald-900/30",
   },
-  {
-    label: "Gagné ✓",
-    status: "won",
+  teal: {
     color:
       "bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/20 dark:text-teal-400 dark:border-teal-900/30",
     dot: "bg-teal-500",
     border: "border-teal-200 dark:border-teal-900/30",
   },
-  {
-    label: "Dead end",
-    status: "dead-end",
+  red: {
     color:
       "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900/30",
     dot: "bg-red-400",
     border: "border-red-200 dark:border-red-900/30",
+  },
+  purple: {
+    color:
+      "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/20 dark:text-purple-400 dark:border-purple-900/30",
+    dot: "bg-purple-500",
+    border: "border-purple-200 dark:border-purple-900/30",
+  },
+  pink: {
+    color:
+      "bg-pink-50 text-pink-700 border-pink-200 dark:bg-pink-950/20 dark:text-pink-400 dark:border-pink-900/30",
+    dot: "bg-pink-500",
+    border: "border-pink-200 dark:border-pink-900/30",
+  },
+  orange: {
+    color:
+      "bg-orange-50 text-orange-750 border-orange-200 dark:bg-orange-950/20 dark:text-orange-400 dark:border-orange-900/30",
+    dot: "bg-orange-500",
+    border: "border-orange-200 dark:border-orange-900/30",
+  },
+  sky: {
+    color:
+      "bg-sky-50 text-sky-700 border-sky-200 dark:bg-sky-950/20 dark:text-sky-400 dark:border-sky-900/30",
+    dot: "bg-sky-500",
+    border: "border-sky-200 dark:border-sky-900/30",
+  },
+  lime: {
+    color:
+      "bg-lime-50 text-lime-750 border-lime-200 dark:bg-lime-950/20 dark:text-lime-400 dark:border-lime-900/30",
+    dot: "bg-lime-500",
+    border: "border-lime-200 dark:border-lime-900/30",
+  },
+  rose: {
+    color:
+      "bg-rose-50 text-rose-700 border-rose-200 dark:bg-rose-950/20 dark:text-rose-400 dark:border-rose-900/30",
+    dot: "bg-rose-500",
+    border: "border-rose-200 dark:border-rose-900/30",
+  },
+};
+
+function getCategoryStyle(color: string) {
+  return categoryColors[color] || categoryColors.gray;
+}
+
+const DEFAULT_CATEGORIES: CrmCategory[] = [
+  {
+    id: "1",
+    organizationId: "",
+    name: "À contacter",
+    statusKey: "lead-to-contact",
+    color: "blue",
+    position: 1,
+  },
+  {
+    id: "2",
+    organizationId: "",
+    name: "Contacté",
+    statusKey: "contacted",
+    color: "gray",
+    position: 2,
+  },
+  {
+    id: "3",
+    organizationId: "",
+    name: "À relancer",
+    statusKey: "to-follow-up",
+    color: "yellow",
+    position: 3,
+  },
+  {
+    id: "4",
+    organizationId: "",
+    name: "Meeting fixé",
+    statusKey: "meeting-booked",
+    color: "indigo",
+    position: 4,
+  },
+  {
+    id: "5",
+    organizationId: "",
+    name: "Propale envoyée",
+    statusKey: "proposal-sent",
+    color: "emerald",
+    position: 5,
+  },
+  {
+    id: "6",
+    organizationId: "",
+    name: "Gagné ✓",
+    statusKey: "won",
+    color: "teal",
+    position: 6,
+  },
+  {
+    id: "7",
+    organizationId: "",
+    name: "Dead end",
+    statusKey: "dead-end",
+    color: "red",
+    position: 7,
   },
 ];
 
@@ -176,6 +268,7 @@ const COLUMNS: {
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<CrmLeadSummary[]>([]);
+  const [categories, setCategories] = useState<CrmCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [, startTransition] = useTransition();
 
@@ -296,6 +389,69 @@ export default function LeadsPage() {
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [selectedLead, setSelectedLead] = useState<CrmLeadSummary | null>(null);
 
+  // Edit form fields state
+  const [editTopic, setEditTopic] = useState("");
+  const [editCompanyName, setEditCompanyName] = useState("");
+  const [editContactName, setEditContactName] = useState("");
+  const [editEmail, setEditEmail] = useState("");
+  const [editPhone, setEditPhone] = useState("");
+  const [editSource, setEditSource] = useState("");
+  const [editNextAction, setEditNextAction] = useState("");
+  const [editLeadDate, setEditLeadDate] = useState("");
+  const [editNotes, setEditNotes] = useState("");
+  const [editStatus, setEditStatus] =
+    useState<CrmLeadStatus>("lead-to-contact");
+
+  const openEditModal = (lead: CrmLeadSummary) => {
+    setSelectedLead(lead);
+    setDrafts(null);
+    setDriveLink(extractDriveLinkFromNotes(lead.notes));
+    setCalendarLink(extractCalendarLinkFromNotes(lead.notes));
+    setModalError(null);
+
+    const noteLines = (lead.notes ?? "").split("\n");
+    const company =
+      noteLines
+        .find((l) => l.startsWith("Entreprise:"))
+        ?.replace("Entreprise:", "")
+        .trim() ?? "";
+    const contact =
+      noteLines
+        .find((l) => l.startsWith("Contact:"))
+        ?.replace("Contact:", "")
+        .trim() ?? "";
+    const email =
+      noteLines
+        .find((l) => l.startsWith("Email:"))
+        ?.replace("Email:", "")
+        .trim() ?? "";
+    const phone =
+      noteLines
+        .find((l) => l.startsWith("Tél:"))
+        ?.replace("Tél:", "")
+        .trim() ?? "";
+    const notesOnly = noteLines
+      .filter(
+        (l) =>
+          !l.startsWith("Entreprise:") &&
+          !l.startsWith("Contact:") &&
+          !l.startsWith("Email:") &&
+          !l.startsWith("Tél:"),
+      )
+      .join("\n");
+
+    setEditTopic(lead.topic);
+    setEditCompanyName(company);
+    setEditContactName(contact);
+    setEditEmail(email);
+    setEditPhone(phone);
+    setEditSource(lead.source ?? "");
+    setEditNextAction(lead.nextAction ?? "");
+    setEditLeadDate(formatForInput(lead.leadDate ?? ""));
+    setEditNotes(notesOnly);
+    setEditStatus(lead.status);
+  };
+
   // Natural text intake
   const [naturalText, setNaturalText] = useState("");
   const [isExtracting, setIsExtracting] = useState(false);
@@ -356,6 +512,151 @@ export default function LeadsPage() {
   const [isFormStatusDropdownOpen, setIsFormStatusDropdownOpen] =
     useState(false);
 
+  // Category management modal states
+  const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
+  const [editingCategory, setEditingCategory] = useState<CrmCategory | null>(
+    null,
+  ); // null means adding a new category
+  const [categoryFormName, setCategoryFormName] = useState("");
+  const [categoryFormColor, setCategoryFormColor] = useState("blue");
+  const [isCategorySubmitting, setIsCategorySubmitting] = useState(false);
+
+  const openCategoryModal = (cat: CrmCategory | null) => {
+    setEditingCategory(cat);
+    setCategoryFormName(cat ? cat.name : "");
+    setCategoryFormColor(cat ? cat.color : "blue");
+    setIsCategoryModalOpen(true);
+  };
+
+  const handleSaveCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!categoryFormName.trim()) {
+      toast.error("Le nom de la catégorie est obligatoire.");
+      return;
+    }
+    setIsCategorySubmitting(true);
+    const toastId = toast.loading(
+      editingCategory
+        ? "Mise à jour de la catégorie..."
+        : "Création de la catégorie...",
+    );
+
+    try {
+      if (editingCategory) {
+        // Edit
+        const res = await updateCategoryAction(editingCategory.id, {
+          name: categoryFormName,
+          color: categoryFormColor,
+        });
+        if (res.success) {
+          setCategories(
+            categories.map((c) =>
+              c.id === editingCategory.id
+                ? { ...c, name: categoryFormName, color: categoryFormColor }
+                : c,
+            ),
+          );
+          toast.success("Catégorie mise à jour avec succès !", { id: toastId });
+          setIsCategoryModalOpen(false);
+        } else {
+          toast.error(res.error || "Une erreur est survenue.", { id: toastId });
+        }
+      } else {
+        // Create
+        const res = await createCategoryAction(
+          categoryFormName,
+          categoryFormColor,
+        );
+        if (res.success && res.category) {
+          setCategories([...categories, res.category]);
+          toast.success("Catégorie créée avec succès !", { id: toastId });
+          setIsCategoryModalOpen(false);
+        } else {
+          toast.error(res.error || "Une erreur est survenue.", { id: toastId });
+        }
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur de communication.", { id: toastId });
+    } finally {
+      setIsCategorySubmitting(false);
+    }
+  };
+
+  const handleDeleteCategory = async () => {
+    if (!editingCategory) return;
+    if (categories.length <= 1) {
+      toast.error("Impossible de supprimer la seule catégorie restante.");
+      return;
+    }
+
+    const confirm = window.confirm(
+      "Êtes-vous sûr de vouloir supprimer cette catégorie ? Tous les leads associés seront automatiquement déplacés vers une autre catégorie.",
+    );
+    if (!confirm) return;
+
+    setIsCategorySubmitting(true);
+    const toastId = toast.loading("Suppression de la catégorie...");
+
+    try {
+      const res = await deleteCategoryAction(editingCategory.id);
+      if (res.success) {
+        // Reload all leads and categories to ensure consistency after cascading transfer
+        const [leadsData, categoriesData] = await Promise.all([
+          fetchLeadsAction(),
+          fetchCategoriesAction(),
+        ]);
+        setLeads(leadsData);
+        setCategories(categoriesData);
+        toast.success("Catégorie supprimée avec succès !", { id: toastId });
+        setIsCategoryModalOpen(false);
+      } else {
+        toast.error(res.error || "Une erreur est survenue.", { id: toastId });
+      }
+    } catch (err) {
+      console.error(err);
+      toast.error("Erreur lors de la suppression.", { id: toastId });
+    } finally {
+      setIsCategorySubmitting(false);
+    }
+  };
+
+  const handleMoveCategoryOrder = async (
+    catId: string,
+    direction: "left" | "right",
+  ) => {
+    const idx = categories.findIndex((c) => c.id === catId);
+    if (idx === -1) return;
+
+    const newCategories = [...categories];
+    if (direction === "left" && idx > 0) {
+      // Swap with previous
+      const temp = newCategories[idx];
+      newCategories[idx] = newCategories[idx - 1];
+      newCategories[idx - 1] = temp;
+    } else if (direction === "right" && idx < categories.length - 1) {
+      // Swap with next
+      const temp = newCategories[idx];
+      newCategories[idx] = newCategories[idx + 1];
+      newCategories[idx + 1] = temp;
+    } else {
+      return;
+    }
+
+    // Optimistically update UI
+    setCategories(newCategories);
+
+    // Persist to database
+    const orderedIds = newCategories.map((c) => c.id);
+    const res = await reorderCategoriesAction(orderedIds);
+    if (!res.success) {
+      toast.error(res.error || "Erreur de réorganisation.");
+      // Rollback on error
+      const categoriesData = await fetchCategoriesAction();
+      setCategories(categoriesData);
+    }
+  };
+
   // Helper: extract a Google Drive link already stored in lead notes
   const extractDriveLinkFromNotes = (notes?: string): string | null => {
     if (!notes) return null;
@@ -377,10 +678,18 @@ export default function LeadsPage() {
     async function init() {
       setIsLoading(true);
       try {
-        const data = await fetchLeadsAction();
-        const isAuth = await checkGoogleAuthAction();
+        const [leadsData, categoriesData, isAuth] = await Promise.all([
+          fetchLeadsAction(),
+          fetchCategoriesAction(),
+          checkGoogleAuthAction(),
+        ]);
         if (isMounted) {
-          setLeads(data);
+          setLeads(leadsData);
+          setCategories(
+            categoriesData && categoriesData.length > 0
+              ? categoriesData
+              : DEFAULT_CATEGORIES,
+          );
           setIsGoogleConnected(isAuth);
         }
       } catch (err) {
@@ -634,6 +943,50 @@ export default function LeadsPage() {
     setIsSubmitting(false);
   }
 
+  // ── Update lead ─────────────────────────────────────────
+  async function handleUpdateLead(e: React.FormEvent) {
+    e.preventDefault();
+    if (!selectedLead) return;
+    if (!editTopic.trim()) {
+      setModalError("Le nom du projet est obligatoire.");
+      return;
+    }
+    setIsSubmitting(true);
+    setModalError(null);
+    const updateToastId = toast.loading("Mise à jour du lead...");
+
+    const res = await updateLeadAction(selectedLead.id, {
+      topic: editTopic,
+      status: editStatus,
+      source: editSource || undefined,
+      notes:
+        [
+          editCompanyName && `Entreprise: ${editCompanyName}`,
+          editContactName && `Contact: ${editContactName}`,
+          editEmail && `Email: ${editEmail}`,
+          editPhone && `Tél: ${editPhone}`,
+          editNotes,
+        ]
+          .filter(Boolean)
+          .join("\n") || undefined,
+      nextAction: editNextAction || undefined,
+      leadDate: editLeadDate || undefined,
+    });
+
+    if (res.success && res.lead) {
+      setLeads((prev) =>
+        prev.map((l) => (l.id === res.lead!.id ? res.lead! : l)),
+      );
+      setSelectedLead(res.lead);
+      toast.success("Lead mis à jour avec succès !", { id: updateToastId });
+    } else {
+      const err = res.error ?? "Impossible de modifier le lead.";
+      setModalError(err);
+      toast.error(err, { id: updateToastId });
+    }
+    setIsSubmitting(false);
+  }
+
   function resetForm() {
     setNaturalText("");
     setFormTopic("");
@@ -671,28 +1024,6 @@ export default function LeadsPage() {
         });
       }
     });
-  }
-
-  // ── Manual status update ────────────────────────
-  async function handleUpdateStatus(newStatusVal: CrmLeadStatus) {
-    if (!selectedLead) return;
-    const updateToastId = toast.loading("Mise à jour du statut...");
-    const res = await updateLeadAction(selectedLead.id, {
-      status: newStatusVal,
-    });
-    if (res.success) {
-      setSelectedLead({ ...selectedLead, status: newStatusVal });
-      setLeads(
-        leads.map((l) =>
-          l.id === selectedLead.id ? { ...l, status: newStatusVal } : l,
-        ),
-      );
-      toast.success("Statut mis à jour avec succès !", { id: updateToastId });
-    } else {
-      const err = res.error || "Impossible de déplacer le lead.";
-      setModalError(err);
-      toast.error(err, { id: updateToastId });
-    }
   }
 
   // ── Delete lead ─────────────────────────────────────────
@@ -850,14 +1181,31 @@ export default function LeadsPage() {
 
   // ── Helpers ─────────────────────────────────────────────
   function getNextStatus(current: CrmLeadStatus): CrmLeadStatus | null {
-    const idx = COLUMNS.findIndex((c) => c.status === current);
-    return idx >= 0 && idx < COLUMNS.length - 1
-      ? COLUMNS[idx + 1].status
+    const idx = categories.findIndex((c) => c.statusKey === current);
+    return idx >= 0 && idx < categories.length - 1
+      ? categories[idx + 1].statusKey
       : null;
   }
 
   function getColumnConfig(status: CrmLeadStatus) {
-    return COLUMNS.find((c) => c.status === status) ?? COLUMNS[0];
+    const cat = categories.find((c) => c.statusKey === status);
+    if (!cat) {
+      return {
+        label: status,
+        status: status,
+        color: "bg-stone-50 text-stone-600 border-stone-200",
+        dot: "bg-stone-400",
+        border: "border-stone-200",
+      };
+    }
+    const style = getCategoryStyle(cat.color);
+    return {
+      label: cat.name,
+      status: cat.statusKey,
+      color: style.color,
+      dot: style.dot,
+      border: style.border,
+    };
   }
 
   const totalLeads = leads.length;
@@ -916,6 +1264,19 @@ export default function LeadsPage() {
         "text-teal-600 bg-teal-100/85 dark:text-teal-400 dark:bg-teal-900/40",
     },
   ];
+
+  // Check for overdue leads (active leads with leadDate in the past)
+  const overdueLeads = React.useMemo(() => {
+    return leads.filter((lead) => {
+      if (!lead.leadDate) return false;
+      if (lead.status === "won" || lead.status === "dead-end") return false;
+      try {
+        return new Date(lead.leadDate) < new Date();
+      } catch {
+        return false;
+      }
+    });
+  }, [leads]);
 
   return (
     <div className="space-y-8">
@@ -1035,6 +1396,81 @@ export default function LeadsPage() {
         })}
       </div>
 
+      {/* Échéances Dépassées Section */}
+      {overdueLeads.length > 0 && (
+        <section className="rounded-xl border border-red-200 bg-red-50/30 p-4 shadow-sm">
+          <div className="flex items-center gap-2 mb-3">
+            <AlertCircle className="h-4.5 w-4.5 text-red-600 animate-pulse" />
+            <h3 className="text-xs font-bold text-red-800 uppercase tracking-wider">
+              Échéances Dépassées ({overdueLeads.length})
+            </h3>
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+            {overdueLeads.map((lead) => {
+              const noteLines = (lead.notes ?? "").split("\n");
+              const companyName = noteLines
+                .find((l) => l.startsWith("Entreprise:"))
+                ?.replace("Entreprise:", "")
+                .trim();
+              const contactName = noteLines
+                .find((l) => l.startsWith("Contact:"))
+                ?.replace("Contact:", "")
+                .trim();
+              const colConfig = getColumnConfig(lead.status);
+
+              return (
+                <div
+                  key={lead.id}
+                  onClick={() => openEditModal(lead)}
+                  className="cursor-pointer group flex flex-col justify-between rounded-lg border border-red-100 bg-white p-2.5 shadow-sm hover:border-red-300 transition hover:shadow-md min-h-[95px]"
+                >
+                  <div className="space-y-1">
+                    <div className="flex items-start justify-between gap-2">
+                      <h4 className="text-[13px] font-bold text-stone-900 line-clamp-1 group-hover:text-red-700 transition-colors">
+                        {lead.topic}
+                      </h4>
+                      <span
+                        className={`flex-none inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase ${colConfig.color}`}
+                      >
+                        <span
+                          className={`h-1 w-1 rounded-full ${colConfig.dot}`}
+                        />
+                        {colConfig.label}
+                      </span>
+                    </div>
+
+                    <div className="space-y-0.5">
+                      {companyName && (
+                        <p className="flex items-center gap-1 text-[11px] text-stone-600 font-semibold truncate">
+                          <Building2 className="h-3 w-3 text-stone-400 flex-shrink-0" />
+                          <span className="truncate">{companyName}</span>
+                        </p>
+                      )}
+                      {contactName && (
+                        <p className="flex items-center gap-1 text-[11px] text-stone-500 font-medium truncate">
+                          <User className="h-3 w-3 text-stone-400 flex-shrink-0" />
+                          <span className="truncate">{contactName}</span>
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="mt-2.5 flex items-center justify-between border-t border-stone-50 pt-1.5 text-[10px]">
+                    <span className="text-red-700 font-bold flex items-center gap-1 bg-red-50 border border-red-200/45 px-1.5 py-0.5 rounded">
+                      <Calendar className="h-3 w-3 text-red-650" />
+                      {formatLeadDateForDisplay(lead.leadDate)}
+                    </span>
+                    <span className="text-stone-400 italic font-medium group-hover:text-stone-600 transition-colors">
+                      Modifier →
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
       {/* Kanban Board View */}
       {isLoading ? (
         <div className="flex items-center justify-center py-16">
@@ -1045,31 +1481,79 @@ export default function LeadsPage() {
         </div>
       ) : viewMode === "kanban" ? (
         <div className="overflow-x-auto pb-4">
-          <div className="flex gap-4" style={{ minWidth: "900px" }}>
-            {COLUMNS.map((col) => {
-              const colLeads = leads.filter((l) => l.status === col.status);
+          <div className="flex gap-4 items-start" style={{ minWidth: "900px" }}>
+            {categories.map((col, index) => {
+              const colLeads = leads.filter((l) => l.status === col.statusKey);
+              const style = getCategoryStyle(col.color);
               return (
                 <div
-                  key={col.status}
-                  className="flex w-56 flex-none flex-col gap-3"
+                  key={col.id}
+                  className="flex w-56 flex-none flex-col gap-3 group/col rounded-lg p-1 transition-colors border border-transparent hover:border-stone-200/40 hover:bg-stone-50/10"
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    const leadId = e.dataTransfer.getData("text/plain");
+                    if (leadId) {
+                      const leadToMove = leads.find((l) => l.id === leadId);
+                      if (leadToMove && leadToMove.status !== col.statusKey) {
+                        handleMoveStatus(leadToMove, col.statusKey);
+                      }
+                    }
+                  }}
                 >
                   {/* Column header */}
                   <div
-                    className={`flex items-center gap-2 rounded-md border px-3 py-2 ${col.color}`}
+                    className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 ${style.color}`}
                   >
                     <span
-                      className={`h-2 w-2 flex-none rounded-full ${col.dot}`}
+                      className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
                     />
-                    <span className="truncate text-xs font-semibold uppercase tracking-wide">
-                      {col.label}
+                    <span className="truncate text-xs font-bold uppercase tracking-wide flex-1">
+                      {col.name}
                     </span>
-                    <span className="ml-auto text-xs font-medium opacity-60">
+                    <span className="text-[10px] font-bold opacity-60 px-1 bg-stone-50/20 rounded">
                       {colLeads.length}
                     </span>
+
+                    {/* Column order & settings actions */}
+                    <div className="flex items-center gap-0.5 opacity-0 group-hover/col:opacity-100 transition-opacity ml-1">
+                      {index > 0 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleMoveCategoryOrder(col.id, "left")
+                          }
+                          title="Déplacer à gauche"
+                          className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                        >
+                          <ChevronLeft className="h-3 w-3" />
+                        </button>
+                      )}
+                      {index < categories.length - 1 && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            handleMoveCategoryOrder(col.id, "right")
+                          }
+                          title="Déplacer à droite"
+                          className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                        >
+                          <ChevronRight className="h-3 w-3" />
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => openCategoryModal(col)}
+                        title="Modifier"
+                        className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                      >
+                        <Edit3 className="h-3 w-3" />
+                      </button>
+                    </div>
                   </div>
 
                   {/* Lead cards */}
-                  <div className="flex flex-col gap-2">
+                  <div className="flex flex-col gap-2 min-h-[300px]">
                     {colLeads.length === 0 && (
                       <div className="rounded-md border border-dashed border-stone-200 p-4 text-center text-xs text-stone-400">
                         Vide
@@ -1080,15 +1564,7 @@ export default function LeadsPage() {
                         key={lead.id}
                         lead={lead}
                         nextStatus={getNextStatus(lead.status)}
-                        onSelect={() => {
-                          setSelectedLead(lead);
-                          setDrafts(null);
-                          setDriveLink(extractDriveLinkFromNotes(lead.notes));
-                          setCalendarLink(
-                            extractCalendarLinkFromNotes(lead.notes),
-                          );
-                          setModalError(null);
-                        }}
+                        onSelect={() => openEditModal(lead)}
                         onMove={handleMoveStatus}
                         onDelete={handleDelete}
                         onGenerateDraft={handleGenerateDraft}
@@ -1098,6 +1574,18 @@ export default function LeadsPage() {
                 </div>
               );
             })}
+
+            {/* Add Column button */}
+            <div className="flex w-56 flex-none flex-col justify-start">
+              <button
+                type="button"
+                onClick={() => openCategoryModal(null)}
+                className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-stone-300 bg-stone-50/30 p-4 text-xs font-semibold text-stone-500 hover:border-teal-400 hover:bg-teal-50/10 hover:text-teal-700 transition-all w-full"
+              >
+                <Plus className="h-4 w-4" />
+                Ajouter une colonne
+              </button>
+            </div>
           </div>
         </div>
       ) : viewMode === "list" ? (
@@ -1175,17 +1663,7 @@ export default function LeadsPage() {
                       >
                         <td className="px-6 py-4 font-semibold text-stone-900">
                           <button
-                            onClick={() => {
-                              setSelectedLead(lead);
-                              setDrafts(null);
-                              setDriveLink(
-                                extractDriveLinkFromNotes(lead.notes),
-                              );
-                              setCalendarLink(
-                                extractCalendarLinkFromNotes(lead.notes),
-                              );
-                              setModalError(null);
-                            }}
+                            onClick={() => openEditModal(lead)}
                             className="hover:text-teal-700 hover:underline text-left font-semibold text-stone-900 block"
                           >
                             {lead.topic}
@@ -1256,17 +1734,7 @@ export default function LeadsPage() {
                         <td className="px-6 py-4 text-right">
                           <div className="flex items-center justify-end gap-2">
                             <Button
-                              onClick={() => {
-                                setSelectedLead(lead);
-                                setDrafts(null);
-                                setDriveLink(
-                                  extractDriveLinkFromNotes(lead.notes),
-                                );
-                                setCalendarLink(
-                                  extractCalendarLinkFromNotes(lead.notes),
-                                );
-                                setModalError(null);
-                              }}
+                              onClick={() => openEditModal(lead)}
                               variant="outline"
                               className="h-8 px-2.5 text-xs border-stone-200 text-stone-700 hover:bg-stone-50"
                             >
@@ -1293,26 +1761,6 @@ export default function LeadsPage() {
       ) : (
         /* Calendar View rendering */
         (() => {
-          const statusDotColor: Record<CrmLeadStatus, string> = {
-            "lead-to-contact": "bg-blue-500",
-            contacted: "bg-stone-400",
-            "to-follow-up": "bg-amber-500",
-            "meeting-booked": "bg-indigo-500",
-            "proposal-sent": "bg-emerald-500",
-            won: "bg-teal-500",
-            "dead-end": "bg-red-500",
-          };
-          const statusBgColor: Record<CrmLeadStatus, string> = {
-            "lead-to-contact": "bg-blue-50 border-blue-200 text-blue-700",
-            contacted: "bg-stone-50 border-stone-200 text-stone-600",
-            "to-follow-up": "bg-amber-55/10 border-amber-200 text-amber-800",
-            "meeting-booked": "bg-indigo-50 border-indigo-200 text-indigo-700",
-            "proposal-sent":
-              "bg-emerald-50 border-emerald-200 text-emerald-700",
-            won: "bg-teal-50 border-teal-200 text-teal-750",
-            "dead-end": "bg-red-50 border-red-200 text-red-700",
-          };
-
           const year = calendarDate.getFullYear();
           const month = calendarDate.getMonth();
           const firstDay = new Date(year, month, 1).getDay();
@@ -1473,23 +1921,13 @@ export default function LeadsPage() {
                               {cellLeads.slice(0, 3).map((lead) => (
                                 <button
                                   key={lead.id}
-                                  onClick={() => {
-                                    setSelectedLead(lead);
-                                    setDrafts(null);
-                                    setDriveLink(
-                                      extractDriveLinkFromNotes(lead.notes),
-                                    );
-                                    setCalendarLink(
-                                      extractCalendarLinkFromNotes(lead.notes),
-                                    );
-                                    setModalError(null);
-                                  }}
+                                  onClick={() => openEditModal(lead)}
                                   className={`w-full text-left px-1.5 py-0.5 rounded border text-[9px] font-semibold truncate cursor-pointer hover:opacity-85 transition flex items-center gap-1 ${
-                                    statusBgColor[lead.status]
+                                    getColumnConfig(lead.status).color
                                   }`}
                                 >
                                   <span
-                                    className={`h-1 w-1 rounded-full shrink-0 ${statusDotColor[lead.status]}`}
+                                    className={`h-1 w-1 rounded-full shrink-0 ${getColumnConfig(lead.status).dot}`}
                                   />
                                   <span className="truncate">{lead.topic}</span>
                                 </button>
@@ -1573,24 +2011,14 @@ export default function LeadsPage() {
                             cellLeads.map((lead) => (
                               <button
                                 key={lead.id}
-                                onClick={() => {
-                                  setSelectedLead(lead);
-                                  setDrafts(null);
-                                  setDriveLink(
-                                    extractDriveLinkFromNotes(lead.notes),
-                                  );
-                                  setCalendarLink(
-                                    extractCalendarLinkFromNotes(lead.notes),
-                                  );
-                                  setModalError(null);
-                                }}
+                                onClick={() => openEditModal(lead)}
                                 className={`w-full text-left p-2 rounded-lg border text-xs font-semibold shadow-xs hover:shadow transition-all flex flex-col gap-1 ${
-                                  statusBgColor[lead.status]
+                                  getColumnConfig(lead.status).color
                                 }`}
                               >
                                 <div className="flex items-center gap-1.5">
                                   <span
-                                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${statusDotColor[lead.status]}`}
+                                    className={`h-1.5 w-1.5 rounded-full shrink-0 ${getColumnConfig(lead.status).dot}`}
                                   />
                                   <span className="truncate font-bold text-[10px]">
                                     {lead.topic}
@@ -1689,23 +2117,13 @@ export default function LeadsPage() {
                           <div
                             key={lead.id}
                             className={`rounded-xl border p-4 shadow-xs hover:shadow transition-all flex flex-col justify-between ${
-                              statusBgColor[lead.status]
+                              colConfig.color
                             }`}
                           >
                             <div>
                               <div className="flex items-start justify-between gap-3">
                                 <button
-                                  onClick={() => {
-                                    setSelectedLead(lead);
-                                    setDrafts(null);
-                                    setDriveLink(
-                                      extractDriveLinkFromNotes(lead.notes),
-                                    );
-                                    setCalendarLink(
-                                      extractCalendarLinkFromNotes(lead.notes),
-                                    );
-                                    setModalError(null);
-                                  }}
+                                  onClick={() => openEditModal(lead)}
                                   className="text-left font-bold text-stone-900 hover:underline hover:text-teal-700 transition leading-snug text-sm"
                                 >
                                   {lead.topic}
@@ -1750,17 +2168,7 @@ export default function LeadsPage() {
                             <div className="mt-4 flex items-center justify-between border-t border-stone-200/50 pt-3">
                               <div className="flex items-center gap-1.5">
                                 <Button
-                                  onClick={() => {
-                                    setSelectedLead(lead);
-                                    setDrafts(null);
-                                    setDriveLink(
-                                      extractDriveLinkFromNotes(lead.notes),
-                                    );
-                                    setCalendarLink(
-                                      extractCalendarLinkFromNotes(lead.notes),
-                                    );
-                                    setModalError(null);
-                                  }}
+                                  onClick={() => openEditModal(lead)}
                                   variant="outline"
                                   className="h-8 px-2.5 text-[11px] border-stone-200 bg-white hover:bg-stone-50 text-stone-700"
                                 >
@@ -1793,16 +2201,19 @@ export default function LeadsPage() {
 
               {/* Legend footer */}
               <div className="px-5 py-3 border-t border-stone-200 bg-stone-50/40 flex flex-wrap gap-4">
-                {COLUMNS.map((col) => (
-                  <div key={col.status} className="flex items-center gap-1.5">
-                    <span
-                      className={`h-2.5 w-2.5 rounded-full ${statusDotColor[col.status]}`}
-                    />
-                    <span className="text-[10px] text-stone-600 font-semibold uppercase tracking-wider">
-                      {col.label}
-                    </span>
-                  </div>
-                ))}
+                {categories.map((col) => {
+                  const style = getCategoryStyle(col.color);
+                  return (
+                    <div key={col.id} className="flex items-center gap-1.5">
+                      <span
+                        className={`h-2.5 w-2.5 rounded-full ${style.dot}`}
+                      />
+                      <span className="text-[10px] text-stone-600 font-semibold uppercase tracking-wider">
+                        {col.name}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           );
@@ -1961,7 +2372,7 @@ export default function LeadsPage() {
 
             {/* Manual form */}
             <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label="Sujet / Projet *" id="form-topic">
+              <FormField label="Projet *" id="form-topic">
                 <input
                   id="form-topic"
                   className={inputCls}
@@ -2081,26 +2492,29 @@ export default function LeadsPage() {
                           onClick={() => setIsFormStatusDropdownOpen(false)}
                         />
                         <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-stone-200 bg-white py-1 shadow-lg animate-fadeIn">
-                          {COLUMNS.map((c) => (
-                            <button
-                              key={c.status}
-                              type="button"
-                              onClick={() => {
-                                setFormStatus(c.status);
-                                setIsFormStatusDropdownOpen(false);
-                              }}
-                              className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-stone-50 transition-colors"
-                            >
-                              <span
-                                className={`h-2 w-2 rounded-full ${c.dot}`}
-                              />
-                              <span
-                                className={`px-2 py-0.5 rounded border text-[11px] font-bold ${c.color}`}
+                          {categories.map((c) => {
+                            const style = getCategoryStyle(c.color);
+                            return (
+                              <button
+                                key={c.id}
+                                type="button"
+                                onClick={() => {
+                                  setFormStatus(c.statusKey);
+                                  setIsFormStatusDropdownOpen(false);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-2.5 text-left hover:bg-stone-50 transition-colors"
                               >
-                                {c.label}
-                              </span>
-                            </button>
-                          ))}
+                                <span
+                                  className={`h-2 w-2 rounded-full ${style.dot}`}
+                                />
+                                <span
+                                  className={`px-2 py-0.5 rounded border text-[11px] font-bold ${style.color}`}
+                                >
+                                  {c.name}
+                                </span>
+                              </button>
+                            );
+                          })}
                         </div>
                       </>
                     )}
@@ -2139,218 +2553,268 @@ export default function LeadsPage() {
       {/* ── Lead Details Modal ────────────────────────── */}
       {selectedLead && (
         <Modal title={selectedLead.topic} onClose={() => setSelectedLead(null)}>
-          <div className="space-y-6">
-            <div className="flex items-center justify-between">
-              {(() => {
-                const cfg = getColumnConfig(selectedLead.status);
-                return (
-                  <span
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-semibold ${cfg.color}`}
-                  >
-                    <span className={`h-1.5 w-1.5 rounded-full ${cfg.dot}`} />
-                    {cfg.label}
-                  </span>
-                );
-              })()}
+          <form onSubmit={handleUpdateLead} className="space-y-5">
+            {/* Manual edit form fields */}
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField label="Projet *" id="edit-topic">
+                <input
+                  id="edit-topic"
+                  className={inputCls}
+                  required
+                  placeholder="Ex: Intégration IA CRM"
+                  value={editTopic}
+                  onChange={(e) => setEditTopic(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Entreprise (Optionnel)" id="edit-company">
+                <input
+                  id="edit-company"
+                  className={inputCls}
+                  placeholder="Ex: Atlas Telecom"
+                  value={editCompanyName}
+                  onChange={(e) => setEditCompanyName(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Contact principal" id="edit-contact">
+                <input
+                  id="edit-contact"
+                  className={inputCls}
+                  placeholder="Ex: Karim Saidi"
+                  value={editContactName}
+                  onChange={(e) => setEditContactName(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Email" id="edit-email">
+                <input
+                  id="edit-email"
+                  className={inputCls}
+                  type="email"
+                  placeholder="Ex: karim@atlas.ma"
+                  value={editEmail}
+                  onChange={(e) => setEditEmail(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Téléphone" id="edit-phone">
+                <input
+                  id="edit-phone"
+                  className={inputCls}
+                  placeholder="Ex: +212 600000000"
+                  value={editPhone}
+                  onChange={(e) => setEditPhone(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Source du lead" id="edit-source">
+                <input
+                  id="edit-source"
+                  className={inputCls}
+                  placeholder="Ex: LinkedIn, Salon..."
+                  value={editSource}
+                  onChange={(e) => setEditSource(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Action suivante" id="edit-next-action">
+                <input
+                  id="edit-next-action"
+                  className={inputCls}
+                  placeholder="Ex: Envoyer la proposition commerciale"
+                  value={editNextAction}
+                  onChange={(e) => setEditNextAction(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="Date planifiée" id="edit-lead-date">
+                <input
+                  id="edit-lead-date"
+                  className={inputCls}
+                  type="datetime-local"
+                  value={editLeadDate}
+                  onChange={(e) => setEditLeadDate(e.target.value)}
+                />
+              </FormField>
             </div>
 
-            {/* Info rows */}
-            {selectedLead.notes && (
-              <div className="rounded-md border border-stone-200 bg-stone-50 p-3 text-sm text-stone-700 whitespace-pre-wrap leading-relaxed">
-                {selectedLead.notes}
-              </div>
-            )}
-
-            {(selectedLead.nextAction || selectedLead.leadDate) && (
-              <div className="flex items-start gap-2 text-sm text-stone-600 dark:text-stone-300 bg-amber-50/50 dark:bg-amber-950/20 p-3 rounded-lg border border-amber-200/50 dark:border-amber-900/30">
-                <Calendar className="mt-0.5 h-4 w-4 flex-none text-amber-700 dark:text-amber-500" />
-                <div>
-                  {selectedLead.nextAction && (
-                    <p>
-                      <span className="font-semibold text-stone-850">
-                        Prochaine action :{" "}
-                      </span>
-                      {selectedLead.nextAction}
-                    </p>
-                  )}
-                  {selectedLead.leadDate && (
-                    <p className={selectedLead.nextAction ? "mt-1" : ""}>
-                      <span className="font-semibold text-stone-850">
-                        Date planifiée :{" "}
-                      </span>
-                      <span className="font-bold text-amber-800">
-                        {formatLeadDateForDisplay(selectedLead.leadDate)}
-                      </span>
-                    </p>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {selectedLead.source && (
-              <p className="text-xs text-stone-400">
-                Source : {selectedLead.source}
-              </p>
-            )}
-
-            {/* Quick automation actions */}
-            <div className="pt-4 border-t border-stone-200 space-y-4">
-              <h4 className="text-xs font-semibold uppercase tracking-wider text-stone-500">
-                Actions d&apos;automatisation
-              </h4>
-
-              <div className="flex flex-col gap-3">
-                <div className="grid grid-cols-2 gap-3">
-                  <Button
-                    onClick={() => handleGenerateDraft(selectedLead)}
-                    disabled={isGenerating}
-                    variant="outline"
-                    className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50"
-                  >
-                    {isGenerating ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        Génération...
-                      </>
-                    ) : (
-                      <>
-                        <Bot className="mr-2 h-4 w-4" /> Relance IA Draft
-                      </>
-                    )}
-                  </Button>
-
-                  {driveLink ? (
-                    <Button
-                      onClick={() => window.open(driveLink, "_blank")}
-                      variant="outline"
-                      className="text-xs border-emerald-255 bg-emerald-50/20 text-emerald-750 hover:bg-emerald-50"
-                    >
-                      <FolderPlus className="mr-2 h-4 w-4 text-emerald-600" />
-                      Ouvrir Drive ↗
-                    </Button>
-                  ) : (
-                    <Button
-                      onClick={() => handleCreateDriveFolder(selectedLead)}
-                      disabled={isCreatingFolder}
-                      variant="outline"
-                      className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50"
-                    >
-                      {isCreatingFolder ? (
-                        <>
-                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                          Dossier...
-                        </>
-                      ) : (
-                        <>
-                          <FolderPlus className="mr-2 h-4 w-4 text-teal-600" />
-                          Dossier Drive Client
-                        </>
-                      )}
-                    </Button>
-                  )}
-                </div>
-
-                {calendarLink ? (
-                  <Button
-                    onClick={() => window.open(calendarLink, "_blank")}
-                    variant="outline"
-                    className="w-full text-xs border-amber-250 bg-amber-50/20 text-amber-750 hover:bg-amber-50"
-                  >
-                    <Calendar className="mr-2 h-4 w-4 text-amber-600" />
-                    Voir dans Google Calendar ↗
-                  </Button>
-                ) : selectedLead.leadDate ? (
-                  <Button
-                    onClick={() => handleSyncCalendar(selectedLead)}
-                    disabled={isSyncingCalendar}
-                    variant="outline"
-                    className="w-full text-xs border-amber-200 bg-amber-50/15 text-amber-800 hover:bg-amber-50"
-                  >
-                    {isSyncingCalendar ? (
-                      <>
-                        <Loader2 className="mr-2 h-4 w-4 animate-spin text-amber-600" />
-                        Synchronisation...
-                      </>
-                    ) : (
-                      <>
-                        <Calendar className="mr-2 h-4 w-4 text-amber-600" />
-                        Ajouter à Google Calendar
-                      </>
-                    )}
-                  </Button>
-                ) : null}
-              </div>
-
-              {/* Status workflow selector */}
-              <div className="space-y-1.5 relative">
-                <label className="text-xs font-semibold uppercase tracking-wider text-stone-500 block">
-                  Changer le statut du lead
-                </label>
-                {(() => {
-                  const currentCfg = getColumnConfig(selectedLead.status);
-                  return (
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setIsStatusDropdownOpen(!isStatusDropdownOpen)
-                        }
-                        className="flex h-9 w-full items-center justify-between rounded-md border border-stone-205 bg-white px-3 py-1.5 text-xs font-semibold text-stone-850 hover:bg-stone-50 transition focus:outline-none"
-                      >
-                        <span className="flex items-center gap-2">
-                          <span
-                            className={`h-2 w-2 rounded-full ${currentCfg.dot}`}
-                          />
-                          <span
-                            className={`px-2 py-0.5 rounded border text-[10px] font-bold ${currentCfg.color}`}
-                          >
-                            {currentCfg.label}
-                          </span>
-                        </span>
-                        <span className="text-[10px] text-stone-400 font-bold">
-                          {isStatusDropdownOpen ? "▲" : "▼"}
-                        </span>
-                      </button>
-
-                      {isStatusDropdownOpen && (
-                        <>
-                          <div
-                            className="fixed inset-0 z-40"
-                            onClick={() => setIsStatusDropdownOpen(false)}
-                          />
-                          <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-stone-200 bg-white py-1 shadow-lg animate-fadeIn">
-                            {COLUMNS.map((c) => (
-                              <button
-                                key={c.status}
-                                type="button"
-                                onClick={() => {
-                                  handleUpdateStatus(c.status);
-                                  setIsStatusDropdownOpen(false);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-stone-50 transition-colors"
-                              >
-                                <span
-                                  className={`h-2 w-2 rounded-full ${c.dot}`}
-                                />
-                                <span
-                                  className={`px-2 py-0.5 rounded border text-[10px] font-bold ${c.color}`}
-                                >
-                                  {c.label}
-                                </span>
-                              </button>
-                            ))}
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  );
-                })()}
-              </div>
-            </div>
+            <FormField label="Notes & Contexte" id="edit-notes">
+              <textarea
+                id="edit-notes"
+                className="flex w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-950 placeholder:text-stone-400 focus:border-teal-750 focus:outline-none focus:ring-2"
+                rows={3}
+                placeholder="Détails du premier contact, besoins identifiés..."
+                value={editNotes}
+                onChange={(e) => setEditNotes(e.target.value)}
+              />
+            </FormField>
 
             {modalError && (
               <p className="text-xs text-red-650 font-semibold">{modalError}</p>
             )}
+
+            {/* Quick automation actions & Status workflow selector inside editing */}
+            <div className="pt-4 border-t border-stone-200 space-y-4">
+              <div className="grid sm:grid-cols-2 gap-4">
+                {/* Status selector */}
+                <div className="space-y-1.5 relative">
+                  <label className="text-xs font-semibold uppercase tracking-wider text-stone-500 block">
+                    Statut du lead
+                  </label>
+                  {(() => {
+                    const currentCfg = getColumnConfig(editStatus);
+                    return (
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setIsStatusDropdownOpen(!isStatusDropdownOpen)
+                          }
+                          className="flex h-9 w-full items-center justify-between rounded-md border border-stone-205 bg-white px-3 py-1.5 text-xs font-semibold text-stone-850 hover:bg-stone-50 transition focus:outline-none"
+                        >
+                          <span className="flex items-center gap-2">
+                            <span
+                              className={`h-2 w-2 rounded-full ${currentCfg.dot}`}
+                            />
+                            <span
+                              className={`px-2 py-0.5 rounded border text-[10px] font-bold ${currentCfg.color}`}
+                            >
+                              {currentCfg.label}
+                            </span>
+                          </span>
+                          <span className="text-[10px] text-stone-400 font-bold">
+                            {isStatusDropdownOpen ? "▲" : "▼"}
+                          </span>
+                        </button>
+
+                        {isStatusDropdownOpen && (
+                          <>
+                            <div
+                              className="fixed inset-0 z-40"
+                              onClick={() => setIsStatusDropdownOpen(false)}
+                            />
+                            <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-stone-200 bg-white py-1 shadow-lg animate-fadeIn">
+                              {categories.map((c) => {
+                                const style = getCategoryStyle(c.color);
+                                return (
+                                  <button
+                                    key={c.id}
+                                    type="button"
+                                    onClick={() => {
+                                      setEditStatus(c.statusKey);
+                                      setIsStatusDropdownOpen(false);
+                                    }}
+                                    className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-stone-50 transition-colors"
+                                  >
+                                    <span
+                                      className={`h-2 w-2 rounded-full ${style.dot}`}
+                                    />
+                                    <span
+                                      className={`px-2 py-0.5 rounded border text-[10px] font-bold ${style.color}`}
+                                    >
+                                      {c.name}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                {/* Automation trigger action buttons */}
+                <div className="flex flex-col justify-end">
+                  <div className="grid grid-cols-2 gap-2">
+                    <Button
+                      type="button"
+                      onClick={() => handleGenerateDraft(selectedLead)}
+                      disabled={isGenerating}
+                      variant="outline"
+                      className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50 h-9"
+                    >
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          IA...
+                        </>
+                      ) : (
+                        <>
+                          <Bot className="mr-1.5 h-3.5 w-3.5" /> Relance IA
+                        </>
+                      )}
+                    </Button>
+
+                    {driveLink ? (
+                      <Button
+                        type="button"
+                        onClick={() => window.open(driveLink, "_blank")}
+                        variant="outline"
+                        className="text-xs border-emerald-255 bg-emerald-50/20 text-emerald-750 hover:bg-emerald-50 h-9"
+                      >
+                        <FolderPlus className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                        Drive ↗
+                      </Button>
+                    ) : (
+                      <Button
+                        type="button"
+                        onClick={() => handleCreateDriveFolder(selectedLead)}
+                        disabled={isCreatingFolder}
+                        variant="outline"
+                        className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50 h-9"
+                      >
+                        {isCreatingFolder ? (
+                          <>
+                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                            Dossier...
+                          </>
+                        ) : (
+                          <>
+                            <FolderPlus className="mr-1.5 h-3.5 w-3.5 text-teal-600" />
+                            Drive Client
+                          </>
+                        )}
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {calendarLink ? (
+                <Button
+                  type="button"
+                  onClick={() => window.open(calendarLink, "_blank")}
+                  variant="outline"
+                  className="w-full text-xs border-amber-250 bg-amber-50/20 text-amber-750 hover:bg-amber-50 h-9"
+                >
+                  <Calendar className="mr-2 h-4 w-4 text-amber-600" />
+                  Voir dans Google Calendar ↗
+                </Button>
+              ) : selectedLead.leadDate ? (
+                <Button
+                  type="button"
+                  onClick={() => handleSyncCalendar(selectedLead)}
+                  disabled={isSyncingCalendar}
+                  variant="outline"
+                  className="w-full text-xs border-amber-200 bg-amber-50/15 text-amber-800 hover:bg-amber-50 h-9"
+                >
+                  {isSyncingCalendar ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin text-amber-600" />
+                      Synchronisation...
+                    </>
+                  ) : (
+                    <>
+                      <Calendar className="mr-2 h-4 w-4 text-amber-600" />
+                      Ajouter à Google Calendar
+                    </>
+                  )}
+                </Button>
+              ) : null}
+            </div>
 
             {/* Generated drafts display */}
             {drafts &&
@@ -2449,18 +2913,115 @@ export default function LeadsPage() {
               </div>
             )}
 
-            {/* Delete */}
-            <div className="border-t border-stone-100 pt-3">
+            {/* Bottom Actions aligned with Creation modal */}
+            <div className="flex justify-between items-center border-t border-stone-100 pt-4">
               <Button
+                type="button"
                 variant="ghost"
-                className="w-full gap-2 text-red-650 hover:bg-red-50 hover:text-red-700"
+                className="gap-2 text-red-650 hover:bg-red-50 hover:text-red-700 h-9 px-3"
                 onClick={() => handleDelete(selectedLead.id)}
               >
                 <Trash2 className="h-4 w-4" />
                 Supprimer ce lead
               </Button>
+
+              <div className="flex justify-end gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setSelectedLead(null)}
+                >
+                  Annuler
+                </Button>
+                <Button type="submit" disabled={isSubmitting}>
+                  {isSubmitting
+                    ? "Enregistrement…"
+                    : "Enregistrer les modifications"}
+                </Button>
+              </div>
             </div>
-          </div>
+          </form>
+        </Modal>
+      )}
+
+      {/* ── Category Management Modal ────────────────────────── */}
+      {isCategoryModalOpen && (
+        <Modal
+          title={editingCategory ? "Modifier la colonne" : "Nouvelle colonne"}
+          onClose={() => setIsCategoryModalOpen(false)}
+        >
+          <form onSubmit={handleSaveCategory} className="space-y-5">
+            <FormField label="Nom de la colonne *" id="category-name">
+              <input
+                id="category-name"
+                className={inputCls}
+                required
+                placeholder="Ex: Négociation"
+                value={categoryFormName}
+                onChange={(e) => setCategoryFormName(e.target.value)}
+              />
+            </FormField>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium text-stone-850 block">
+                Couleur de la colonne
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {Object.keys(categoryColors).map((colorKey) => {
+                  const style = categoryColors[colorKey];
+                  const isSelected = categoryFormColor === colorKey;
+                  return (
+                    <button
+                      key={colorKey}
+                      type="button"
+                      onClick={() => setCategoryFormColor(colorKey)}
+                      className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-bold transition-all ${
+                        style.color
+                      } ${
+                        isSelected
+                          ? "ring-2 ring-teal-600 scale-105"
+                          : "opacity-60 hover:opacity-100"
+                      }`}
+                    >
+                      <span className={`h-2 w-2 rounded-full ${style.dot}`} />
+                      <span className="capitalize">{colorKey}</span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-between items-center border-t border-stone-100 pt-4">
+              {editingCategory ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="gap-2 text-red-650 hover:bg-red-50 hover:text-red-700 h-9 px-3"
+                  onClick={handleDeleteCategory}
+                  disabled={isCategorySubmitting}
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Supprimer
+                </Button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setIsCategoryModalOpen(false)}
+                >
+                  Annuler
+                </Button>
+                <Button type="submit" disabled={isCategorySubmitting}>
+                  {isCategorySubmitting ? "Enregistrement…" : "Enregistrer"}
+                </Button>
+              </div>
+            </div>
+          </form>
         </Modal>
       )}
     </div>
@@ -2503,8 +3064,14 @@ function Modal({
   children: React.ReactNode;
 }) {
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm">
-      <div className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl">
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl"
+      >
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4">
           <h2 className="text-base font-semibold text-stone-950 truncate">
             {title}
@@ -2550,39 +3117,55 @@ function LeadCard({
     ?.replace("Contact:", "")
     .trim();
 
-  return (
-    <article className="group relative rounded-lg border border-stone-200 bg-white p-3 shadow-sm transition hover:border-teal-350 hover:shadow-md">
-      {/* Topic */}
-      <button type="button" className="w-full text-left" onClick={onSelect}>
-        <p className="text-sm font-semibold leading-snug text-stone-950 line-clamp-2">
-          {lead.topic}
-        </p>
-        {companyLine && (
-          <p className="mt-1 flex items-center gap-1 text-xs text-stone-500 font-medium">
-            <Building2 className="h-3 w-3 text-stone-400" /> {companyLine}
-          </p>
-        )}
-        {contactLine && (
-          <p className="flex items-center gap-1 text-xs text-stone-500 font-medium">
-            <User className="h-3 w-3 text-stone-400" /> {contactLine}
-          </p>
-        )}
-        {lead.leadDate && (
-          <p className="mt-1.5 flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 font-semibold bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded border border-amber-200/40 dark:border-amber-900/50 w-fit">
-            <Calendar className="h-3 w-3" />
-            {formatLeadDateForDisplay(lead.leadDate)}
-          </p>
-        )}
-      </button>
+  // Check if lead date is in the past
+  const isOverdue = React.useMemo(() => {
+    if (!lead.leadDate) return false;
+    if (lead.status === "won" || lead.status === "dead-end") return false;
+    try {
+      return new Date(lead.leadDate) < new Date();
+    } catch {
+      return false;
+    }
+  }, [lead.leadDate, lead.status]);
 
-      {/* Quick actions */}
-      <div className="mt-2.5 flex items-center gap-1 opacity-0 transition group-hover:opacity-100">
+  // Determine status color indicator
+  const statusColorMap: Record<CrmLeadStatus, string> = {
+    "lead-to-contact": "bg-blue-500",
+    contacted: "bg-stone-400",
+    "to-follow-up": "bg-amber-500",
+    "meeting-booked": "bg-indigo-500",
+    "proposal-sent": "bg-emerald-500",
+    won: "bg-teal-500",
+    "dead-end": "bg-red-400",
+  };
+  const statusDotBg = statusColorMap[lead.status] || "bg-stone-300";
+
+  const statusLabels: Record<CrmLeadStatus, string> = {
+    "lead-to-contact": "CONTACT",
+    contacted: "CONTACTÉ",
+    "to-follow-up": "RELANCE",
+    "meeting-booked": "MEETING",
+    "proposal-sent": "PROPALE",
+    won: "GAGNÉ",
+    "dead-end": "DEAD END",
+  };
+
+  return (
+    <article
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData("text/plain", lead.id);
+      }}
+      className="group relative rounded-lg border border-stone-200 bg-white p-2.5 shadow-sm transition hover:border-teal-350 hover:shadow-md flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing"
+    >
+      {/* Top action icons positioned top-right on hover (vertical layout with colors) */}
+      <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/95 backdrop-blur-sm border border-stone-200 shadow-sm rounded-md p-1 z-10">
         {nextStatus && (
           <button
             type="button"
             title="Avancer"
             onClick={() => onMove(lead, nextStatus)}
-            className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-stone-100 hover:text-teal-700"
+            className="flex h-6 w-6 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
           >
             <MoveRight className="h-3.5 w-3.5" />
           </button>
@@ -2591,7 +3174,7 @@ function LeadCard({
           type="button"
           title="Relance IA"
           onClick={() => onGenerateDraft(lead)}
-          className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-teal-50 dark:hover:bg-teal-950/50 hover:text-teal-700 dark:hover:text-teal-400"
+          className="flex h-6 w-6 items-center justify-center rounded text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors"
         >
           <Bot className="h-3.5 w-3.5" />
         </button>
@@ -2599,11 +3182,70 @@ function LeadCard({
           type="button"
           title="Supprimer"
           onClick={() => onDelete(lead.id)}
-          className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-red-50 dark:hover:bg-red-950/50 hover:text-red-650 dark:hover:text-red-400"
+          className="flex h-6 w-6 items-center justify-center rounded text-red-650 hover:bg-red-50 hover:text-red-700 transition-colors"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
       </div>
+
+      <button
+        type="button"
+        className="w-full text-left flex flex-col justify-between h-full"
+        onClick={onSelect}
+      >
+        <div className="space-y-1">
+          {/* Topic / Project - with padding-right to avoid overlap with top-right vertical action box */}
+          <p className="text-[13px] font-bold leading-snug text-stone-950 line-clamp-2 pr-8 group-hover:text-teal-850 transition-colors">
+            {lead.topic}
+          </p>
+
+          {/* Company */}
+          {companyLine && (
+            <p className="flex items-center gap-1 text-[11px] text-stone-600 font-semibold truncate pr-2">
+              <Building2 className="h-3 w-3 text-stone-400 flex-shrink-0" />
+              <span className="truncate">{companyLine}</span>
+            </p>
+          )}
+
+          {/* Contact */}
+          {contactLine && (
+            <p className="flex items-center gap-1 text-[11px] text-stone-500 font-medium truncate pr-2">
+              <User className="h-3 w-3 text-stone-400 flex-shrink-0" />
+              <span className="truncate">{contactLine}</span>
+            </p>
+          )}
+        </div>
+
+        {/* Footer info: Date limit and Status Dot - aligned in the same position on every card */}
+        <div className="mt-2 flex items-center justify-between border-t border-stone-50 pt-1.5 w-full">
+          <div>
+            {lead.leadDate ? (
+              <span
+                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+                  isOverdue
+                    ? "text-red-700 bg-red-50 border-red-200/50 animate-pulse"
+                    : "text-amber-700 bg-amber-50 border-amber-200/40"
+                }`}
+              >
+                <Calendar className="h-2.5 w-2.5" />
+                {formatLeadDateForDisplay(lead.leadDate)}
+              </span>
+            ) : (
+              <span className="text-[10px] text-stone-400 italic">
+                Pas de date
+              </span>
+            )}
+          </div>
+
+          {/* Visual Status Dot */}
+          <div className="flex items-center gap-1 shrink-0">
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
+            <span className="text-[10px] text-stone-600 uppercase font-bold tracking-tight">
+              {statusLabels[lead.status] || lead.status}
+            </span>
+          </div>
+        </div>
+      </button>
     </article>
   );
 }
