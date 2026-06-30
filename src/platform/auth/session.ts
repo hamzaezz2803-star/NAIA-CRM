@@ -38,8 +38,8 @@ export async function getAppSession(): Promise<AppSession> {
           role: "owner",
         },
         organization: {
-          name: "Qarizmi Dev",
-          slug: "qarizmi",
+          name: "NAIA-os Dev",
+          slug: "naia-os",
         },
       };
     }
@@ -60,8 +60,8 @@ export async function getAppSession(): Promise<AppSession> {
           role: "owner",
         },
         organization: {
-          name: "Qarizmi Dev",
-          slug: "qarizmi",
+          name: "NAIA-os Dev",
+          slug: "naia-os",
         },
       };
     }
@@ -77,8 +77,8 @@ export async function getAppSession(): Promise<AppSession> {
       role: "owner",
     },
     organization: {
-      name: "Qarizmi",
-      slug: "qarizmi",
+      name: "NAIA-os",
+      slug: "naia-os",
     },
   };
 }
@@ -93,7 +93,7 @@ function getDisplayName(user: User) {
     return metadataName;
   }
 
-  return user.email?.split("@")[0] ?? "Qarizmi user";
+  return user.email?.split("@")[0] ?? "NAIA-os user";
 }
 
 function getStringMetadata(user: User, key: string) {

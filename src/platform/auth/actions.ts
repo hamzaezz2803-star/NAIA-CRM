@@ -94,3 +94,26 @@ function redirectToLogin(status: string, redirectedFrom: string): never {
 
   redirect(`/login?${params.toString()}`);
 }
+
+export async function changePasswordAction(formData: FormData) {
+  const newPassword = String(formData.get("newPassword") ?? "");
+
+  if (!newPassword || newPassword.length < 6) {
+    return { error: "Le mot de passe doit contenir au moins 6 caractères." };
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) {
+    return { error: "Erreur de configuration Supabase." };
+  }
+
+  const { error } = await supabase.auth.updateUser({
+    password: newPassword,
+  });
+
+  if (error) {
+    return { error: error.message };
+  }
+
+  return { success: true };
+}

@@ -3,6 +3,7 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { getAppBaseUrl } from "@/platform/auth/config";
+import { createSystemNotification } from "@/platform/notifications/actions";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   CrmLeadStatus,
@@ -135,7 +136,7 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
     status: row.status,
     notes: row.notes ?? undefined,
     nextAction: row.next_action ?? undefined,
-    leadDate: row.lead_date ?? undefined,
+    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }));
@@ -192,6 +193,12 @@ export async function createLeadAction(input: {
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
 
+  await createSystemNotification({
+    title: "Nouveau Lead",
+    description: `Le lead "${input.topic}" a été créé le ${new Date().toLocaleString("fr-FR")}.`,
+    type: "success",
+  });
+
   return {
     success: true,
     lead: {
@@ -204,7 +211,7 @@ export async function createLeadAction(input: {
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      leadDate: row.lead_date ?? undefined,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     },
@@ -302,7 +309,7 @@ export async function updateLeadAction(
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      leadDate: row.lead_date ?? undefined,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -381,6 +388,13 @@ export async function deleteLeadAction(
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
+
+  await createSystemNotification({
+    title: "Lead supprimé",
+    description: `Un lead a été supprimé le ${new Date().toLocaleString("fr-FR")}.`,
+    type: "alert",
+  });
+
   return { success: true };
 }
 
@@ -615,7 +629,7 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "contactPhone": "téléphone si mentionné",
   "source": "source du lead (salon, LinkedIn, appel, etc.)",
   "notes": "notes complémentaires",
-  "nextAction": "prochaine action à faire",
+  "nextAction": "prochaine action commerciale concise à afficher dans les tâches (ex: relancer lundi, envoyer la proposition, préparer le meeting). Si aucune action claire n'est mentionnée, mets null.",
   "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null.",
   "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Si le texte dit qu'un meeting/rdv/call/démo est booké, fixé, prévu, calé ou confirmé, utilise meeting-booked. Si le texte dit seulement de relancer/rappeler, utilise to-follow-up. Si le texte dit seulement qu'on a parlé/contacté sans action planifiée, utilise contacted. Si aucune information claire, utilise lead-to-contact."
 }`,
@@ -700,7 +714,7 @@ export async function generateFollowUpDraftAction(lead: {
       messages: [
         {
           role: "system",
-          content: `Tu es un assistant commercial pour Qarizmi, une agence IA au Maroc.
+          content: `Tu es un assistant commercial pour NAIA-os, une agence IA au Maroc.
 Génère des messages de relance professionnels et chaleureux en français.
 Retourne UNIQUEMENT un JSON valide:
 {
@@ -726,6 +740,13 @@ Retourne UNIQUEMENT un JSON valide:
 
     const sanitizedContent = sanitizeJsonString(jsonMatch[0]);
     const drafts = JSON.parse(sanitizedContent);
+
+    await createSystemNotification({
+      title: "Brouillon IA généré",
+      description: `Un brouillon de relance a été généré pour le lead "${lead.topic}" le ${new Date().toLocaleString("fr-FR")}.`,
+      type: "system",
+    });
+
     return { success: true, drafts };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -774,6 +795,12 @@ export async function disconnectGoogleAuthAction(): Promise<{
     .eq("provider", "google");
 
   if (error) return { success: false, error: error.message };
+
+  await createSystemNotification({
+    title: "Google déconnecté",
+    description: `Votre intégration Google a été supprimée le ${new Date().toLocaleString("fr-FR")}.`,
+    type: "alert",
+  });
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
@@ -902,8 +929,15 @@ export async function createGoogleDriveFolderAction(
     }
 
     revalidatePath("/crm");
-    revalidatePath("/dashboard/leads");
+    revalidatePath("/crm");
     revalidatePath("/dashboard/documents");
+
+    await createSystemNotification({
+      title: "Dossier Drive créé",
+      description: `Le dossier pour le client "${companyName}" a été créé sur Google Drive le ${new Date().toLocaleString("fr-FR")}.`,
+      type: "success",
+      link_url: folderLink,
+    });
 
     return { success: true, folderLink };
   } catch (err) {
@@ -1045,7 +1079,8 @@ async function syncLeadToGoogleCalendar(
     }
 
     // If lead_date is not set, delete existing event if any
-    if (!lead.lead_date) {
+    const finalLeadDate = lead.lead_date ?? lead.next_action_date;
+    if (!finalLeadDate) {
       if (existingEventId) {
         try {
           const delRes = await fetch(
@@ -1088,7 +1123,7 @@ async function syncLeadToGoogleCalendar(
     }
 
     // Otherwise, create or update the event
-    const leadDateStr = lead.lead_date as string;
+    const leadDateStr = finalLeadDate as string;
     const isMidnight =
       !leadDateStr.includes("T") ||
       leadDateStr.includes("T00:00:00") ||
@@ -1270,7 +1305,7 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
-      leadDate: row.lead_date ?? undefined,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };

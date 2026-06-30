@@ -222,3 +222,27 @@ git switch -c hamza/crm-sprint-1
 npm install
 npm run ci
 ```
+
+---
+
+## Sprint 1 Implementation Summary (Hamza)
+
+The following features and security updates have been successfully implemented:
+
+### 1. CRM Lead & Activity Core
+
+- Built CRM features including database tables, models, and actions for Companies, Contacts, and Leads.
+- Created lead activity events logs and Kanban pipeline board view.
+- Added `lead_date` (planned action date) with fallback to `next_action_date` for retro-compatibility.
+
+### 2. AI Lead Assistant & Voice Transcription
+
+- **AI Extraction** : Implemented natural language lead note parsing using Groq AI.
+- **Audio Transcription** : Implemented user audio voice recording transcription using Groq Whisper (`whisper-large-v3`).
+- **Security Check** : Secured the transcription API route with explicit Supabase session authentication and a maximum audio file size limit of 10MB to prevent denial of service / abuse.
+
+### 3. Notification Engine & RLS Policies
+
+- Implemented persistent database-backed notifications and real-time banner alerts.
+- **RLS Policy Hardening** : Added a new migration (`20260630122000_secure_notifications_policies.sql`) to restrict `INSERT`, `UPDATE` (mark as read), and `DELETE` (dismiss) operations on `public.notifications` strictly to the owner (`profile_id = auth.uid()`).
+- Added automatic client-side rollback if deletion fails in database (to prevent notifications from reappearing on refresh).

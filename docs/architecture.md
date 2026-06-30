@@ -61,15 +61,10 @@ External actions must flow through human approval before provider execution.
 
 - Auth user creation and invite policy still live in the Supabase dashboard.
 - The Dashboard shows foundation state only, not synthetic operational metrics.
-- CRM business tables are not created yet to keep Hamza's implementation isolated.
-- No Trello runtime dependency exists.
 - `npm audit` currently reports a moderate PostCSS advisory through Next.js 16.2.9's nested dependency. The latest stable Next release is already installed, and `npm audit fix --force` proposes a breaking downgrade, so this should be revisited when Next publishes a stable patched release.
 
 ## Intentionally Not Built
 
-- Complete CRM business logic.
-- Trello import.
-- AI assistants.
 - OAuth provider flows.
 - Rich profile and organization membership synchronization after login.
 - Complex multi-agent orchestration.

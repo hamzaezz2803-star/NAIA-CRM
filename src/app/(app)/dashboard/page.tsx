@@ -57,7 +57,7 @@ export default async function DashboardPage() {
       {/* Page header */}
       <PageHeader
         eyebrow="Vue d'ensemble"
-        title="Qarizmi OS"
+        title="NAIA-os"
         description="Hub intelligent pour importer vos leads, automatiser vos relances et orchestrer vos espaces de stockage client."
         actions={<StatusBadge status="live" />}
       />

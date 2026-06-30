@@ -8,9 +8,11 @@ const statusLabel: Record<ModuleStatus, string> = {
 };
 
 const statusClassName: Record<ModuleStatus, string> = {
-  live: "border-emerald-200 bg-emerald-50 text-emerald-800",
-  "ready-for-build": "border-teal-200 bg-teal-50 text-teal-800",
-  planned: "border-stone-200 bg-stone-50 text-stone-600",
+  live: "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/30 dark:bg-emerald-950/20 dark:text-emerald-400",
+  "ready-for-build":
+    "border-teal-200 bg-teal-50 text-teal-800 dark:border-teal-900/30 dark:bg-teal-950/20 dark:text-teal-400",
+  planned:
+    "border-stone-200 bg-stone-50 text-stone-600 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-400",
 };
 
 export function StatusBadge({ status }: { status: ModuleStatus }) {

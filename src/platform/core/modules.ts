@@ -31,7 +31,7 @@ export const platformModules = [
     href: "/dashboard",
     status: "live",
     owner: "platform",
-    summary: "Operational home for Qarizmi OS with honest empty states.",
+    summary: "Operational home for NAIA-os with honest empty states.",
   },
   {
     id: "crm",
@@ -59,7 +59,7 @@ export const platformModules = [
     href: "/proposals",
     status: "planned",
     owner: "future",
-    summary: "Pitch and proposal generation from approved Qarizmi context.",
+    summary: "Pitch and proposal generation from approved NAIA-os context.",
   },
   {
     id: "projects",

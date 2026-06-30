@@ -12,7 +12,7 @@ export default function NotFound() {
             Go to dashboard
           </Link>
         }
-        description="The requested Qarizmi OS route does not exist."
+        description="The requested NAIA-os route does not exist."
         title="Page not found"
       />
     </main>

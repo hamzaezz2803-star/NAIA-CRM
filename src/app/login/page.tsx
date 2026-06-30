@@ -40,11 +40,11 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-5xl items-center">
         <section className="w-full rounded-lg border border-stone-200 bg-white p-6 shadow-sm md:p-10">
           <Image
-            alt="Qarizmi"
+            alt="NAIA-os"
             className="mb-8 h-auto w-44"
             height={58}
             priority
-            src="/brand/qarizmi-logo-small.png"
+            src="/brand/naia-os-logo-small.png"
             width={180}
           />
           <PageHeader
@@ -57,11 +57,11 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             }
             description={
               configured
-                ? "Use an approved Qarizmi account to access the internal operating system."
+                ? "Use an approved NAIA-os account to access the internal operating system."
                 : "Supabase environment variables are missing, so sign-in is disabled."
             }
             eyebrow="Authentication"
-            title="Sign in to Qarizmi OS"
+            title="Sign in to NAIA-os"
           />
           <div className="mt-8 grid gap-6 md:grid-cols-[minmax(0,1fr)_18rem]">
             <div className="space-y-4">
@@ -184,14 +184,14 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
               </h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
                 Accounts are created in Supabase Auth by an admin. Public signup
-                is not exposed in Qarizmi OS.
+                is not exposed in NAIA-os.
               </p>
               <ShieldCheck className="h-5 w-5 text-emerald-700" />
               <h2 className="mt-4 text-base font-semibold text-stone-950">
-                Qarizmi-only policy
+                NAIA-os-only policy
               </h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                By default, access is restricted to approved Qarizmi email
+                By default, access is restricted to approved NAIA-os email
                 accounts and can be narrowed to exact addresses in Vercel.
               </p>
             </div>
@@ -211,13 +211,13 @@ function getLoginErrorMessage(error: string | undefined) {
     case "missing":
       return "Enter your email and password.";
     case "missing-email":
-      return "Enter your Qarizmi email.";
+      return "Enter your NAIA-os email.";
     case "magic-link":
       return "A sign-in link could not be sent for that email.";
     case "invalid-link":
       return "That sign-in link is invalid or expired.";
     case "unauthorized":
-      return "This account is not authorized for Qarizmi OS.";
+      return "This account is not authorized for NAIA-os.";
     default:
       return null;
   }
@@ -226,7 +226,7 @@ function getLoginErrorMessage(error: string | undefined) {
 function getLoginNoticeMessage(notice: string | undefined) {
   switch (notice) {
     case "sent":
-      return "Check your Qarizmi inbox for a sign-in link.";
+      return "Check your NAIA-os inbox for a sign-in link.";
     default:
       return null;
   }

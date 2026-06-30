@@ -1,6 +1,8 @@
 import React from "react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { getAppSession } from "@/platform/auth/session";
+import { ChangePasswordForm } from "./change-password-form";
 import {
   CheckCircle2,
   AlertCircle,
@@ -9,6 +11,9 @@ import {
   FolderOpen,
   Mail,
   Shield,
+  User,
+  Building2,
+  KeyRound,
 } from "lucide-react";
 
 type IntegrationStatus = "connected" | "not-configured" | "partial";
@@ -36,7 +41,7 @@ function getIntegrations(): Integration[] {
       id: "supabase",
       name: "Supabase",
       description:
-        "Base de données PostgreSQL, authentification et Row Level Security pour toutes les données Qarizmi OS.",
+        "Base de données PostgreSQL, authentification et Row Level Security pour toutes les données NAIA-os.",
       status: supabaseUrl && supabaseKey ? "connected" : "not-configured",
       icon: <Database className="h-5 w-5" />,
       detail: supabaseUrl
@@ -105,17 +110,92 @@ function statusBadgeClass(status: IntegrationStatus): string {
   return "bg-stone-100 text-stone-500 border-stone-200";
 }
 
-export default function SettingsPage() {
+export default async function SettingsPage() {
   const integrations = getIntegrations();
+  const session = await getAppSession();
 
   return (
     <div className="space-y-8">
       <PageHeader
         eyebrow="Système · Paramètres"
-        title="Intégrations & Configuration"
-        description="Statut de toutes les intégrations tierces configurées via les variables d'environnement."
+        title="Paramètres & Intégrations"
+        description="Gérez votre profil utilisateur et la configuration système de NAIA-os."
         actions={<StatusBadge status="live" />}
       />
+
+      {/* User Profile Section */}
+      <section className="grid gap-6 md:grid-cols-2">
+        <article className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 flex-none items-center justify-center rounded-md bg-stone-100 text-stone-600">
+              <User className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-stone-950">
+                Informations du compte
+              </h2>
+              <p className="text-sm text-stone-500">
+                Vos informations personnelles
+              </p>
+            </div>
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+                Nom
+              </label>
+              <p className="text-sm font-medium text-stone-900">
+                {session.user.name}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+                Email
+              </label>
+              <p className="text-sm font-medium text-stone-900">
+                {session.user.email}
+              </p>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+                Rôle
+              </label>
+              <p className="text-sm font-medium text-stone-900 capitalize">
+                {session.user.role}
+              </p>
+            </div>
+            <div className="pt-2 border-t border-stone-100">
+              <label className="flex items-center gap-2 text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+                <Building2 className="h-3.5 w-3.5" />
+                Organisation
+              </label>
+              <p className="text-sm font-medium text-stone-900">
+                {session.organization.name}
+              </p>
+            </div>
+          </div>
+        </article>
+
+        <article className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
+          <div className="flex items-center gap-3 mb-4">
+            <div className="flex h-10 w-10 flex-none items-center justify-center rounded-md bg-stone-100 text-stone-600">
+              <KeyRound className="h-5 w-5" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-stone-950">
+                Sécurité
+              </h2>
+              <p className="text-sm text-stone-500">
+                Mettre à jour votre mot de passe
+              </p>
+            </div>
+          </div>
+          <ChangePasswordForm />
+        </article>
+      </section>
+
+      <div className="border-t border-stone-200 pt-8" />
 
       {/* Security note */}
       <div className="flex items-start gap-3 rounded-lg border border-stone-200 bg-stone-50 p-4">

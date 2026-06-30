@@ -14,12 +14,12 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Qarizmi OS",
+  title: "NAIA-os",
   description:
-    "Internal operating system and AI workflow platform for Qarizmi.",
+    "Internal operating system and AI workflow platform for NAIA-os.",
   icons: {
-    icon: "/brand/qarizmi-q.png",
-    apple: "/brand/qarizmi-q.png",
+    icon: "/brand/naia-os-q.png",
+    apple: "/brand/naia-os-q.png",
   },
 };
 
@@ -32,7 +32,23 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning
     >
+      <head>
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+                  document.documentElement.classList.add('dark');
+                } else {
+                  document.documentElement.classList.remove('dark');
+                }
+              } catch (_) {}
+            `,
+          }}
+        />
+      </head>
       <body className="min-h-full">
         {children}
         <Toaster position="top-right" reverseOrder={false} />

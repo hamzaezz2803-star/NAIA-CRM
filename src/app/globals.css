@@ -1,24 +1,115 @@
 @import "tailwindcss";
 
-:root {
-  --background: #fafaf9;
-  --foreground: #1c1917;
-}
+@custom-variant dark (&:where(.dark, .dark *));
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
+  --color-stone-50: var(--stone-50);
+  --color-stone-100: var(--stone-100);
+  --color-stone-200: var(--stone-200);
+  --color-stone-300: var(--stone-300);
+  --color-stone-400: var(--stone-400);
+  --color-stone-500: var(--stone-500);
+  --color-stone-600: var(--stone-600);
+  --color-stone-700: var(--stone-700);
+  --color-stone-800: var(--stone-800);
+  --color-stone-900: var(--stone-900);
+  --color-stone-950: var(--stone-950);
+
+  --color-white: var(--white);
+
+  --color-background: var(--color-stone-50);
+  --color-foreground: var(--color-stone-950);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+@layer base {
+  :root {
+    --stone-50: #fafaf9;
+    --stone-100: #f5f5f4;
+    --stone-200: #e7e5e4;
+    --stone-300: #d6d3d1;
+    --stone-400: #a8a29e;
+    --stone-500: #78716c;
+    --stone-600: #57534e;
+    --stone-700: #44403c;
+    --stone-800: #292524;
+    --stone-900: #1c1917;
+    --stone-950: #0c0a09;
+    --white: #ffffff;
+  }
+
+  body {
+    background: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+    transition:
+      background-color 0.2s ease,
+      border-color 0.2s ease,
+      color 0.2s ease;
+  }
+}
+
+/* Premium Dark Mode variables override (Zinc/Slate theme inspired by Linear & Vercel) */
+:root.dark,
+html.dark,
+.dark {
+  --stone-50: #09090b; /* Main page background */
+  --stone-100: #18181b; /* Hover backgrounds / table headers */
+  --stone-200: #27272a; /* Muted borders / dividers */
+  --stone-300: #3f3f46; /* Inputs / secondary borders */
+  --stone-400: #52525b; /* Subtle icons / details */
+  --stone-500: #8e8e93; /* Muted text / labels (WCAG AA compliant contrast) */
+  --stone-600: #a1a1aa; /* Muted body text */
+  --stone-700: #d4d4d8; /* Light grey body text */
+  --stone-800: #e4e4e7; /* High contrast body text */
+  --stone-900: #fafafa; /* Title text / highlights */
+  --stone-950: #ffffff; /* Max contrast text */
+
+  --white: #121215; /* Elevated panels (cards, sidebar, header) */
 }
 
 ::selection {
   background: #ccfbf1;
   color: #134e4a;
+}
+
+.dark ::selection {
+  background: #0f766e;
+  color: #ffffff;
+}
+
+/* Global scrollbar styling for a polished look */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-stone-200);
+  border-radius: 9999px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-stone-300);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: var(--color-stone-300);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: var(--color-stone-400);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useTransition } from "react";
+import React, { useState, useEffect, useTransition, useRef } from "react";
 import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import {
@@ -29,6 +29,8 @@ import {
   Trophy,
   Activity,
   Users,
+  Mic,
+  Check,
 } from "lucide-react";
 import {
   fetchLeadsAction,
@@ -113,51 +115,58 @@ const COLUMNS: {
   {
     label: "À contacter",
     status: "lead-to-contact",
-    color: "bg-blue-50 text-blue-700 border-blue-200",
+    color:
+      "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/30",
     dot: "bg-blue-500",
-    border: "border-blue-200",
+    border: "border-blue-200 dark:border-blue-900/30",
   },
   {
     label: "Contacté",
     status: "contacted",
-    color: "bg-stone-50 text-stone-600 border-stone-200",
+    color:
+      "bg-stone-50 text-stone-600 border-stone-200 dark:bg-stone-900/50 dark:text-stone-400 dark:border-stone-800",
     dot: "bg-stone-400",
-    border: "border-stone-200",
+    border: "border-stone-200 dark:border-stone-800",
   },
   {
     label: "À relancer",
     status: "to-follow-up",
-    color: "bg-amber-50 text-amber-700 border-amber-200",
+    color:
+      "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/30",
     dot: "bg-amber-500",
-    border: "border-amber-200",
+    border: "border-amber-200 dark:border-amber-900/30",
   },
   {
     label: "Meeting fixé",
     status: "meeting-booked",
-    color: "bg-indigo-50 text-indigo-700 border-indigo-200",
+    color:
+      "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/20 dark:text-indigo-400 dark:border-indigo-900/30",
     dot: "bg-indigo-500",
-    border: "border-indigo-200",
+    border: "border-indigo-200 dark:border-indigo-900/30",
   },
   {
     label: "Propale envoyée",
     status: "proposal-sent",
-    color: "bg-emerald-50 text-emerald-700 border-emerald-200",
+    color:
+      "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/30",
     dot: "bg-emerald-500",
-    border: "border-emerald-200",
+    border: "border-emerald-200 dark:border-emerald-900/30",
   },
   {
     label: "Gagné ✓",
     status: "won",
-    color: "bg-teal-50 text-teal-700 border-teal-200",
+    color:
+      "bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/20 dark:text-teal-400 dark:border-teal-900/30",
     dot: "bg-teal-500",
-    border: "border-teal-200",
+    border: "border-teal-200 dark:border-teal-900/30",
   },
   {
     label: "Dead end",
     status: "dead-end",
-    color: "bg-red-50 text-red-700 border-red-200",
+    color:
+      "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900/30",
     dot: "bg-red-400",
-    border: "border-red-200",
+    border: "border-red-200 dark:border-red-900/30",
   },
 ];
 
@@ -292,6 +301,28 @@ export default function LeadsPage() {
   const [isExtracting, setIsExtracting] = useState(false);
   const [extractError, setExtractError] = useState<string | null>(null);
 
+  // Audio recording state
+  const [isRecording, setIsRecording] = useState(false);
+  const [mediaRecorder, setMediaRecorder] = useState<MediaRecorder | null>(
+    null,
+  );
+  const [isTranscribing, setIsTranscribing] = useState(false);
+  const [recordingTime, setRecordingTime] = useState(0);
+  const shouldTranscribeRef = useRef(true);
+
+  // Audio recording timer effect
+  useEffect(() => {
+    let interval: NodeJS.Timeout;
+    if (isRecording) {
+      interval = setInterval(() => {
+        setRecordingTime((prev) => prev + 1);
+      }, 1000);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+    };
+  }, [isRecording]);
+
   // Form fields (from extracted or manual)
   const [formTopic, setFormTopic] = useState("");
   const [formCompanyName, setFormCompanyName] = useState("");
@@ -403,14 +434,139 @@ export default function LeadsPage() {
     }
   };
 
+  // ── Audio recording ──────────────────────────────────────
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+
+      // Determine format support
+      let options = { mimeType: "audio/webm" };
+      if (!MediaRecorder.isTypeSupported("audio/webm")) {
+        if (MediaRecorder.isTypeSupported("audio/mp4")) {
+          options = { mimeType: "audio/mp4" };
+        } else {
+          options = { mimeType: "" }; // default browser format
+        }
+      }
+
+      const recorder = new MediaRecorder(stream, options);
+      const chunks: Blob[] = [];
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          chunks.push(e.data);
+        }
+      };
+
+      recorder.onstop = async () => {
+        // Stop all tracks in the stream
+        stream.getTracks().forEach((track) => track.stop());
+        setMediaRecorder((current) => (current === recorder ? null : current));
+        setIsRecording(false);
+
+        if (!shouldTranscribeRef.current) {
+          // Recording was discarded/cancelled
+          return;
+        }
+
+        const audioBlob = new Blob(chunks, {
+          type: options.mimeType || "audio/webm",
+        });
+        if (audioBlob.size === 0) return;
+
+        setIsTranscribing(true);
+        const transcribeToastId = toast.loading(
+          "Transcription de l'enregistrement...",
+        );
+        try {
+          const response = await fetch("/api/crm/transcribe", {
+            method: "POST",
+            headers: {
+              "Content-Type": audioBlob.type || "audio/webm",
+            },
+            body: audioBlob,
+          });
+
+          if (!response.ok) {
+            throw new Error("Erreur de transcription");
+          }
+
+          const data = await response.json();
+          if (data.text) {
+            setNaturalText(data.text);
+            toast.success("Enregistrement transcrit !", {
+              id: transcribeToastId,
+            });
+            // Automatically run AI extraction on the transcribed text
+            await handleExtract(data.text);
+          } else {
+            toast.error("Aucun texte détecté.", { id: transcribeToastId });
+          }
+        } catch (err) {
+          const error = err instanceof Error ? err : new Error(String(err));
+          console.error("Failed to transcribe:", error);
+          toast.error("Échec de la transcription : " + error.message, {
+            id: transcribeToastId,
+          });
+        } finally {
+          setIsTranscribing(false);
+        }
+      };
+
+      shouldTranscribeRef.current = true;
+      recorder.start();
+      setMediaRecorder(recorder);
+      setRecordingTime(0);
+      setIsRecording(true);
+    } catch (err) {
+      console.error("Failed to start recording:", err);
+      toast.error("Impossible d'accéder au microphone.");
+    }
+  };
+
+  const stopRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      shouldTranscribeRef.current = true;
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const discardActiveRecording = () => {
+    if (mediaRecorder && mediaRecorder.state !== "inactive") {
+      shouldTranscribeRef.current = false;
+      mediaRecorder.stop();
+      setIsRecording(false);
+    }
+  };
+
+  const cancelRecording = () => {
+    discardActiveRecording();
+    toast.success("Enregistrement annulé.");
+  };
+
+  const closeAddModal = () => {
+    discardActiveRecording();
+    setIsAddOpen(false);
+  };
+
+  const formatTime = (seconds: number) => {
+    const m = Math.floor(seconds / 60)
+      .toString()
+      .padStart(2, "0");
+    const s = (seconds % 60).toString().padStart(2, "0");
+    return `${m}:${s}`;
+  };
+
   // ── AI extraction ──────────────────────────────────────
-  async function handleExtract() {
-    if (!naturalText.trim()) return;
+  async function handleExtract(overrideText?: string) {
+    const textToUse = overrideText !== undefined ? overrideText : naturalText;
+    if (!textToUse.trim()) return;
     setIsExtracting(true);
     setExtractError(null);
     const extractToastId = toast.loading("Analyse et extraction en cours...");
 
-    const res = await extractLeadFromNaturalTextAction(naturalText);
+    const res = await extractLeadFromNaturalTextAction(textToUse);
 
     if (res.success && res.extracted) {
       const e = res.extracted;
@@ -725,8 +881,9 @@ export default function LeadsPage() {
       description: "Opportunités enregistrées",
       icon: Users,
       colorClass:
-        "from-blue-50/50 to-indigo-50/30 border-blue-100/80 hover:border-blue-300",
-      iconColor: "text-blue-600 bg-blue-100/85",
+        "from-blue-50/50 to-indigo-50/30 border-blue-100/80 hover:border-blue-300 dark:from-blue-950/20 dark:to-indigo-950/10 dark:border-blue-900/40 dark:hover:border-blue-800/60",
+      iconColor:
+        "text-blue-600 bg-blue-100/85 dark:text-blue-400 dark:bg-blue-900/40",
     },
     {
       label: "Actifs",
@@ -734,8 +891,9 @@ export default function LeadsPage() {
       description: `${activePercentage}% du total`,
       icon: Activity,
       colorClass:
-        "from-amber-50/50 to-orange-50/30 border-amber-100 hover:border-amber-300",
-      iconColor: "text-amber-600 bg-amber-100/85",
+        "from-amber-50/50 to-orange-50/30 border-amber-100 hover:border-amber-300 dark:from-amber-950/20 dark:to-orange-950/10 dark:border-amber-900/40 dark:hover:border-amber-800/60",
+      iconColor:
+        "text-amber-600 bg-amber-100/85 dark:text-amber-400 dark:bg-amber-900/40",
     },
     {
       label: "Meetings",
@@ -743,8 +901,9 @@ export default function LeadsPage() {
       description: "Rendez-vous fixés",
       icon: CalendarDays,
       colorClass:
-        "from-violet-50/50 to-purple-50/30 border-violet-100 hover:border-violet-300",
-      iconColor: "text-violet-600 bg-violet-100/85",
+        "from-violet-50/50 to-purple-50/30 border-violet-100 hover:border-violet-300 dark:from-violet-950/20 dark:to-purple-950/10 dark:border-violet-900/40 dark:hover:border-violet-800/60",
+      iconColor:
+        "text-violet-600 bg-violet-100/85 dark:text-violet-400 dark:bg-violet-900/40",
     },
     {
       label: "Gagnés",
@@ -752,8 +911,9 @@ export default function LeadsPage() {
       description: `${conversionRate}% de conversion`,
       icon: Trophy,
       colorClass:
-        "from-teal-50/50 to-emerald-50/30 border-teal-100 hover:border-teal-300",
-      iconColor: "text-teal-600 bg-teal-100/85",
+        "from-teal-50/50 to-emerald-50/30 border-teal-100 hover:border-teal-300 dark:from-teal-950/20 dark:to-emerald-950/10 dark:border-teal-900/40 dark:hover:border-teal-800/60",
+      iconColor:
+        "text-teal-600 bg-teal-100/85 dark:text-teal-400 dark:bg-teal-900/40",
     },
   ];
 
@@ -769,7 +929,7 @@ export default function LeadsPage() {
 
         <div className="flex flex-wrap items-center gap-3 shrink-0">
           {isGoogleConnected ? (
-            <div className="flex items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs text-teal-800 font-medium">
+            <div className="flex items-center gap-2 rounded-md border border-teal-200 bg-teal-50 dark:border-teal-900/50 dark:bg-teal-950/30 px-3 py-1.5 text-xs text-teal-800 dark:text-teal-400 font-medium">
               <span className="h-2 w-2 rounded-full bg-teal-500 animate-pulse" />
               Google Workspace connecté
               <button
@@ -1115,7 +1275,7 @@ export default function LeadsPage() {
                             <Button
                               onClick={() => handleDelete(lead.id)}
                               variant="ghost"
-                              className="h-8 px-2 text-xs text-red-650 hover:bg-red-50 hover:text-red-700"
+                              className="h-8 px-2 text-red-650 hover:bg-red-50 hover:text-red-700"
                               title="Supprimer"
                             >
                               <Trash2 className="h-4 w-4" />
@@ -1560,15 +1720,15 @@ export default function LeadsPage() {
                                 </span>
                               </div>
 
-                              <div className="mt-3 space-y-1.5 text-xs text-stone-600">
+                              <div className="mt-3 space-y-1.5 text-xs">
                                 {companyName && (
-                                  <div className="flex items-center gap-1.5 font-medium text-stone-750">
+                                  <div className="flex items-center gap-1.5 font-medium text-stone-700">
                                     <Building2 className="h-3.5 w-3.5 text-stone-400" />
                                     {companyName}
                                   </div>
                                 )}
                                 {contactName && (
-                                  <div className="flex items-center gap-1.5">
+                                  <div className="flex items-center gap-1.5 text-stone-500">
                                     <User className="h-3.5 w-3.5 text-stone-400" />
                                     {contactName}
                                   </div>
@@ -1576,7 +1736,7 @@ export default function LeadsPage() {
                               </div>
 
                               {lead.notes && (
-                                <div className="mt-3 text-xs bg-white/60 p-2.5 rounded-lg border border-stone-150/40 text-stone-700 line-clamp-3">
+                                <div className="mt-3 text-xs bg-stone-50/60 p-2.5 rounded-lg border border-stone-200/50 text-stone-700 line-clamp-3">
                                   {lead.notes
                                     .replace(/Entreprise:[^\n]*\n?/, "")
                                     .replace(/Contact:[^\n]*\n?/, "")
@@ -1651,21 +1811,21 @@ export default function LeadsPage() {
 
       {/* ── Add Lead Modal ────────────────────────────── */}
       {isAddOpen && (
-        <Modal title="Nouveau lead" onClose={() => setIsAddOpen(false)}>
+        <Modal title="Nouveau lead" onClose={closeAddModal}>
           <form onSubmit={handleCreateLead} className="space-y-5">
             {/* Natural language intake */}
-            <div className="rounded-lg border border-teal-200 bg-teal-50 p-4">
-              <div className="flex items-center gap-2 text-sm font-semibold text-teal-800">
+            <div className="rounded-lg border border-teal-200 bg-teal-50 dark:border-teal-900/50 dark:bg-teal-950/20 p-4">
+              <div className="flex items-center gap-2 text-sm font-semibold text-teal-800 dark:text-teal-400">
                 <Bot className="h-4 w-4" />
                 Saisie en langage naturel (IA Groq)
               </div>
-              <p className="mt-1 text-xs text-teal-600">
+              <p className="mt-1 text-xs text-teal-600 dark:text-teal-500">
                 Décrivez le lead et l&apos;IA remplira le formulaire
                 automatiquement.
               </p>
               <textarea
                 id="natural-text-input"
-                className="mt-3 w-full rounded-md border border-teal-200 bg-white px-3 py-2 text-sm text-stone-800 placeholder:text-stone-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20"
+                className="mt-3 w-full rounded-md border border-teal-200 bg-white px-3 py-2 text-sm text-stone-800 placeholder:text-stone-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20 dark:border-teal-900/50 dark:bg-stone-950/50 dark:text-stone-200"
                 rows={3}
                 placeholder='Ex: "J&apos;ai parlé à Karim Saidi de Atlas Telecom pour un projet IA CRM, à relancer lundi."'
                 value={naturalText}
@@ -1676,25 +1836,127 @@ export default function LeadsPage() {
                   <AlertCircle className="h-3.5 w-3.5" /> {extractError}
                 </p>
               )}
-              <Button
-                type="button"
-                variant="outline"
-                className="mt-2 h-8 text-xs px-2.5 border-teal-300 text-teal-700 hover:bg-teal-50"
-                disabled={isExtracting || !naturalText.trim()}
-                onClick={handleExtract}
-              >
-                {isExtracting ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />{" "}
-                    Extraction…
-                  </>
-                ) : (
-                  <>
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Extraire avec
-                    l&apos;IA
-                  </>
-                )}
-              </Button>
+              {isRecording ? (
+                <div className="mt-3 flex items-center justify-between rounded-lg border border-red-200 bg-red-50/50 dark:border-red-950/10 dark:bg-red-950/20 px-4 py-3">
+                  <div className="flex items-center gap-3">
+                    {/* Blinking red dot */}
+                    <span className="relative flex h-2.5 w-2.5">
+                      <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75"></span>
+                      <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-red-500"></span>
+                    </span>
+
+                    {/* Timer */}
+                    <span className="text-xs font-semibold text-red-600 dark:text-red-400 font-mono">
+                      {formatTime(recordingTime)}
+                    </span>
+
+                    {/* Sound waves visualizer */}
+                    <div className="flex items-end gap-0.5 h-4 px-1.5">
+                      <span
+                        className="w-0.5 h-2 bg-red-500 rounded-full animate-bounce"
+                        style={{
+                          animationDelay: "0.1s",
+                          animationDuration: "0.6s",
+                        }}
+                      />
+                      <span
+                        className="w-0.5 h-4 bg-red-500 rounded-full animate-bounce"
+                        style={{
+                          animationDelay: "0.2s",
+                          animationDuration: "0.6s",
+                        }}
+                      />
+                      <span
+                        className="w-0.5 h-3 bg-red-500 rounded-full animate-bounce"
+                        style={{
+                          animationDelay: "0.3s",
+                          animationDuration: "0.6s",
+                        }}
+                      />
+                      <span
+                        className="w-0.5 h-5 bg-red-500 rounded-full animate-bounce"
+                        style={{
+                          animationDelay: "0.4s",
+                          animationDuration: "0.6s",
+                        }}
+                      />
+                      <span
+                        className="w-0.5 h-2 bg-red-500 rounded-full animate-bounce"
+                        style={{
+                          animationDelay: "0.5s",
+                          animationDuration: "0.6s",
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    {/* Discard button */}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-8 px-2 text-stone-500 hover:text-red-600 hover:bg-red-50 dark:text-stone-400 dark:hover:text-red-400 dark:hover:bg-red-950/20"
+                      onClick={cancelRecording}
+                    >
+                      <Trash2 className="h-4 w-4 mr-1" />
+                      Annuler
+                    </Button>
+
+                    {/* Done button */}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      className="h-8 px-3 bg-red-600 hover:bg-red-700 text-white border-transparent flex items-center justify-center"
+                      onClick={stopRecording}
+                    >
+                      <Check className="h-4 w-4 mr-1" />
+                      Terminer
+                    </Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 text-xs px-2.5 border-teal-300 text-teal-700 hover:bg-teal-50 dark:border-teal-900/80 dark:text-teal-400 dark:hover:bg-teal-950/50"
+                    disabled={isExtracting || !naturalText.trim()}
+                    onClick={() => handleExtract()}
+                  >
+                    {isExtracting ? (
+                      <>
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />{" "}
+                        Extraction…
+                      </>
+                    ) : (
+                      <>
+                        <Sparkles className="mr-1.5 h-3.5 w-3.5" /> Extraire
+                        avec l&apos;IA
+                      </>
+                    )}
+                  </Button>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-8 text-xs px-2.5 border-teal-300 text-teal-700 hover:bg-teal-50 dark:border-teal-900/80 dark:text-teal-400 dark:hover:bg-teal-950/50"
+                    disabled={isExtracting || isTranscribing}
+                    onClick={startRecording}
+                  >
+                    {isTranscribing ? (
+                      <>
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        Transcription...
+                      </>
+                    ) : (
+                      <>
+                        <Mic className="mr-1.5 h-3.5 w-3.5" />
+                        Enregistrer ma voix
+                      </>
+                    )}
+                  </Button>
+                </div>
+              )}
             </div>
 
             {/* Manual form */}
@@ -1863,11 +2125,7 @@ export default function LeadsPage() {
             )}
 
             <div className="flex justify-end gap-3 border-t border-stone-100 pt-4">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => setIsAddOpen(false)}
-              >
+              <Button type="button" variant="outline" onClick={closeAddModal}>
                 Annuler
               </Button>
               <Button type="submit" disabled={isSubmitting}>
@@ -1904,8 +2162,8 @@ export default function LeadsPage() {
             )}
 
             {(selectedLead.nextAction || selectedLead.leadDate) && (
-              <div className="flex items-start gap-2 text-sm text-stone-600 bg-amber-50/50 p-3 rounded-lg border border-amber-200/50">
-                <Calendar className="mt-0.5 h-4 w-4 flex-none text-amber-700" />
+              <div className="flex items-start gap-2 text-sm text-stone-600 dark:text-stone-300 bg-amber-50/50 dark:bg-amber-950/20 p-3 rounded-lg border border-amber-200/50 dark:border-amber-900/30">
+                <Calendar className="mt-0.5 h-4 w-4 flex-none text-amber-700 dark:text-amber-500" />
                 <div>
                   {selectedLead.nextAction && (
                     <p>
@@ -2110,7 +2368,7 @@ export default function LeadsPage() {
                   .replace(/\D/g, "")
                   .trim();
 
-                const emailSubject = `Qarizmi - Relance concernant votre projet : ${selectedLead.topic}`;
+                const emailSubject = `NAIA-os - Relance concernant votre projet : ${selectedLead.topic}`;
                 const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(
                   emailLine || "",
                 )}&su=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(
@@ -2310,7 +2568,7 @@ function LeadCard({
           </p>
         )}
         {lead.leadDate && (
-          <p className="mt-1.5 flex items-center gap-1 text-xs text-amber-700 font-semibold bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200/40 w-fit">
+          <p className="mt-1.5 flex items-center gap-1 text-xs text-amber-700 dark:text-amber-400 font-semibold bg-amber-50 dark:bg-amber-950/30 px-1.5 py-0.5 rounded border border-amber-200/40 dark:border-amber-900/50 w-fit">
             <Calendar className="h-3 w-3" />
             {formatLeadDateForDisplay(lead.leadDate)}
           </p>
@@ -2333,7 +2591,7 @@ function LeadCard({
           type="button"
           title="Relance IA"
           onClick={() => onGenerateDraft(lead)}
-          className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-teal-50 hover:text-teal-700"
+          className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-teal-50 dark:hover:bg-teal-950/50 hover:text-teal-700 dark:hover:text-teal-400"
         >
           <Bot className="h-3.5 w-3.5" />
         </button>
@@ -2341,7 +2599,7 @@ function LeadCard({
           type="button"
           title="Supprimer"
           onClick={() => onDelete(lead.id)}
-          className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-red-50 hover:text-red-650"
+          className="flex items-center gap-1 rounded p-1 text-stone-500 hover:bg-red-50 dark:hover:bg-red-950/50 hover:text-red-650 dark:hover:text-red-400"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>

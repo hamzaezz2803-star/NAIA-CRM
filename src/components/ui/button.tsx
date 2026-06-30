@@ -6,13 +6,13 @@ export type ButtonVariant = "primary" | "secondary" | "ghost" | "outline";
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
-    "border-transparent bg-stone-950 text-white shadow-sm hover:bg-stone-800",
+    "border-transparent bg-stone-950 text-white shadow-sm hover:bg-stone-800 dark:bg-stone-50 dark:text-stone-950 dark:hover:bg-stone-200",
   secondary:
-    "border-transparent bg-white text-stone-900 shadow-sm ring-1 ring-stone-200 hover:bg-stone-50",
+    "border-transparent bg-white text-stone-900 shadow-sm ring-1 ring-stone-200 hover:bg-stone-50 dark:bg-stone-900 dark:text-stone-100 dark:ring-stone-800 dark:hover:bg-stone-800/80",
   ghost:
-    "border-transparent bg-transparent text-stone-700 hover:bg-stone-100 hover:text-stone-950",
+    "border-transparent bg-transparent text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-50",
   outline:
-    "border-stone-300 bg-transparent text-stone-800 hover:bg-stone-100 hover:text-stone-950",
+    "border-stone-300 bg-transparent text-stone-800 hover:bg-stone-100 hover:text-stone-950 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:text-stone-50",
 };
 
 export function buttonVariants({
