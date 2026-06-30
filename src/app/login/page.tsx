@@ -3,16 +3,14 @@ import Image from "next/image";
 import { redirect } from "next/navigation";
 
 import { PageHeader } from "@/components/layout/page-header";
-import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
-import {
-  requestMagicLinkAction,
-  signInWithPasswordAction,
-} from "@/platform/auth/actions";
+import { requestMagicLinkAction } from "@/platform/auth/actions";
 import { isAuthorizedUser } from "@/platform/auth/access";
 import { isSupabaseConfigured } from "@/platform/auth/config";
 import { sanitizeRedirectPath } from "@/platform/auth/safe-redirect";
 import { getCurrentSupabaseUser } from "@/platform/auth/supabase-server";
+
+import { MagicLinkSubmitButton } from "./magic-link-submit-button";
 
 type LoginPageProps = {
   searchParams?: Promise<{
@@ -111,70 +109,7 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                     {errorMessage}
                   </p>
                 ) : null}
-                <Button
-                  className="mt-5 w-full"
-                  disabled={!configured}
-                  type="submit"
-                >
-                  Send sign-in link
-                </Button>
-              </form>
-              <form
-                action={signInWithPasswordAction}
-                className="rounded-lg border border-stone-200 p-5"
-              >
-                <input
-                  name="redirectedFrom"
-                  type="hidden"
-                  value={redirectedFrom}
-                />
-                <h2 className="text-base font-semibold text-stone-950">
-                  Password sign-in
-                </h2>
-                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                  <div className="space-y-2">
-                    <label
-                      className="text-sm font-medium text-stone-800"
-                      htmlFor="password-email"
-                    >
-                      Email
-                    </label>
-                    <input
-                      autoComplete="email"
-                      className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
-                      disabled={!configured}
-                      id="password-email"
-                      name="email"
-                      required
-                      type="email"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <label
-                      className="text-sm font-medium text-stone-800"
-                      htmlFor="password"
-                    >
-                      Password
-                    </label>
-                    <input
-                      autoComplete="current-password"
-                      className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
-                      disabled={!configured}
-                      id="password"
-                      name="password"
-                      required
-                      type="password"
-                    />
-                  </div>
-                </div>
-                <Button
-                  className="mt-5"
-                  disabled={!configured}
-                  type="submit"
-                  variant="secondary"
-                >
-                  Sign in with password
-                </Button>
+                <MagicLinkSubmitButton disabled={!configured} />
               </form>
             </div>
             <div className="rounded-lg border border-stone-200 p-5">
