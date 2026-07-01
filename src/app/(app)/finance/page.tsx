@@ -1,10 +1,5 @@
-import { ModulePlaceholderPage } from "@/components/layout/module-placeholder-page";
+import { NaiaExperience } from "@/features/naia/naia-experience";
 
 export default function FinancePage() {
-  return (
-    <ModulePlaceholderPage
-      detail="Finance will cover professional expenses, supplier invoices, client invoices, revenue, costs, cash visibility, and pre-accounting."
-      moduleId="finance"
-    />
-  );
+  return <NaiaExperience sectionId="cash-flow" />;
 }

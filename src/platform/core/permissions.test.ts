@@ -9,6 +9,15 @@ describe("platform permissions", () => {
     ).toBe(true);
   });
 
+  it("treats manage as covering narrower actions in the same module", () => {
+    expect(hasPermission("owner", { module: "crm", action: "update" })).toBe(
+      true,
+    );
+    expect(hasPermission("admin", { module: "crm", action: "create" })).toBe(
+      true,
+    );
+  });
+
   it("keeps viewers read-only in CRM", () => {
     expect(hasPermission("viewer", { module: "crm", action: "read" })).toBe(
       true,

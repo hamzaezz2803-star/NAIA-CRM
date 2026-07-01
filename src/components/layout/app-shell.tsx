@@ -19,6 +19,7 @@ import {
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
+  Sparkles,
   User as UserIcon,
 } from "lucide-react";
 
@@ -45,6 +46,7 @@ const moduleIcons: Record<
   ComponentType<{ className?: string }>
 > = {
   dashboard: LayoutDashboard,
+  naia: Sparkles,
   crm: Handshake,
   meetings: CalendarDays,
   proposals: FileText,
@@ -251,7 +253,14 @@ export function AppShell({
             </div>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-7xl px-4 py-8 md:px-6 lg:px-8">
+        <main
+          className={cn(
+            "mx-auto w-full",
+            pathname === "/naia"
+              ? "max-w-none px-0 py-0"
+              : "max-w-7xl px-4 py-8 md:px-6 lg:px-8",
+          )}
+        >
           {children}
         </main>
       </div>
@@ -334,11 +343,9 @@ function ShellSidebar({
               {!isCollapsed && (
                 <>
                   <span className="min-w-0 flex-1 truncate">{module.name}</span>
-                  {module.status !== "planned" ? (
-                    <span className="hidden md:inline">
-                      <StatusBadge status={module.status} />
-                    </span>
-                  ) : null}
+                  <span className="hidden md:inline">
+                    <StatusBadge status={module.status} />
+                  </span>
                 </>
               )}
             </Link>

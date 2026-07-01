@@ -45,6 +45,7 @@ export function hasPermission(
   return rolePermissions[role].some(
     (permission) =>
       permission.module === requiredPermission.module &&
-      permission.action === requiredPermission.action,
+      (permission.action === requiredPermission.action ||
+        permission.action === "manage"),
   );
 }

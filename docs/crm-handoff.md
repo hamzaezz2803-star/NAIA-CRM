@@ -152,6 +152,36 @@ CRM-generated events should use the domain-event foundation:
 
 Future workflows can subscribe to these events through the outbox table. Do not call integration providers directly from UI components.
 
+## NAIA CRM Orchestration
+
+NAIA routes CRM intents through the Salma agent. The route handler is
+`src/app/api/naia/orchestrate/route.ts`, with pure intent logic in
+`src/features/naia/orchestrator.ts`.
+
+Safe defaults:
+
+- Read CRM context with `fetchLeadsAction()`.
+- Use `CRM_DUMMY_DATA=enabled` only for local or sandbox demo CRM data when
+  Supabase auth/rows are unavailable.
+- Prepare drafts for status changes and lead creation.
+- Execute CRM writes only after an explicit UI validation step.
+- Execute status-only updates through `updateLeadStatusAction()` so NAIA does not trigger provider side effects such as Calendar sync from generic lead updates.
+- Trigger Google Calendar only through `syncLeadToGoogleCalendarAction()` or an equivalent explicitly approved UI action, not as a side effect of lead create/update.
+- Keep provider actions such as email, WhatsApp, Google Drive, Calendar sync,
+  and delete flows behind a human approval foundation.
+- Treat `viewer` as read-only. CRM insert/update policies use
+  `public.is_org_contributor()` so only `owner`, `admin`, and `member` roles can
+  write records.
+
+When a lead moves to `meeting-booked`, NAIA prepares a decision-maker pitch
+next action. When a lead moves to `proposal-sent`, NAIA prepares the proposal
+next action. The CRM action itself remains organization-scoped through the
+existing CRM server actions.
+
+NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
+client sends only the original command, action id, and approval token. Do not
+reintroduce client-supplied action payload execution.
+
 ## GitHub Issue Body
 
 Use this if the issue cannot be created automatically:

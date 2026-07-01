@@ -1,10 +1,17 @@
-import { ModulePlaceholderPage } from "@/components/layout/module-placeholder-page";
+import { fetchLeadsAction } from "@/features/crm/actions";
+import { NaiaCommandCenter } from "@/features/naia/naia-command-center";
 
-export default function AutomationsPage() {
+export default async function AutomationsPage() {
+  const leads = await fetchLeadsAction();
+
   return (
-    <ModulePlaceholderPage
-      detail="Automations will start with observable workflow runs, retries, logs, errors, and approval gates before any external action is executed."
-      moduleId="automations"
+    <NaiaCommandCenter
+      initialCrmStats={{
+        leadCount: leads.length,
+        openLeadCount: leads.filter(
+          (lead) => lead.status !== "won" && lead.status !== "dead-end",
+        ).length,
+      }}
     />
   );
 }

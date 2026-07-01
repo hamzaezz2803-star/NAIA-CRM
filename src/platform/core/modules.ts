@@ -1,7 +1,8 @@
-export type ModuleStatus = "live" | "ready-for-build" | "planned";
+export type ModuleStatus = "live" | "guarded" | "ready-for-build";
 
 export type PlatformModuleId =
   | "dashboard"
+  | "naia"
   | "crm"
   | "meetings"
   | "proposals"
@@ -34,6 +35,16 @@ export const platformModules = [
     summary: "Operational home for NAIA-os with honest empty states.",
   },
   {
+    id: "naia",
+    name: "NAIA",
+    shortName: "NAIA",
+    href: "/naia",
+    status: "live",
+    owner: "platform",
+    summary:
+      "Voice-first orchestrator for lead intelligence, cash, CRM, delivery, and HR planning.",
+  },
+  {
     id: "crm",
     name: "CRM",
     shortName: "CRM",
@@ -48,7 +59,7 @@ export const platformModules = [
     name: "Meetings",
     shortName: "Meetings",
     href: "/meetings",
-    status: "planned",
+    status: "live",
     owner: "future",
     summary: "Meeting transcription, summaries, next steps, and CRM updates.",
   },
@@ -57,7 +68,7 @@ export const platformModules = [
     name: "Proposals",
     shortName: "Proposals",
     href: "/proposals",
-    status: "planned",
+    status: "live",
     owner: "future",
     summary: "Pitch and proposal generation from approved NAIA-os context.",
   },
@@ -66,7 +77,7 @@ export const platformModules = [
     name: "Projects",
     shortName: "Projects",
     href: "/projects",
-    status: "planned",
+    status: "live",
     owner: "future",
     summary:
       "Delivery workstreams, milestones, deliverables, risks, and status.",
@@ -76,7 +87,7 @@ export const platformModules = [
     name: "HR",
     shortName: "HR",
     href: "/hr",
-    status: "planned",
+    status: "live",
     owner: "future",
     summary: "Candidate intake, screening, tests, interviews, and offers.",
   },
@@ -85,7 +96,7 @@ export const platformModules = [
     name: "Finance",
     shortName: "Finance",
     href: "/finance",
-    status: "planned",
+    status: "live",
     owner: "future",
     summary:
       "Expenses, supplier invoices, client invoices, and cash visibility.",
@@ -95,7 +106,7 @@ export const platformModules = [
     name: "Automations",
     shortName: "Agents",
     href: "/automations",
-    status: "planned",
+    status: "live",
     owner: "future",
     summary: "Observable workflows with approval gates for sensitive actions.",
   },
@@ -104,17 +115,17 @@ export const platformModules = [
     name: "Integrations",
     shortName: "Connect",
     href: "/integrations",
-    status: "planned",
+    status: "guarded",
     owner: "platform",
     summary:
-      "Provider connections for Google, Slack, WhatsApp, and Microsoft 365.",
+      "Provider connection health for Google, Slack, WhatsApp, and Microsoft 365.",
   },
   {
     id: "settings",
     name: "Settings",
     shortName: "Settings",
     href: "/settings",
-    status: "planned",
+    status: "live",
     owner: "platform",
     summary: "Organization, members, roles, permissions, and audit settings.",
   },

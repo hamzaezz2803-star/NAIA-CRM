@@ -10,7 +10,16 @@ export const crmLeadStatuses = [
   "dead-end",
 ] as const;
 
-export type CrmLeadStatus = (typeof crmLeadStatuses)[number];
+export type CrmLeadStatus = string;
+
+export type CrmCategory = {
+  id: string;
+  organizationId: string;
+  name: string;
+  statusKey: string;
+  color: string;
+  position: number;
+};
 
 export type CrmCompanySummary = {
   id: string;
@@ -42,6 +51,19 @@ export type CrmLeadSummary = {
   leadDate?: string;
   createdAt: string;
   updatedAt: string;
+};
+
+export type CrmLeadDraft = {
+  companyName?: string;
+  contactEmail?: string;
+  contactName?: string;
+  contactPhone?: string;
+  leadDate?: string;
+  nextAction?: string;
+  notes?: string;
+  source?: string;
+  status: CrmLeadStatus;
+  topic: string;
 };
 
 export type CrmDomainEventType =
