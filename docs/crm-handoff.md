@@ -246,3 +246,13 @@ The following features and security updates have been successfully implemented:
 - Implemented persistent database-backed notifications and real-time banner alerts.
 - **RLS Policy Hardening** : Added a new migration (`20260630122000_secure_notifications_policies.sql`) to restrict `INSERT`, `UPDATE` (mark as read), and `DELETE` (dismiss) operations on `public.notifications` strictly to the owner (`profile_id = auth.uid()`).
 - Added automatic client-side rollback if deletion fails in database (to prevent notifications from reappearing on refresh).
+
+### 4. Tag Management & Note Assignments (Hamza - Sprint 1 Extension)
+
+- **Gestion des Tags** : Implemented custom tags management (add, edit, delete tags inline) and expanded tagging capabilities:
+  - **Tagging Leads**: Enabled associating tags to Leads in creation and edition flows.
+  - **Tagging Contacts**: Added junction table `crm_contact_tags` and implemented tagging Contacts directly on creation and in the new contact editor.
+- **Gestion des Notes** :
+  - **Note Collaborator Assignment**: Added `assigned_to_profile_id` column to `crm_lead_notes` table to allow assigning notes to a specific teammate.
+  - **Note Modification Date**: Track and display the last updated timestamp (_"Modifié le : [date]"_) when a note's content or assignee is updated.
+- **Contact Edit & Delete CRUD**: Added the ability to edit and delete contacts from the client detail view, with seamless tag synchronization.
