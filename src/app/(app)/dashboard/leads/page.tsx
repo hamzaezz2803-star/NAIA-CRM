@@ -20,6 +20,7 @@ import {
   Globe,
   LogOut,
   FolderPlus,
+  FolderOpen,
   CheckCircle,
   LayoutGrid,
   CalendarDays,
@@ -32,6 +33,7 @@ import {
   Mic,
   Check,
   Edit3,
+  FileText,
 } from "lucide-react";
 import {
   fetchLeadsAction,
@@ -50,11 +52,22 @@ import {
   updateCategoryAction,
   deleteCategoryAction,
   reorderCategoriesAction,
+  fetchTagsAction,
+  createTagAction,
+  updateTagAction,
+  deleteTagAction,
+  fetchTeamMembersAction,
+  fetchLeadNotesAction,
+  createLeadNoteAction,
+  updateLeadNoteAction,
+  deleteLeadNoteAction,
 } from "@/features/crm/actions";
 import type {
   CrmLeadSummary,
   CrmLeadStatus,
   CrmCategory,
+  CrmTag,
+  CrmLeadNote,
 } from "@/features/crm/contracts";
 import toast from "react-hot-toast";
 
@@ -270,6 +283,35 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<CrmLeadSummary[]>([]);
   const [categories, setCategories] = useState<CrmCategory[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+
+  // Tags & Team members state
+  const [tags, setTags] = useState<CrmTag[]>([]);
+  const [teamMembers, setTeamMembers] = useState<
+    { id: string; fullName: string; email: string; avatarUrl?: string }[]
+  >([]);
+
+  // Selected lead notes
+  const [notes, setNotes] = useState<CrmLeadNote[]>([]);
+  const [newNoteText, setNewNoteText] = useState("");
+  const [newNoteAssigneeId, setNewNoteAssigneeId] = useState<string>("");
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [editingNoteText, setEditingNoteText] = useState("");
+  const [editingNoteAssigneeId, setEditingNoteAssigneeId] =
+    useState<string>("");
+  const [isNotesLoading, setIsNotesLoading] = useState(false);
+
+  // Form selections (Creation)
+  const [formAssignee, setFormAssignee] = useState<string>("");
+  const [formTags, setFormTags] = useState<string[]>([]);
+
+  // Tag creation modal/fields inside form
+  const [newTagName, setNewTagName] = useState("");
+  const [newTagColor, setNewTagColor] = useState("teal");
+  const [isCreatingTag, setIsCreatingTag] = useState(false);
+
+  // Form selections (Edition)
+  const [editAssignee, setEditAssignee] = useState<string>("");
+  const [editTags, setEditTags] = useState<string[]>([]);
   const [, startTransition] = useTransition();
 
   // Mode & Google auth states
@@ -282,7 +324,54 @@ export default function LeadsPage() {
   );
   const [isGoogleConnected, setIsGoogleConnected] = useState(false);
 
+  // List view filters state
+  const [filterStatus, setFilterStatus] = useState<string>("all");
+  const [filterCompany, setFilterCompany] = useState<string>("all");
+
+  const uniqueCompanies = Array.from(
+    new Set(
+      leads
+        .map((l) => {
+          const noteLines = (l.notes ?? "").split("\n");
+          return noteLines
+            .find((line) => line.startsWith("Entreprise:"))
+            ?.replace("Entreprise:", "")
+            .trim();
+        })
+        .filter(Boolean) as string[],
+    ),
+  ).sort();
+
+  const filteredLeads = leads.filter((lead) => {
+    if (filterStatus !== "all" && lead.status !== filterStatus) {
+      return false;
+    }
+    if (filterCompany !== "all") {
+      const noteLines = (lead.notes ?? "").split("\n");
+      const companyName =
+        noteLines
+          .find((l) => l.startsWith("Entreprise:"))
+          ?.replace("Entreprise:", "")
+          .trim() ?? "";
+      if (companyName !== filterCompany) {
+        return false;
+      }
+    }
+    return true;
+  });
+
   const hourlyScrollContainerRef = React.useRef<HTMLDivElement>(null);
+  const kanbanContainerRef = useRef<HTMLDivElement>(null);
+
+  const scrollKanban = (direction: "left" | "right") => {
+    if (kanbanContainerRef.current) {
+      const scrollAmount = 300;
+      kanbanContainerRef.current.scrollBy({
+        left: direction === "left" ? -scrollAmount : scrollAmount,
+        behavior: "smooth",
+      });
+    }
+  };
 
   // Helper functions for modern calendar views
   function getDaysOfWeek(date: Date): Date[] {
@@ -393,6 +482,8 @@ export default function LeadsPage() {
   const [editTopic, setEditTopic] = useState("");
   const [editCompanyName, setEditCompanyName] = useState("");
   const [editContactName, setEditContactName] = useState("");
+  const [editJobTitle, setEditJobTitle] = useState("");
+  const [editLinkedin, setEditLinkedin] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
   const [editSource, setEditSource] = useState("");
@@ -405,7 +496,10 @@ export default function LeadsPage() {
   const openEditModal = (lead: CrmLeadSummary) => {
     setSelectedLead(lead);
     setDrafts(null);
-    setDriveLink(extractDriveLinkFromNotes(lead.notes));
+    // Prefer driveFolderUrl field; fallback to legacy notes extraction
+    setDriveLink(
+      lead.driveFolderUrl ?? extractDriveLinkFromNotes(lead.notes) ?? null,
+    );
     setCalendarLink(extractCalendarLinkFromNotes(lead.notes));
     setModalError(null);
 
@@ -435,6 +529,8 @@ export default function LeadsPage() {
         (l) =>
           !l.startsWith("Entreprise:") &&
           !l.startsWith("Contact:") &&
+          !l.startsWith("Fonction:") &&
+          !l.startsWith("LinkedIn:") &&
           !l.startsWith("Email:") &&
           !l.startsWith("Tél:"),
       )
@@ -443,6 +539,23 @@ export default function LeadsPage() {
     setEditTopic(lead.topic);
     setEditCompanyName(company);
     setEditContactName(contact);
+    // Read job title and LinkedIn from proper DB fields (fall back to notes for legacy data)
+    setEditJobTitle(
+      lead.contactJobTitle ??
+        noteLines
+          .find((l) => l.startsWith("Fonction:"))
+          ?.replace("Fonction:", "")
+          .trim() ??
+        "",
+    );
+    setEditLinkedin(
+      lead.contactLinkedinUrl ??
+        noteLines
+          .find((l) => l.startsWith("LinkedIn:"))
+          ?.replace("LinkedIn:", "")
+          .trim() ??
+        "",
+    );
     setEditEmail(email);
     setEditPhone(phone);
     setEditSource(lead.source ?? "");
@@ -450,6 +563,24 @@ export default function LeadsPage() {
     setEditLeadDate(formatForInput(lead.leadDate ?? ""));
     setEditNotes(notesOnly);
     setEditStatus(lead.status);
+
+    // Populate assignment and tags
+    setEditAssignee(lead.assignedToProfileId ?? "");
+    setEditTags((lead.tags ?? []).map((t) => t.id));
+
+    // Reset notes forms and fetch notes from backend
+    setNewNoteText("");
+    setEditingNoteId(null);
+    setEditingNoteText("");
+    setIsNotesLoading(true);
+    fetchLeadNotesAction(lead.id)
+      .then((notesData) => {
+        setNotes(notesData);
+      })
+      .catch((err) => console.error("Error loading notes:", err))
+      .finally(() => {
+        setIsNotesLoading(false);
+      });
   };
 
   // Natural text intake
@@ -483,6 +614,8 @@ export default function LeadsPage() {
   const [formTopic, setFormTopic] = useState("");
   const [formCompanyName, setFormCompanyName] = useState("");
   const [formContactName, setFormContactName] = useState("");
+  const [formJobTitle, setFormJobTitle] = useState("");
+  const [formLinkedin, setFormLinkedin] = useState("");
   const [formEmail, setFormEmail] = useState("");
   const [formPhone, setFormPhone] = useState("");
   const [formSource, setFormSource] = useState("");
@@ -678,11 +811,14 @@ export default function LeadsPage() {
     async function init() {
       setIsLoading(true);
       try {
-        const [leadsData, categoriesData, isAuth] = await Promise.all([
-          fetchLeadsAction(),
-          fetchCategoriesAction(),
-          checkGoogleAuthAction(),
-        ]);
+        const [leadsData, categoriesData, isAuth, tagsData, teamData] =
+          await Promise.all([
+            fetchLeadsAction(),
+            fetchCategoriesAction(),
+            checkGoogleAuthAction(),
+            fetchTagsAction(),
+            fetchTeamMembersAction(),
+          ]);
         if (isMounted) {
           setLeads(leadsData);
           setCategories(
@@ -691,6 +827,8 @@ export default function LeadsPage() {
               : DEFAULT_CATEGORIES,
           );
           setIsGoogleConnected(isAuth);
+          setTags(tagsData);
+          setTeamMembers(teamData);
         }
       } catch (err) {
         console.error(err);
@@ -910,7 +1048,7 @@ export default function LeadsPage() {
     setFormError(null);
     const createToastId = toast.loading("Création du lead...");
 
-    // Concat company info inside notes for simple display
+    // Concat legacy contact info inside notes for display compatibility
     const res = await createLeadAction({
       topic: formTopic,
       source: formSource || undefined,
@@ -927,6 +1065,10 @@ export default function LeadsPage() {
           .join("\n") || undefined,
       nextAction: formNextAction || undefined,
       leadDate: formLeadDate || undefined,
+      contactJobTitle: formJobTitle || undefined,
+      contactLinkedinUrl: formLinkedin || undefined,
+      assignedToProfileId: formAssignee || undefined,
+      tagIds: formTags,
     });
 
     if (res.success && res.lead) {
@@ -970,6 +1112,10 @@ export default function LeadsPage() {
           .join("\n") || undefined,
       nextAction: editNextAction || undefined,
       leadDate: editLeadDate || undefined,
+      contactJobTitle: editJobTitle,
+      contactLinkedinUrl: editLinkedin,
+      assignedToProfileId: editAssignee || null,
+      tagIds: editTags,
     });
 
     if (res.success && res.lead) {
@@ -991,6 +1137,8 @@ export default function LeadsPage() {
     setFormTopic("");
     setFormCompanyName("");
     setFormContactName("");
+    setFormJobTitle("");
+    setFormLinkedin("");
     setFormEmail("");
     setFormPhone("");
     setFormSource("");
@@ -1002,6 +1150,8 @@ export default function LeadsPage() {
     setExtractError(null);
     setIsFormStatusDropdownOpen(false);
     setIsStatusDropdownOpen(false);
+    setFormAssignee("");
+    setFormTags([]);
   }
 
   // ── Move lead status ────────────────────────────
@@ -1089,46 +1239,53 @@ export default function LeadsPage() {
 
     if (!isGoogleConnected) {
       const errMsg =
-        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenêtre...";
+        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenetre...";
       setModalError(errMsg);
       toast.error(errMsg);
       handleConnectGoogle();
       return;
     }
 
+    // If already has a Drive folder, just open it
+    const existingLink =
+      lead.driveFolderUrl ?? extractDriveLinkFromNotes(lead.notes);
+    if (existingLink) {
+      setDriveLink(existingLink);
+      window.open(existingLink, "_blank");
+      return;
+    }
+
     setIsCreatingFolder(true);
     const driveToastId = toast.loading(
-      "Création du dossier client sur Google Drive...",
+      "Creation du dossier client sur Google Drive...",
     );
 
-    // Parse company name from notes or default to lead topic
-    const noteLines = (lead.notes ?? "").split("\n");
+    // Use companyName from lead directly (populated by fetchLeadsForTodoAction / fetchLeadsAction)
     const companyName =
-      noteLines
+      lead.companyName ??
+      (lead.notes ?? "")
+        .split("\n")
         .find((l) => l.startsWith("Entreprise:"))
         ?.replace("Entreprise:", "")
-        .trim() || lead.topic;
+        .trim() ??
+      lead.topic;
 
     const res = await createGoogleDriveFolderAction(lead.id, companyName);
 
     if (res.success && res.folderLink) {
       setDriveLink(res.folderLink);
 
-      // Append folder link in local state notes
-      const updatedNotes = lead.notes
-        ? `${lead.notes}\n[Google Drive Folder: Client - ${companyName}](${res.folderLink})`
-        : `[Google Drive Folder: Client - ${companyName}](${res.folderLink})`;
-
-      const updatedLead = { ...lead, notes: updatedNotes };
+      // Update lead in local state with driveFolderUrl
+      const updatedLead = { ...lead, driveFolderUrl: res.folderLink };
       setSelectedLead(updatedLead);
       setLeads(leads.map((l) => (l.id === lead.id ? updatedLead : l)));
 
-      toast.success("Dossier client et sous-dossiers créés !", {
+      toast.success("Dossier cree dans NAIA'S-INFOS !", {
         id: driveToastId,
       });
       window.open(res.folderLink, "_blank");
     } else {
-      const err = res.error || "Impossible de créer le dossier Drive.";
+      const err = res.error || "Impossible de creer le dossier Drive.";
       setModalError(err);
       toast.error(err, { id: driveToastId });
     }
@@ -1479,116 +1636,207 @@ export default function LeadsPage() {
           </span>
         </div>
       ) : viewMode === "kanban" ? (
-        <div className="overflow-x-auto pb-4">
-          <div className="flex gap-4 items-start" style={{ minWidth: "900px" }}>
-            {categories.map((col, index) => {
-              const colLeads = leads.filter((l) => l.status === col.statusKey);
-              const style = getCategoryStyle(col.color);
-              return (
-                <div
-                  key={col.id}
-                  className="flex w-56 flex-none flex-col gap-3 group/col rounded-lg p-1 transition-colors border border-transparent hover:border-stone-200/40 hover:bg-stone-50/10"
-                  onDragOver={(e) => e.preventDefault()}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    const leadId = e.dataTransfer.getData("text/plain");
-                    if (leadId) {
-                      const leadToMove = leads.find((l) => l.id === leadId);
-                      if (leadToMove && leadToMove.status !== col.statusKey) {
-                        handleMoveStatus(leadToMove, col.statusKey);
-                      }
-                    }
-                  }}
-                >
-                  {/* Column header */}
-                  <div
-                    className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 ${style.color}`}
-                  >
-                    <span
-                      className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
-                    />
-                    <span className="truncate text-xs font-bold uppercase tracking-wide flex-1">
-                      {col.name}
-                    </span>
-                    <span className="text-[10px] font-bold opacity-60 px-1 bg-stone-50/20 rounded">
-                      {colLeads.length}
-                    </span>
+        <div className="space-y-4">
+          {/* Header actions for Kanban: Add column left, scroll buttons right */}
+          <div className="flex items-center justify-between">
+            <Button
+              type="button"
+              onClick={() => openCategoryModal(null)}
+              variant="outline"
+              className="text-xs h-8 gap-2 border-stone-200 text-stone-700 hover:bg-stone-50 hover:text-stone-950 shadow-sm border-dashed"
+            >
+              <Plus className="h-3.5 w-3.5 text-teal-600" />
+              Ajouter une colonne
+            </Button>
 
-                    {/* Column order & settings actions */}
-                    <div className="flex items-center gap-0.5 opacity-0 group-hover/col:opacity-100 transition-opacity ml-1">
-                      {index > 0 && (
+            <div className="flex items-center gap-1 bg-stone-100 p-1 rounded-lg border border-stone-200/60 shadow-sm">
+              <Button
+                variant="ghost"
+                onClick={() => scrollKanban("left")}
+                className="h-7 w-7 p-0 rounded-md bg-white hover:bg-stone-50 shadow-sm border border-stone-200/40 text-stone-600 hover:text-stone-900"
+                title="Faire défiler à gauche"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button
+                variant="ghost"
+                onClick={() => scrollKanban("right")}
+                className="h-7 w-7 p-0 rounded-md bg-white hover:bg-stone-50 shadow-sm border border-stone-200/40 text-stone-600 hover:text-stone-900"
+                title="Faire défiler à droite"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+
+          <div
+            ref={kanbanContainerRef}
+            className="overflow-x-auto pb-4 scrollbar-thin scroll-smooth"
+          >
+            <div
+              className="flex gap-4 items-start"
+              style={{ minWidth: "900px" }}
+            >
+              {categories.map((col, index) => {
+                const colLeads = leads.filter(
+                  (l) => l.status === col.statusKey,
+                );
+                const style = getCategoryStyle(col.color);
+                return (
+                  <div
+                    key={col.id}
+                    className="flex w-56 flex-none flex-col gap-3 group/col rounded-lg p-1 transition-colors border border-transparent hover:border-stone-200/40 hover:bg-stone-50/10"
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      const leadId = e.dataTransfer.getData("text/plain");
+                      if (leadId) {
+                        const leadToMove = leads.find((l) => l.id === leadId);
+                        if (leadToMove && leadToMove.status !== col.statusKey) {
+                          handleMoveStatus(leadToMove, col.statusKey);
+                        }
+                      }
+                    }}
+                  >
+                    {/* Column header */}
+                    <div
+                      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 ${style.color}`}
+                    >
+                      <span
+                        className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
+                      />
+                      <span className="truncate text-xs font-bold uppercase tracking-wide flex-1">
+                        {col.name}
+                      </span>
+                      <span className="text-[10px] font-bold opacity-60 px-1 bg-stone-50/20 rounded">
+                        {colLeads.length}
+                      </span>
+
+                      {/* Column order & settings actions */}
+                      <div className="flex items-center gap-0.5 opacity-0 group-hover/col:opacity-100 transition-opacity ml-1">
+                        {index > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMoveCategoryOrder(col.id, "left")
+                            }
+                            title="Déplacer à gauche"
+                            className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                          >
+                            <ChevronLeft className="h-3 w-3" />
+                          </button>
+                        )}
+                        {index < categories.length - 1 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              handleMoveCategoryOrder(col.id, "right")
+                            }
+                            title="Déplacer à droite"
+                            className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                          >
+                            <ChevronRight className="h-3 w-3" />
+                          </button>
+                        )}
                         <button
                           type="button"
-                          onClick={() =>
-                            handleMoveCategoryOrder(col.id, "left")
-                          }
-                          title="Déplacer à gauche"
+                          onClick={() => openCategoryModal(col)}
+                          title="Modifier"
                           className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
                         >
-                          <ChevronLeft className="h-3 w-3" />
+                          <Edit3 className="h-3 w-3" />
                         </button>
+                      </div>
+                    </div>
+
+                    {/* Lead cards */}
+                    <div className="flex flex-col gap-2 min-h-[300px]">
+                      {colLeads.length === 0 && (
+                        <div className="rounded-md border border-dashed border-stone-200 p-4 text-center text-xs text-stone-400">
+                          Vide
+                        </div>
                       )}
-                      {index < categories.length - 1 && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            handleMoveCategoryOrder(col.id, "right")
-                          }
-                          title="Déplacer à droite"
-                          className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
-                        >
-                          <ChevronRight className="h-3 w-3" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => openCategoryModal(col)}
-                        title="Modifier"
-                        className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
-                      >
-                        <Edit3 className="h-3 w-3" />
-                      </button>
+                      {colLeads.map((lead) => (
+                        <LeadCard
+                          key={lead.id}
+                          lead={lead}
+                          nextStatus={getNextStatus(lead.status)}
+                          onSelect={() => openEditModal(lead)}
+                          onMove={handleMoveStatus}
+                          onDelete={handleDelete}
+                          onGenerateDraft={handleGenerateDraft}
+                          onDriveClick={handleCreateDriveFolder}
+                        />
+                      ))}
                     </div>
                   </div>
-
-                  {/* Lead cards */}
-                  <div className="flex flex-col gap-2 min-h-[300px]">
-                    {colLeads.length === 0 && (
-                      <div className="rounded-md border border-dashed border-stone-200 p-4 text-center text-xs text-stone-400">
-                        Vide
-                      </div>
-                    )}
-                    {colLeads.map((lead) => (
-                      <LeadCard
-                        key={lead.id}
-                        lead={lead}
-                        nextStatus={getNextStatus(lead.status)}
-                        onSelect={() => openEditModal(lead)}
-                        onMove={handleMoveStatus}
-                        onDelete={handleDelete}
-                        onGenerateDraft={handleGenerateDraft}
-                      />
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Add Column button */}
-            <div className="flex w-56 flex-none flex-col justify-start">
-              <button
-                type="button"
-                onClick={() => openCategoryModal(null)}
-                className="flex items-center justify-center gap-2 rounded-xl border border-dashed border-stone-300 bg-stone-50/30 p-4 text-xs font-semibold text-stone-500 hover:border-teal-400 hover:bg-teal-50/10 hover:text-teal-700 transition-all w-full"
-              >
-                <Plus className="h-4 w-4" />
-                Ajouter une colonne
-              </button>
+                );
+              })}
             </div>
           </div>
         </div>
       ) : viewMode === "list" ? (
-        <div className="overflow-hidden rounded-xl border border-stone-200 bg-white shadow-sm">
+        <div className="rounded-xl border border-stone-200 bg-white shadow-sm">
+          {/* Filters Bar */}
+          <div className="flex flex-wrap items-center gap-4 border-b border-stone-200 bg-stone-50/50 p-4">
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="filter-status"
+                className="text-[10px] font-bold text-stone-500 uppercase tracking-wider"
+              >
+                Filtre par Statut
+              </label>
+              <select
+                id="filter-status"
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+                className="h-9 min-w-[180px] rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs text-stone-700 shadow-sm focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600 transition"
+              >
+                <option value="all">Tous les statuts</option>
+                {categories.map((c) => (
+                  <option key={c.statusKey} value={c.statusKey}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="flex flex-col gap-1">
+              <label
+                htmlFor="filter-company"
+                className="text-[10px] font-bold text-stone-500 uppercase tracking-wider"
+              >
+                Filtre par Entreprise
+              </label>
+              <select
+                id="filter-company"
+                value={filterCompany}
+                onChange={(e) => setFilterCompany(e.target.value)}
+                className="h-9 min-w-[180px] rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs text-stone-700 shadow-sm focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600 transition"
+              >
+                <option value="all">Toutes les entreprises</option>
+                {uniqueCompanies.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            {(filterStatus !== "all" || filterCompany !== "all") && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterStatus("all");
+                  setFilterCompany("all");
+                }}
+                className="mt-4 text-xs font-semibold text-teal-650 hover:text-teal-850 hover:underline transition"
+              >
+                Réinitialiser les filtres
+              </button>
+            )}
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full min-w-[800px] border-collapse text-left text-sm">
               <thead className="border-b border-stone-200 bg-stone-50/75">
@@ -1632,17 +1880,17 @@ export default function LeadsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-100">
-                {leads.length === 0 ? (
+                {filteredLeads.length === 0 ? (
                   <tr>
                     <td
                       colSpan={6}
                       className="px-6 py-10 text-center text-sm text-stone-400"
                     >
-                      Aucun lead trouvé.
+                      Aucun lead correspondant aux critères.
                     </td>
                   </tr>
                 ) : (
-                  leads.map((lead) => {
+                  filteredLeads.map((lead) => {
                     const noteLines = (lead.notes ?? "").split("\n");
                     const companyName = noteLines
                       .find((l) => l.startsWith("Entreprise:"))
@@ -1667,6 +1915,26 @@ export default function LeadsPage() {
                           >
                             {lead.topic}
                           </button>
+                          {/* Tags & Assignee row */}
+                          <div className="flex flex-wrap gap-1.5 items-center mt-1.5">
+                            {lead.assignedToName && (
+                              <span className="inline-flex items-center gap-1 rounded bg-stone-100 dark:bg-stone-900 px-1 py-0.5 text-[9px] font-bold text-stone-600 dark:text-stone-300 border border-stone-200 dark:border-stone-800">
+                                <span className="flex h-3 w-3 items-center justify-center rounded-full bg-teal-650 text-[8px] font-bold text-white">
+                                  {lead.assignedToName.charAt(0).toUpperCase()}
+                                </span>
+                                {lead.assignedToName}
+                              </span>
+                            )}
+                            {lead.tags &&
+                              lead.tags.map((t) => (
+                                <span
+                                  key={t.id}
+                                  className="inline-flex items-center rounded-full border px-1.5 py-0.1 text-[9px] font-bold bg-stone-50 border-stone-200 text-stone-600"
+                                >
+                                  {t.name}
+                                </span>
+                              ))}
+                          </div>
                         </td>
                         <td className="px-6 py-4 text-stone-600">
                           <div className="space-y-0.5">
@@ -2028,6 +2296,8 @@ export default function LeadsPage() {
                                     {lead.notes
                                       .replace(/Entreprise:[^\n]*\n?/, "")
                                       .replace(/Contact:[^\n]*\n?/, "")
+                                      .replace(/Fonction:[^\n]*\n?/, "")
+                                      .replace(/LinkedIn:[^\n]*\n?/, "")
                                       .replace(/Email:[^\n]*\n?/, "")
                                       .replace(/Tél:[^\n]*\n?/, "")
                                       .trim()}
@@ -2157,6 +2427,8 @@ export default function LeadsPage() {
                                   {lead.notes
                                     .replace(/Entreprise:[^\n]*\n?/, "")
                                     .replace(/Contact:[^\n]*\n?/, "")
+                                    .replace(/Fonction:[^\n]*\n?/, "")
+                                    .replace(/LinkedIn:[^\n]*\n?/, "")
                                     .replace(/Email:[^\n]*\n?/, "")
                                     .replace(/Tél:[^\n]*\n?/, "")
                                     .trim()}
@@ -2402,6 +2674,57 @@ export default function LeadsPage() {
                 />
               </FormField>
 
+              <FormField label="Fonction / Poste" id="form-job-title">
+                <input
+                  id="form-job-title"
+                  className={inputCls}
+                  placeholder="Ex: CEO, CTO, Manager commercial..."
+                  value={formJobTitle}
+                  onChange={(e) => setFormJobTitle(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="LinkedIn" id="form-linkedin">
+                <div className="flex gap-2">
+                  <input
+                    id="form-linkedin"
+                    className={inputCls + " flex-1"}
+                    placeholder="https://linkedin.com/in/profil ou laisser vide"
+                    value={formLinkedin}
+                    onChange={(e) => setFormLinkedin(e.target.value)}
+                  />
+                  <Button
+                    type="button"
+                    variant="outline"
+                    title="Rechercher automatiquement sur LinkedIn"
+                    className="h-10 shrink-0 gap-1.5 text-xs border-blue-200 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
+                    onClick={() => {
+                      const name = formContactName.trim();
+                      const company = formCompanyName.trim();
+                      if (!name && !company) return;
+                      const q = encodeURIComponent(
+                        `site:linkedin.com/in ${name}${company ? ` "${company}"` : ""}`,
+                      );
+                      window.open(
+                        `https://www.google.com/search?q=${q}`,
+                        "_blank",
+                        "noopener,noreferrer",
+                      );
+                    }}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      className="h-4 w-4 text-blue-600"
+                    >
+                      <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                    </svg>
+                    Rechercher
+                  </Button>
+                </div>
+              </FormField>
+
               <FormField label="Email" id="form-email">
                 <input
                   id="form-email"
@@ -2522,6 +2845,205 @@ export default function LeadsPage() {
               })()}
             </div>
 
+            {/* Assignee select field */}
+            <FormField label="Assigné à" id="form-assignee">
+              <select
+                id="form-assignee"
+                className={inputCls}
+                value={formAssignee}
+                onChange={(e) => setFormAssignee(e.target.value)}
+              >
+                <option value="">Non assigné</option>
+                {teamMembers.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.fullName}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+
+            {/* Tags Associated section */}
+            <div className="space-y-2 border-t border-stone-100 pt-3">
+              <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider block">
+                Tags associés
+              </span>
+
+              {/* Selected Tags list */}
+              <div className="flex flex-wrap gap-1.5 min-h-[36px] rounded-lg border border-stone-200 bg-stone-50/50 p-2">
+                {formTags.length === 0 ? (
+                  <span className="text-xs text-stone-400 italic">
+                    Aucun tag sélectionné
+                  </span>
+                ) : (
+                  formTags.map((tagId) => {
+                    const t = tags.find((x) => x.id === tagId);
+                    if (!t) return null;
+                    return (
+                      <button
+                        key={tagId}
+                        type="button"
+                        onClick={() =>
+                          setFormTags((prev) => prev.filter((x) => x !== tagId))
+                        }
+                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold bg-stone-100 border-stone-200 text-stone-755 hover:bg-red-50 hover:text-red-755 hover:border-red-200 transition"
+                        title="Retirer"
+                      >
+                        {t.name}
+                        <X className="h-3 w-3" />
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Available tags list */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-stone-550">Ajouter un tag :</span>
+                {tags
+                  .filter((t) => !formTags.includes(t.id))
+                  .map((t) => (
+                    <div
+                      key={t.id}
+                      className="inline-flex items-center rounded-full border bg-stone-50 border-stone-200 text-[11px] font-semibold pl-2 pr-1.5 py-0.5 hover:border-teal-500 hover:bg-teal-50 transition gap-1"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setFormTags((prev) => [...prev, t.id])}
+                        className="hover:text-teal-700 font-bold"
+                      >
+                        + {t.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const newName = window.prompt(
+                            "Modifier le nom du tag :",
+                            t.name,
+                          );
+                          if (newName === null) return;
+                          if (!newName.trim()) return;
+                          const res = await updateTagAction(
+                            t.id,
+                            newName.trim(),
+                            t.color,
+                          );
+                          if (res.success && res.tag) {
+                            setTags((prev) =>
+                              prev
+                                .map((x) => (x.id === t.id ? res.tag! : x))
+                                .sort((a, b) => a.name.localeCompare(b.name)),
+                            );
+                            toast.success("Tag modifié !");
+                          } else {
+                            toast.error(res.error ?? "Erreur");
+                          }
+                        }}
+                        className="text-stone-400 hover:text-blue-650 font-bold text-[10px]"
+                        title="Modifier"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const confirm = window.confirm(
+                            `Supprimer le tag "${t.name}" ?`,
+                          );
+                          if (!confirm) return;
+                          const res = await deleteTagAction(t.id);
+                          if (res.success) {
+                            setTags((prev) =>
+                              prev.filter((x) => x.id !== t.id),
+                            );
+                            setFormTags((prev) =>
+                              prev.filter((x) => x !== t.id),
+                            );
+                            setEditTags((prev) =>
+                              prev.filter((x) => x !== t.id),
+                            );
+                            toast.success("Tag supprimé !");
+                          } else {
+                            toast.error(res.error ?? "Erreur");
+                          }
+                        }}
+                        className="text-stone-400 hover:text-red-650 font-bold text-[10px]"
+                        title="Supprimer"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                {/* Create tag button inline */}
+                {!isCreatingTag ? (
+                  <button
+                    type="button"
+                    onClick={() => setIsCreatingTag(true)}
+                    className="text-xs text-teal-600 hover:text-teal-800 font-semibold hover:underline"
+                  >
+                    + Créer un nouveau tag
+                  </button>
+                ) : (
+                  <div className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white p-1">
+                    <input
+                      placeholder="Nom du tag"
+                      className="h-7 w-28 rounded border border-stone-305 px-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
+                      value={newTagName}
+                      onChange={(e) => setNewTagName(e.target.value)}
+                    />
+                    <select
+                      value={newTagColor}
+                      onChange={(e) => setNewTagColor(e.target.value)}
+                      className="h-7 rounded border border-stone-305 px-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
+                    >
+                      <option value="teal">Sarcelle</option>
+                      <option value="blue">Bleu</option>
+                      <option value="yellow">Jaune</option>
+                      <option value="indigo">Indigo</option>
+                      <option value="emerald">Émeraude</option>
+                      <option value="red">Rouge</option>
+                      <option value="purple">Violet</option>
+                      <option value="pink">Rose</option>
+                      <option value="orange">Orange</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!newTagName.trim()) return;
+                        const res = await createTagAction(
+                          newTagName,
+                          newTagColor,
+                        );
+                        if (res.success && res.tag) {
+                          setTags((prev) =>
+                            [...prev, res.tag!].sort((a, b) =>
+                              a.name.localeCompare(b.name),
+                            ),
+                          );
+                          setFormTags((prev) => [...prev, res.tag!.id]);
+                          setNewTagName("");
+                          setIsCreatingTag(false);
+                          toast.success("Tag créé !");
+                        } else {
+                          toast.error(res.error ?? "Erreur");
+                        }
+                      }}
+                      className="rounded bg-teal-600 px-2 py-1 text-xs font-bold text-white hover:bg-teal-700"
+                    >
+                      Créer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingTag(false)}
+                      className="text-stone-400 hover:text-stone-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <FormField label="Notes & Contexte" id="form-notes">
               <textarea
                 id="form-notes"
@@ -2586,6 +3108,79 @@ export default function LeadsPage() {
                 />
               </FormField>
 
+              <FormField label="Fonction / Poste" id="edit-job-title">
+                <input
+                  id="edit-job-title"
+                  className={inputCls}
+                  placeholder="Ex: CEO, CTO, Manager commercial..."
+                  value={editJobTitle}
+                  onChange={(e) => setEditJobTitle(e.target.value)}
+                />
+              </FormField>
+
+              <FormField label="LinkedIn" id="edit-linkedin">
+                <div className="flex gap-2">
+                  <input
+                    id="edit-linkedin"
+                    className={inputCls + " flex-1"}
+                    placeholder="https://linkedin.com/in/profil ou laisser vide"
+                    value={editLinkedin}
+                    onChange={(e) => setEditLinkedin(e.target.value)}
+                  />
+                  {editLinkedin && (
+                    <a
+                      href={
+                        editLinkedin.startsWith("http")
+                          ? editLinkedin
+                          : `https://${editLinkedin}`
+                      }
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-50"
+                    >
+                      <svg
+                        xmlns="http://www.w3.org/2000/svg"
+                        viewBox="0 0 24 24"
+                        fill="currentColor"
+                        className="h-4 w-4"
+                      >
+                        <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                      </svg>
+                      Ouvrir
+                    </a>
+                  )}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    title="Rechercher automatiquement sur LinkedIn"
+                    className="h-10 shrink-0 gap-1.5 text-xs border-blue-200 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
+                    onClick={() => {
+                      const name = editContactName.trim();
+                      const company = editCompanyName.trim();
+                      if (!name && !company) return;
+                      const q = encodeURIComponent(
+                        `site:linkedin.com/in ${name}${company ? ` "${company}"` : ""}`,
+                      );
+                      window.open(
+                        `https://www.google.com/search?q=${q}`,
+                        "_blank",
+                        "noopener,noreferrer",
+                      );
+                    }}
+                  >
+                    <svg
+                      xmlns="http://www.w3.org/2000/svg"
+                      viewBox="0 0 24 24"
+                      fill="currentColor"
+                      className="h-4 w-4 text-blue-600"
+                    >
+                      <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
+                    </svg>
+                    Rechercher
+                  </Button>
+                </div>
+              </FormField>
+
               <FormField label="Email" id="edit-email">
                 <input
                   id="edit-email"
@@ -2648,6 +3243,205 @@ export default function LeadsPage() {
                 onChange={(e) => setEditNotes(e.target.value)}
               />
             </FormField>
+
+            {/* Edit Assignee field */}
+            <FormField label="Assigné à" id="edit-assignee">
+              <select
+                id="edit-assignee"
+                className={inputCls}
+                value={editAssignee}
+                onChange={(e) => setEditAssignee(e.target.value)}
+              >
+                <option value="">Non assigné</option>
+                {teamMembers.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.fullName}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+
+            {/* Edit Tags field */}
+            <div className="space-y-2 border-t border-stone-100 pt-3">
+              <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider block">
+                Tags associés
+              </span>
+
+              {/* Selected Tags list */}
+              <div className="flex flex-wrap gap-1.5 min-h-[36px] rounded-lg border border-stone-200 bg-stone-50/50 p-2">
+                {editTags.length === 0 ? (
+                  <span className="text-xs text-stone-400 italic">
+                    Aucun tag sélectionné
+                  </span>
+                ) : (
+                  editTags.map((tagId) => {
+                    const t = tags.find((x) => x.id === tagId);
+                    if (!t) return null;
+                    return (
+                      <button
+                        key={tagId}
+                        type="button"
+                        onClick={() =>
+                          setEditTags((prev) => prev.filter((x) => x !== tagId))
+                        }
+                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold bg-stone-100 border-stone-200 text-stone-755 hover:bg-red-50 hover:text-red-755 hover:border-red-200 transition"
+                        title="Retirer"
+                      >
+                        {t.name}
+                        <X className="h-3 w-3" />
+                      </button>
+                    );
+                  })
+                )}
+              </div>
+
+              {/* Available tags dropdown / list to select from */}
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs text-stone-500">Ajouter un tag :</span>
+                {tags
+                  .filter((t) => !editTags.includes(t.id))
+                  .map((t) => (
+                    <div
+                      key={t.id}
+                      className="inline-flex items-center rounded-full border bg-stone-50 border-stone-200 text-[11px] font-semibold pl-2 pr-1.5 py-0.5 hover:border-teal-500 hover:bg-teal-50 transition gap-1"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setEditTags((prev) => [...prev, t.id])}
+                        className="hover:text-teal-700 font-bold"
+                      >
+                        + {t.name}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const newName = window.prompt(
+                            "Modifier le nom du tag :",
+                            t.name,
+                          );
+                          if (newName === null) return;
+                          if (!newName.trim()) return;
+                          const res = await updateTagAction(
+                            t.id,
+                            newName.trim(),
+                            t.color,
+                          );
+                          if (res.success && res.tag) {
+                            setTags((prev) =>
+                              prev
+                                .map((x) => (x.id === t.id ? res.tag! : x))
+                                .sort((a, b) => a.name.localeCompare(b.name)),
+                            );
+                            toast.success("Tag modifié !");
+                          } else {
+                            toast.error(res.error ?? "Erreur");
+                          }
+                        }}
+                        className="text-stone-400 hover:text-blue-650 font-bold text-[10px]"
+                        title="Modifier"
+                      >
+                        ✎
+                      </button>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const confirm = window.confirm(
+                            `Supprimer le tag "${t.name}" ?`,
+                          );
+                          if (!confirm) return;
+                          const res = await deleteTagAction(t.id);
+                          if (res.success) {
+                            setTags((prev) =>
+                              prev.filter((x) => x.id !== t.id),
+                            );
+                            setFormTags((prev) =>
+                              prev.filter((x) => x !== t.id),
+                            );
+                            setEditTags((prev) =>
+                              prev.filter((x) => x !== t.id),
+                            );
+                            toast.success("Tag supprimé !");
+                          } else {
+                            toast.error(res.error ?? "Erreur");
+                          }
+                        }}
+                        className="text-stone-400 hover:text-red-650 font-bold text-[10px]"
+                        title="Supprimer"
+                      >
+                        ×
+                      </button>
+                    </div>
+                  ))}
+
+                {/* Create tag button inline */}
+                {!isCreatingTag ? (
+                  <button
+                    type="button"
+                    onClick={() => setIsCreatingTag(true)}
+                    className="text-xs text-teal-600 hover:text-teal-800 font-semibold hover:underline"
+                  >
+                    + Créer un nouveau tag
+                  </button>
+                ) : (
+                  <div className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white p-1">
+                    <input
+                      placeholder="Nom du tag"
+                      className="h-7 w-28 rounded border border-stone-305 px-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
+                      value={newTagName}
+                      onChange={(e) => setNewTagName(e.target.value)}
+                    />
+                    <select
+                      value={newTagColor}
+                      onChange={(e) => setNewTagColor(e.target.value)}
+                      className="h-7 rounded border border-stone-305 px-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
+                    >
+                      <option value="teal">Sarcelle</option>
+                      <option value="blue">Bleu</option>
+                      <option value="yellow">Jaune</option>
+                      <option value="indigo">Indigo</option>
+                      <option value="emerald">Émeraude</option>
+                      <option value="red">Rouge</option>
+                      <option value="purple">Violet</option>
+                      <option value="pink">Rose</option>
+                      <option value="orange">Orange</option>
+                    </select>
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        if (!newTagName.trim()) return;
+                        const res = await createTagAction(
+                          newTagName,
+                          newTagColor,
+                        );
+                        if (res.success && res.tag) {
+                          setTags((prev) =>
+                            [...prev, res.tag!].sort((a, b) =>
+                              a.name.localeCompare(b.name),
+                            ),
+                          );
+                          setEditTags((prev) => [...prev, res.tag!.id]);
+                          setNewTagName("");
+                          setIsCreatingTag(false);
+                          toast.success("Tag créé !");
+                        } else {
+                          toast.error(res.error ?? "Erreur");
+                        }
+                      }}
+                      className="rounded bg-teal-600 px-2 py-1 text-xs font-bold text-white hover:bg-teal-700"
+                    >
+                      Créer
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingTag(false)}
+                      className="text-stone-400 hover:text-stone-700"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
 
             {modalError && (
               <p className="text-xs text-red-650 font-semibold">{modalError}</p>
@@ -2912,6 +3706,251 @@ export default function LeadsPage() {
               </div>
             )}
 
+            {/* Notes Management Section */}
+            <div className="pt-4 border-t border-stone-200 space-y-4">
+              <h4 className="text-xs font-bold text-stone-500 uppercase tracking-wider flex items-center gap-1.5">
+                <FileText className="h-4 w-4 text-stone-400" />
+                Notes de suivi commercial
+              </h4>
+
+              {/* Notes List */}
+              <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                {isNotesLoading ? (
+                  <div className="flex justify-center py-4">
+                    <Loader2 className="h-5 w-5 animate-spin text-teal-650" />
+                  </div>
+                ) : notes.length === 0 ? (
+                  <p className="text-xs text-stone-500 italic py-2 text-center">
+                    Aucune note de suivi enregistrée pour le moment.
+                  </p>
+                ) : (
+                  notes.map((n) => (
+                    <div
+                      key={n.id}
+                      className="rounded-lg border border-stone-150 bg-stone-50/40 p-2.5 space-y-1.5 hover:border-stone-250 transition-colors"
+                    >
+                      <div className="flex items-center justify-between text-[11px]">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-stone-750 flex items-center gap-1">
+                            <span className="h-4 w-4 rounded-full bg-stone-200 flex items-center justify-center text-[9px]">
+                              {(n.createdByName || "M").charAt(0).toUpperCase()}
+                            </span>
+                            {n.createdByName || "Membre"}
+                          </span>
+                          {n.assignedToName && (
+                            <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-1 py-0.5 text-[9px] font-bold text-teal-700 border border-teal-200/50">
+                              Assigné à : {n.assignedToName}
+                            </span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 text-stone-450 font-medium">
+                          <span className="flex flex-col items-end text-[9px] text-stone-500 leading-tight">
+                            <span>
+                              {new Date(n.createdAt).toLocaleString("fr-FR", {
+                                dateStyle: "short",
+                                timeStyle: "short",
+                              })}
+                            </span>
+                            {n.updatedAt &&
+                              new Date(n.updatedAt).getTime() -
+                                new Date(n.createdAt).getTime() >
+                                1000 && (
+                                <span className="text-amber-600 font-semibold text-[8px]">
+                                  Modifié le :{" "}
+                                  {new Date(n.updatedAt).toLocaleString(
+                                    "fr-FR",
+                                    {
+                                      dateStyle: "short",
+                                      timeStyle: "short",
+                                    },
+                                  )}
+                                </span>
+                              )}
+                          </span>
+                          <div className="flex gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingNoteId(n.id);
+                                setEditingNoteText(n.content);
+                                setEditingNoteAssigneeId(
+                                  n.assignedToProfileId ?? "",
+                                );
+                              }}
+                              className="text-teal-650 hover:underline font-bold"
+                            >
+                              Modifier
+                            </button>
+                            <span>•</span>
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                const confirm = window.confirm(
+                                  "Supprimer cette note ?",
+                                );
+                                if (!confirm) return;
+                                const res = await deleteLeadNoteAction(n.id);
+                                if (res.success) {
+                                  setNotes((prev) =>
+                                    prev.filter((x) => x.id !== n.id),
+                                  );
+                                  toast.success("Note supprimée.");
+                                } else {
+                                  toast.error(res.error ?? "Erreur");
+                                }
+                              }}
+                              className="text-red-650 hover:underline font-bold"
+                            >
+                              Supprimer
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+
+                      {editingNoteId === n.id ? (
+                        <div className="space-y-2 mt-1">
+                          <textarea
+                            className="w-full rounded border border-stone-300 bg-white p-2 text-xs text-stone-900 focus:border-teal-750 focus:outline-none"
+                            rows={2}
+                            value={editingNoteText}
+                            onChange={(e) => setEditingNoteText(e.target.value)}
+                          />
+                          <div className="flex items-center gap-2">
+                            <label className="text-[10px] text-stone-500 font-medium">
+                              Assigner à :
+                            </label>
+                            <select
+                              className="rounded border border-stone-300 bg-white p-1 text-[11px] text-stone-850 focus:border-teal-750 focus:outline-none"
+                              value={editingNoteAssigneeId}
+                              onChange={(e) =>
+                                setEditingNoteAssigneeId(e.target.value)
+                              }
+                            >
+                              <option value="">Non assigné</option>
+                              {teamMembers.map((m) => (
+                                <option key={m.id} value={m.id}>
+                                  {m.fullName}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div className="flex justify-end gap-1.5">
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              className="h-7 text-[10px] px-2 text-stone-500 hover:bg-stone-100"
+                              onClick={() => setEditingNoteId(null)}
+                            >
+                              Annuler
+                            </Button>
+                            <Button
+                              type="button"
+                              className="h-7 text-[10px] px-2.5 bg-teal-600 hover:bg-teal-700 text-white"
+                              onClick={async () => {
+                                if (!editingNoteText.trim()) return;
+                                const res = await updateLeadNoteAction(
+                                  n.id,
+                                  editingNoteText,
+                                  editingNoteAssigneeId || undefined,
+                                );
+                                if (res.success && res.note) {
+                                  setNotes((prev) =>
+                                    prev.map((x) =>
+                                      x.id === n.id ? res.note! : x,
+                                    ),
+                                  );
+                                  setEditingNoteId(null);
+                                  toast.success("Note modifiée.");
+                                } else {
+                                  toast.error(res.error ?? "Erreur");
+                                }
+                              }}
+                            >
+                              Enregistrer
+                            </Button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="text-xs text-stone-800 whitespace-pre-wrap leading-relaxed">
+                          {n.content}
+                        </p>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Add Note form */}
+              <div className="space-y-2">
+                <textarea
+                  className="w-full rounded-lg border border-stone-300 bg-white p-2.5 text-xs text-stone-900 placeholder:text-stone-400 focus:border-teal-750 focus:outline-none focus:ring-1 focus:ring-teal-750"
+                  rows={2}
+                  placeholder="Saisir une nouvelle note commerciale (partagée avec l'équipe)..."
+                  value={newNoteText}
+                  onChange={(e) => setNewNoteText(e.target.value)}
+                />
+                <div className="flex items-center justify-between gap-4">
+                  <div className="flex items-center gap-1.5">
+                    <label className="text-[11px] text-stone-500 font-medium">
+                      Assigner à :
+                    </label>
+                    <select
+                      className="rounded border border-stone-300 bg-white px-1.5 py-1 text-[11px] text-stone-850 focus:border-teal-750 focus:outline-none"
+                      value={newNoteAssigneeId}
+                      onChange={(e) => setNewNoteAssigneeId(e.target.value)}
+                    >
+                      <option value="">Non assigné</option>
+                      {teamMembers.map((m) => (
+                        <option key={m.id} value={m.id}>
+                          {m.fullName}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <Button
+                    type="button"
+                    disabled={!newNoteText.trim()}
+                    className="h-8 text-xs bg-teal-600 hover:bg-teal-700 text-white flex items-center gap-1.5"
+                    onClick={async () => {
+                      if (!newNoteText.trim()) return;
+                      const res = await createLeadNoteAction(
+                        selectedLead.id,
+                        newNoteText,
+                        newNoteAssigneeId || undefined,
+                      );
+                      if (res.success && res.note) {
+                        setNotes((prev) => [...prev, res.note!]);
+                        setNewNoteText("");
+                        setNewNoteAssigneeId("");
+                        toast.success("Note ajoutée !");
+                      } else {
+                        toast.error(res.error ?? "Erreur");
+                      }
+                    }}
+                  >
+                    Ajouter la note
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* History tracking details */}
+            <div className="pt-2.5 pb-1 border-t border-stone-150 flex items-center justify-between text-[11px] text-stone-500 italic">
+              <span>
+                Dernière mise à jour par :{" "}
+                <strong>{selectedLead.lastUpdatedByName || "Inconnu"}</strong>
+              </span>
+              <span>
+                Le :{" "}
+                {selectedLead.lastUpdatedAt
+                  ? new Date(selectedLead.lastUpdatedAt).toLocaleString(
+                      "fr-FR",
+                      { dateStyle: "short", timeStyle: "short" },
+                    )
+                  : "Non renseigné"}
+              </span>
+            </div>
+
             {/* Bottom Actions aligned with Creation modal */}
             <div className="flex justify-between items-center border-t border-stone-100 pt-4">
               <Button
@@ -3097,6 +4136,7 @@ function LeadCard({
   onMove,
   onDelete,
   onGenerateDraft,
+  onDriveClick,
 }: {
   lead: CrmLeadSummary;
   nextStatus: CrmLeadStatus | null;
@@ -3104,6 +4144,7 @@ function LeadCard({
   onMove: (lead: CrmLeadSummary, status: CrmLeadStatus) => void;
   onDelete: (id: string) => void;
   onGenerateDraft: (lead: CrmLeadSummary) => void;
+  onDriveClick: (lead: CrmLeadSummary) => void;
 }) {
   // Parse notes to extract company / contact lines
   const noteLines = (lead.notes ?? "").split("\n");
@@ -3149,6 +4190,24 @@ function LeadCard({
     "dead-end": "DEAD END",
   };
 
+  const tagColors: Record<string, string> = {
+    blue: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/30",
+    gray: "bg-stone-50 text-stone-600 border-stone-200 dark:bg-stone-900/50 dark:text-stone-400 dark:border-stone-800",
+    yellow:
+      "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/30",
+    indigo:
+      "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/20 dark:text-indigo-400 dark:border-indigo-900/30",
+    emerald:
+      "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/30",
+    teal: "bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/20 dark:text-teal-400 dark:border-teal-900/30",
+    red: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900/30",
+    purple:
+      "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/20 dark:text-purple-400 dark:border-purple-900/30",
+    pink: "bg-pink-50 text-pink-700 border-pink-200 dark:bg-pink-950/20 dark:text-pink-400 dark:border-pink-900/30",
+    orange:
+      "bg-orange-50 text-orange-750 border-orange-200 dark:bg-orange-950/20 dark:text-orange-400 dark:border-orange-900/30",
+  };
+
   return (
     <article
       draggable
@@ -3169,6 +4228,26 @@ function LeadCard({
             <MoveRight className="h-3.5 w-3.5" />
           </button>
         )}
+        {/* Drive folder button — green if folder exists, grey if not */}
+        <button
+          type="button"
+          title={
+            lead.driveFolderUrl
+              ? "Ouvrir le dossier Drive"
+              : "Creer le dossier Drive"
+          }
+          onClick={(e) => {
+            e.stopPropagation();
+            onDriveClick(lead);
+          }}
+          className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+            lead.driveFolderUrl
+              ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
+              : "text-stone-400 hover:bg-stone-50 hover:text-stone-600"
+          }`}
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+        </button>
         <button
           type="button"
           title="Relance IA"
@@ -3198,6 +4277,23 @@ function LeadCard({
             {lead.topic}
           </p>
 
+          {/* Tags */}
+          {lead.tags && lead.tags.length > 0 && (
+            <div className="flex flex-wrap gap-1 py-0.5">
+              {lead.tags.map((t) => (
+                <span
+                  key={t.id}
+                  className={`inline-flex items-center rounded-full border px-1.5 py-0.2 text-[9px] font-bold ${
+                    tagColors[t.color] ||
+                    "bg-stone-50 text-stone-650 border-stone-200"
+                  }`}
+                >
+                  {t.name}
+                </span>
+              ))}
+            </div>
+          )}
+
           {/* Company */}
           {companyLine && (
             <p className="flex items-center gap-1 text-[11px] text-stone-600 font-semibold truncate pr-2">
@@ -3216,11 +4312,34 @@ function LeadCard({
         </div>
 
         {/* Footer info: Date limit and Status Dot - aligned in the same position on every card */}
-        <div className="mt-2 flex items-center justify-between border-t border-stone-50 pt-1.5 w-full">
-          <div>
+        <div className="mt-2 flex flex-col gap-1.5 border-t border-stone-50 pt-1.5 w-full">
+          <div className="flex items-center justify-between">
+            {lead.assignedToName ? (
+              <span className="inline-flex items-center gap-1 rounded bg-stone-50 dark:bg-stone-900 px-1 py-0.5 text-[9px] font-bold text-stone-650 dark:text-stone-300 border border-stone-200 dark:border-stone-850">
+                <span className="flex h-3 w-3 items-center justify-center rounded-full bg-teal-600 text-[8px] font-bold text-white">
+                  {lead.assignedToName.charAt(0).toUpperCase()}
+                </span>
+                {lead.assignedToName}
+              </span>
+            ) : (
+              <span className="text-[9px] text-stone-400 italic">
+                Non assigné
+              </span>
+            )}
+
+            {/* Visual Status Dot */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
+              <span className="text-[9px] text-stone-650 uppercase font-bold tracking-tight">
+                {statusLabels[lead.status] || lead.status}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
             {lead.leadDate ? (
               <span
-                className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+                className={`inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.3 rounded border ${
                   isOverdue
                     ? "text-red-700 bg-red-50 border-red-200/50 animate-pulse"
                     : "text-amber-700 bg-amber-50 border-amber-200/40"
@@ -3230,18 +4349,10 @@ function LeadCard({
                 {formatLeadDateForDisplay(lead.leadDate)}
               </span>
             ) : (
-              <span className="text-[10px] text-stone-400 italic">
+              <span className="text-[9px] text-stone-400 italic">
                 Pas de date
               </span>
             )}
-          </div>
-
-          {/* Visual Status Dot */}
-          <div className="flex items-center gap-1 shrink-0">
-            <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
-            <span className="text-[10px] text-stone-600 uppercase font-bold tracking-tight">
-              {statusLabels[lead.status] || lead.status}
-            </span>
           </div>
         </div>
       </button>

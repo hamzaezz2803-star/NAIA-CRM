@@ -20,7 +20,7 @@ Afficher une section dédiée aux leads dont la date limite est dépassée.
 
 Afficher le nom de l'entreprise sur chaque carte CRM.
 
-### SP2-003 -- Afficher le nom du client
+SP2-003 -- Afficher le nom du client
 
 Afficher le nom du client sur chaque carte CRM.
 

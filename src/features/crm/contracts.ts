@@ -28,6 +28,12 @@ export type CrmCompanySummary = {
   driveFolderUrl?: string;
 };
 
+export type CrmCompanyDetail = CrmCompanySummary & {
+  industry?: string;
+  website?: string;
+  notes?: string;
+};
+
 export type CrmContactSummary = {
   id: string;
   organizationId: string;
@@ -36,6 +42,28 @@ export type CrmContactSummary = {
   email?: string;
   phone?: string;
   jobTitle?: string;
+  linkedinUrl?: string;
+  tags?: CrmTag[];
+};
+
+export type CrmTag = {
+  id: string;
+  organizationId: string;
+  name: string;
+  color: string;
+};
+
+export type CrmLeadNote = {
+  id: string;
+  organizationId: string;
+  leadId: string;
+  content: string;
+  createdByProfileId?: string;
+  createdByName?: string;
+  assignedToProfileId?: string;
+  assignedToName?: string;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type CrmLeadSummary = {
@@ -49,6 +77,17 @@ export type CrmLeadSummary = {
   notes?: string;
   nextAction?: string;
   leadDate?: string;
+  contactJobTitle?: string;
+  contactLinkedinUrl?: string;
+  assignedToProfileId?: string;
+  assignedToName?: string;
+  lastUpdatedByProfileId?: string;
+  lastUpdatedByName?: string;
+  lastUpdatedAt?: string;
+  lastContactedAt?: string;
+  driveFolderUrl?: string;
+  companyName?: string;
+  tags?: CrmTag[];
   createdAt: string;
   updatedAt: string;
 };
@@ -66,6 +105,16 @@ export type CrmLeadDraft = {
   topic: string;
 };
 
+export type CrmLeadFollowUp = {
+  id: string;
+  organizationId: string;
+  leadId: string;
+  contactedAt: string;
+  comment?: string;
+  createdByProfileId?: string;
+  createdByName?: string;
+};
+
 export type CrmDomainEventType =
   | "crm.company.created"
   | "crm.contact.created"
@@ -78,4 +127,22 @@ export type CrmDomainEventType =
 export type CrmDomainEvent = DomainEvent & {
   module: "crm";
   eventType: CrmDomainEventType;
+};
+
+export type CrmTaskStatus = "todo" | "in-progress" | "done";
+
+export type CrmTask = {
+  id: string;
+  organizationId: string;
+  title: string;
+  description?: string;
+  status: CrmTaskStatus;
+  dueDate?: string;
+  leadId?: string;
+  leadTopic?: string;
+  assignedToProfileId?: string;
+  assignedToName?: string;
+  tags?: CrmTag[];
+  createdAt: string;
+  updatedAt: string;
 };

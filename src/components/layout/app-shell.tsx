@@ -13,21 +13,25 @@ import {
   Menu,
   PlugZap,
   Settings,
+  Sparkles,
   Users,
   X,
   Sun,
   Moon,
   PanelLeftClose,
   PanelLeftOpen,
-  Sparkles,
   User as UserIcon,
+  Activity,
+  Building2,
+  Clock,
+  ListTodo,
 } from "lucide-react";
 
 import { NotificationBell } from "./notification-bell";
 import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import {
+import React, {
   useState,
   useEffect,
   useRef,
@@ -253,14 +257,7 @@ export function AppShell({
             </div>
           </div>
         </header>
-        <main
-          className={cn(
-            "mx-auto w-full",
-            pathname === "/naia"
-              ? "max-w-none px-0 py-0"
-              : "max-w-7xl px-4 py-8 md:px-6 lg:px-8",
-          )}
-        >
+        <main className="mx-auto w-full max-w-7xl px-4 py-8 md:px-6 lg:px-8">
           {children}
         </main>
       </div>
@@ -283,6 +280,13 @@ function ShellSidebar({
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
 }) {
+  const isCrmActive =
+    pathname.startsWith("/dashboard/leads") ||
+    pathname.startsWith("/dashboard/follow-ups") ||
+    pathname.startsWith("/dashboard/todo") ||
+    pathname.startsWith("/dashboard/clients");
+  const [isCrmOpen, setIsCrmOpen] = useState(isCrmActive);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       {showBrand ? (
@@ -318,37 +322,140 @@ function ShellSidebar({
           const isActive =
             pathname === module.href || pathname.startsWith(`${module.href}/`);
 
-          return (
-            <Link
-              className={cn(
-                "group flex min-h-11 items-center gap-3 rounded-md py-2 text-sm font-medium transition",
-                isCollapsed ? "justify-center px-0" : "px-3",
-                isActive
-                  ? "bg-teal-50 text-teal-900 dark:bg-teal-950/40 dark:text-teal-400"
-                  : "text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white",
-              )}
-              href={module.href}
-              key={module.id}
-              onClick={onNavigate}
-              title={isCollapsed ? module.name : undefined}
-            >
-              <Icon
-                className={cn(
-                  "h-5 w-5 flex-none",
-                  isActive
-                    ? "text-teal-700 dark:text-teal-400"
-                    : "text-stone-500 group-hover:text-stone-700 dark:text-stone-400 dark:group-hover:text-stone-300",
+          if (module.id === "crm") {
+            const handleCrmClick = (e: React.MouseEvent) => {
+              e.preventDefault();
+              setIsCrmOpen(!isCrmOpen);
+            };
+
+            return (
+              <React.Fragment key={module.id}>
+                <button
+                  className={cn(
+                    "group flex w-full min-h-11 items-center gap-3 rounded-md py-2 text-sm font-medium transition text-left focus:outline-none",
+                    isCollapsed ? "justify-center px-0" : "px-3",
+                    isCrmActive
+                      ? "bg-teal-50 text-teal-900 dark:bg-teal-950/40 dark:text-teal-400"
+                      : "text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white",
+                  )}
+                  onClick={handleCrmClick}
+                  title={isCollapsed ? module.name : undefined}
+                >
+                  <Icon
+                    className={cn(
+                      "h-5 w-5 flex-none",
+                      isCrmActive
+                        ? "text-teal-700 dark:text-teal-400"
+                        : "text-stone-500 group-hover:text-stone-700 dark:text-stone-400 dark:group-hover:text-stone-300",
+                    )}
+                  />
+                  {!isCollapsed && (
+                    <>
+                      <span className="min-w-0 flex-1 truncate">
+                        {module.name}
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 text-stone-400 transition-transform duration-200 group-hover:text-stone-600 dark:group-hover:text-stone-300",
+                          isCrmOpen ? "rotate-180" : "",
+                        )}
+                      />
+                    </>
+                  )}
+                </button>
+                {/* CRM sub-links */}
+                {isCrmOpen && !isCollapsed && (
+                  <div className="ml-6 mt-1 space-y-0.5 pl-4 border-l border-stone-200 dark:border-stone-800">
+                    {[
+                      {
+                        href: "/dashboard/leads",
+                        label: "Pipeline",
+                        icon: Activity,
+                      },
+                      {
+                        href: "/dashboard/follow-ups",
+                        label: "Suivi des relances",
+                        icon: Clock,
+                      },
+                      {
+                        href: "/dashboard/todo",
+                        label: "Tâches (Todo)",
+                        icon: ListTodo,
+                      },
+                      {
+                        href: "/dashboard/clients",
+                        label: "Clients",
+                        icon: Building2,
+                      },
+                    ].map((sub) => {
+                      const SubIcon = sub.icon;
+                      const subActive =
+                        pathname === sub.href ||
+                        pathname.startsWith(`${sub.href}/`);
+                      return (
+                        <Link
+                          key={sub.href}
+                          href={sub.href}
+                          onClick={onNavigate}
+                          className={cn(
+                            "flex min-h-8 items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition",
+                            subActive
+                              ? "bg-teal-50 text-teal-800 dark:bg-teal-950/30 dark:text-teal-400"
+                              : "text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white",
+                          )}
+                        >
+                          <SubIcon
+                            className={cn(
+                              "h-3.5 w-3.5 shrink-0",
+                              subActive
+                                ? "text-teal-700 dark:text-teal-400"
+                                : "text-stone-400",
+                            )}
+                          />
+                          <span>{sub.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
                 )}
-              />
-              {!isCollapsed && (
-                <>
-                  <span className="min-w-0 flex-1 truncate">{module.name}</span>
-                  <span className="hidden md:inline">
-                    <StatusBadge status={module.status} />
-                  </span>
-                </>
-              )}
-            </Link>
+              </React.Fragment>
+            );
+          }
+
+          return (
+            <React.Fragment key={module.id}>
+              <Link
+                className={cn(
+                  "group flex min-h-11 items-center gap-3 rounded-md py-2 text-sm font-medium transition",
+                  isCollapsed ? "justify-center px-0" : "px-3",
+                  isActive
+                    ? "bg-teal-50 text-teal-900 dark:bg-teal-950/40 dark:text-teal-400"
+                    : "text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white",
+                )}
+                href={module.href}
+                onClick={onNavigate}
+                title={isCollapsed ? module.name : undefined}
+              >
+                <Icon
+                  className={cn(
+                    "h-5 w-5 flex-none",
+                    isActive
+                      ? "text-teal-700 dark:text-teal-400"
+                      : "text-stone-500 group-hover:text-stone-700 dark:text-stone-400 dark:group-hover:text-stone-300",
+                  )}
+                />
+                {!isCollapsed && (
+                  <>
+                    <span className="min-w-0 flex-1 truncate">
+                      {module.name}
+                    </span>
+                    <span className="hidden md:inline">
+                      <StatusBadge status={module.status} />
+                    </span>
+                  </>
+                )}
+              </Link>
+            </React.Fragment>
           );
         })}
       </nav>

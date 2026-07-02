@@ -1,5 +1,7 @@
 "use server";
 
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { getAppBaseUrl } from "@/platform/auth/config";
@@ -11,12 +13,14 @@ import type {
   CrmCompanySummary,
   CrmContactSummary,
   CrmCategory,
+  CrmTag,
+  CrmLeadNote,
 } from "./contracts";
 import {
   addDummyCrmLead,
-  dummyCrmOrganizationId,
   dummyCrmCompanies,
   dummyCrmContacts,
+  dummyCrmOrganizationId,
   getDummyCrmLeads,
 } from "./dummy-data";
 import { inferLeadStatusFromNaturalText } from "./extraction";
@@ -37,6 +41,13 @@ type DbLead = {
   next_action: string | null;
   next_action_date: string | null;
   lead_date: string | null;
+  contact_job_title: string | null;
+  contact_linkedin_url: string | null;
+  assigned_to_profile_id: string | null;
+  last_updated_by_profile_id: string | null;
+  last_updated_at: string;
+  last_contacted_at: string | null;
+  drive_folder_url: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -61,6 +72,7 @@ type DbContact = {
   email: string | null;
   phone: string | null;
   job_title: string | null;
+  linkedin_url: string | null;
   notes: string | null;
   created_at: string;
   updated_at: string;
@@ -135,21 +147,172 @@ function fallbackContacts() {
   return shouldUseDummyCrmData() ? dummyCrmContacts : [];
 }
 
-function mapLeadRow(row: DbLead): CrmLeadSummary {
-  return {
-    id: row.id,
-    organizationId: row.organization_id,
-    companyId: row.company_id ?? undefined,
-    contactId: row.contact_id ?? undefined,
-    topic: row.topic,
-    source: row.source ?? undefined,
-    status: row.status,
-    notes: row.notes ?? undefined,
-    nextAction: row.next_action ?? undefined,
-    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  };
+function parseContactInfoFromNotes(notes?: string | null) {
+  if (!notes) return { company: "", contact: "" };
+  const lines = notes.split("\n");
+  const company =
+    lines
+      .find((l) => l.startsWith("Entreprise:"))
+      ?.replace("Entreprise:", "")
+      .trim() ?? "";
+  const contact =
+    lines
+      .find((l) => l.startsWith("Contact:"))
+      ?.replace("Contact:", "")
+      .trim() ?? "";
+  return { company, contact };
+}
+
+async function backfillLeads(
+  supabase: SupabaseClient,
+  orgId: string,
+  leads: DbLead[],
+  userId: string | null,
+) {
+  const leadsToUpdate = leads.filter(
+    (row) => !row.company_id && row.notes && row.notes.includes("Entreprise:"),
+  );
+  if (leadsToUpdate.length === 0) return;
+
+  for (const lead of leadsToUpdate) {
+    const { company, contact } = parseContactInfoFromNotes(lead.notes);
+    if (!company) continue;
+
+    let companyId: string | null = null;
+    let contactId: string | null = null;
+
+    // Find or create company
+    const { data: existingComp } = await supabase
+      .from("crm_companies")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("name", company)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingComp) {
+      companyId = existingComp.id;
+    } else {
+      const { data: newComp } = await supabase
+        .from("crm_companies")
+        .insert({
+          organization_id: orgId,
+          name: company,
+          created_by_profile_id: userId,
+        })
+        .select("id")
+        .single();
+      if (newComp) companyId = newComp.id;
+    }
+
+    if (companyId && contact) {
+      // Find or create contact
+      const { data: existingCont } = await supabase
+        .from("crm_contacts")
+        .select("id")
+        .eq("organization_id", orgId)
+        .eq("company_id", companyId)
+        .eq("name", contact)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingCont) {
+        contactId = existingCont.id;
+      } else {
+        const { data: newCont } = await supabase
+          .from("crm_contacts")
+          .insert({
+            organization_id: orgId,
+            company_id: companyId,
+            name: contact,
+            job_title: lead.contact_job_title,
+            linkedin_url: lead.contact_linkedin_url,
+            created_by_profile_id: userId,
+          })
+          .select("id")
+          .single();
+        if (newCont) contactId = newCont.id;
+      }
+    }
+
+    if (companyId) {
+      await supabase
+        .from("crm_leads")
+        .update({
+          company_id: companyId,
+          contact_id: contactId,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", lead.id);
+
+      lead.company_id = companyId;
+      lead.contact_id = contactId;
+    }
+  }
+}
+
+async function syncLeadTask(
+  supabase: any,
+  orgId: string,
+  leadId: string,
+  userId: string | null,
+) {
+  const { data: leadData } = await supabase
+    .from("crm_leads")
+    .select("topic, next_action, lead_date, assigned_to_profile_id")
+    .eq("id", leadId)
+    .eq("organization_id", orgId)
+    .single();
+
+  if (leadData) {
+    if (leadData.next_action && leadData.next_action.trim()) {
+      // Check if a task exists for this lead
+      const { data: existingTask } = await supabase
+        .from("crm_tasks")
+        .select("id")
+        .eq("lead_id", leadId)
+        .eq("organization_id", orgId)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingTask) {
+        // Update task title, due date, assignee
+        await supabase
+          .from("crm_tasks")
+          .update({
+            title: leadData.next_action.trim(),
+            description: `Tâche de suivi pour le lead: ${leadData.topic}`,
+            due_date: leadData.lead_date
+              ? new Date(leadData.lead_date).toISOString()
+              : null,
+            assigned_to_profile_id: leadData.assigned_to_profile_id,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingTask.id);
+      } else {
+        // Insert new task
+        await supabase.from("crm_tasks").insert({
+          organization_id: orgId,
+          title: leadData.next_action.trim(),
+          description: `Tâche de suivi pour le lead: ${leadData.topic}`,
+          status: "todo",
+          due_date: leadData.lead_date
+            ? new Date(leadData.lead_date).toISOString()
+            : null,
+          lead_id: leadId,
+          assigned_to_profile_id: leadData.assigned_to_profile_id,
+          created_by_profile_id: userId,
+        });
+      }
+    } else {
+      // Delete any active task linked to this lead to keep it clean
+      await supabase
+        .from("crm_tasks")
+        .delete()
+        .eq("lead_id", leadId)
+        .eq("status", "todo");
+    }
+  }
 }
 
 // ────────────────────────────────────────────────────────────
@@ -165,13 +328,150 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
 
   const { data, error } = await supabase
     .from("crm_leads")
-    .select("*")
+    .select(
+      `
+      *,
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      crm_companies(name),
+      crm_lead_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
     .eq("organization_id", orgId)
     .order("created_at", { ascending: false });
 
-  if (error || !data || data.length === 0) return fallbackLeads();
+  if (error || !data) {
+    if (error) console.error("fetchLeadsAction query error:", error);
+    return fallbackLeads();
+  }
 
-  return (data as DbLead[]).map(mapLeadRow);
+  const rows = data as any[];
+  if (rows.length === 0) return fallbackLeads();
+
+  // Perform backfill
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  await backfillLeads(supabase, orgId, rows as DbLead[], user?.id ?? null);
+
+  return rows.map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    companyId: row.company_id ?? undefined,
+    companyName: row.crm_companies?.name ?? undefined,
+    contactId: row.contact_id ?? undefined,
+    topic: row.topic,
+    source: row.source ?? undefined,
+    status: row.status,
+    notes: row.notes ?? undefined,
+    nextAction: row.next_action ?? undefined,
+    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
+    contactJobTitle: row.contact_job_title ?? undefined,
+    contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
+    assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+    assignedToName:
+      row.assigned_to?.full_name ||
+      row.assigned_to?.email?.split("@")[0] ||
+      undefined,
+    lastUpdatedByProfileId: row.last_updated_by_profile_id ?? undefined,
+    lastUpdatedByName:
+      row.last_updated_by?.full_name ||
+      row.last_updated_by?.email?.split("@")[0] ||
+      undefined,
+    lastUpdatedAt: row.last_updated_at ?? undefined,
+    lastContactedAt: row.last_contacted_at ?? undefined,
+    driveFolderUrl: row.drive_folder_url ?? undefined,
+    tags: (row.crm_lead_tags ?? [])
+      .map((lt: any) => lt.crm_tags)
+      .filter(Boolean)
+      .map((t: any) => ({
+        id: t.id,
+        organizationId: t.organization_id,
+        name: t.name,
+        color: t.color,
+      })),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export type LeadTodoCard = {
+  id: string;
+  topic: string;
+  status: string;
+  nextAction?: string;
+  leadDate?: string;
+  companyName?: string;
+  contactName?: string;
+  contactJobTitle?: string;
+  assignedToProfileId?: string;
+  assignedToName?: string;
+  lastContactedAt?: string;
+  tags?: import("./contracts").CrmTag[];
+  source?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_leads")
+    .select(
+      `
+      *,
+      company:company_id(id, name),
+      contact:contact_id(id, name),
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      crm_lead_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("organization_id", orgId)
+    .order("lead_date", { ascending: true, nullsFirst: false });
+
+  if (error || !data) {
+    if (error) console.error("fetchLeadsForTodoAction error:", error);
+    return [];
+  }
+
+  return (data as any[]).map((row) => ({
+    id: row.id,
+    topic: row.topic,
+    status: row.status,
+    nextAction: row.next_action ?? undefined,
+    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
+    companyName: row.company?.name ?? undefined,
+    contactName: row.contact?.name ?? undefined,
+    contactJobTitle: row.contact_job_title ?? undefined,
+    assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+    assignedToName:
+      row.assigned_to?.full_name ||
+      row.assigned_to?.email?.split("@")[0] ||
+      undefined,
+    lastContactedAt: row.last_contacted_at ?? undefined,
+    source: row.source ?? undefined,
+    notes: row.notes ?? undefined,
+    tags: (row.crm_lead_tags ?? [])
+      .map((lt: any) => lt.crm_tags)
+      .filter(Boolean)
+      .map((t: any) => ({
+        id: t.id,
+        organizationId: t.organization_id ?? "",
+        name: t.name,
+        color: t.color,
+      })),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
 }
 
 export async function createLeadAction(input: {
@@ -183,6 +483,10 @@ export async function createLeadAction(input: {
   notes?: string;
   nextAction?: string;
   leadDate?: string;
+  contactJobTitle?: string;
+  contactLinkedinUrl?: string;
+  assignedToProfileId?: string;
+  tagIds?: string[];
 }): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) {
@@ -202,18 +506,83 @@ export async function createLeadAction(input: {
     data: { user },
   } = await supabase.auth.getUser();
 
+  let companyId = input.companyId ?? null;
+  let contactId = input.contactId ?? null;
+
+  const { company, contact } = parseContactInfoFromNotes(input.notes);
+  if (!companyId && company) {
+    // Find or create company
+    const { data: existingComp } = await supabase
+      .from("crm_companies")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("name", company)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingComp) {
+      companyId = existingComp.id;
+    } else {
+      const { data: newComp } = await supabase
+        .from("crm_companies")
+        .insert({
+          organization_id: orgId,
+          name: company,
+          created_by_profile_id: user?.id ?? null,
+        })
+        .select("id")
+        .single();
+      if (newComp) companyId = newComp.id;
+    }
+  }
+
+  if (companyId && !contactId && contact) {
+    // Find or create contact
+    const { data: existingCont } = await supabase
+      .from("crm_contacts")
+      .select("id")
+      .eq("organization_id", orgId)
+      .eq("company_id", companyId)
+      .eq("name", contact)
+      .limit(1)
+      .maybeSingle();
+
+    if (existingCont) {
+      contactId = existingCont.id;
+    } else {
+      const { data: newCont } = await supabase
+        .from("crm_contacts")
+        .insert({
+          organization_id: orgId,
+          company_id: companyId,
+          name: contact,
+          job_title: input.contactJobTitle ?? null,
+          linkedin_url: input.contactLinkedinUrl ?? null,
+          created_by_profile_id: user?.id ?? null,
+        })
+        .select("id")
+        .single();
+      if (newCont) contactId = newCont.id;
+    }
+  }
+
   const { data, error } = await supabase
     .from("crm_leads")
     .insert({
       organization_id: orgId,
       topic: input.topic,
-      company_id: input.companyId ?? null,
-      contact_id: input.contactId ?? null,
+      company_id: companyId,
+      contact_id: contactId,
       source: input.source ?? null,
       status: input.status ?? "lead-to-contact",
       notes: input.notes ?? null,
       next_action: input.nextAction ?? null,
       lead_date: input.leadDate ? new Date(input.leadDate).toISOString() : null,
+      contact_job_title: input.contactJobTitle ?? null,
+      contact_linkedin_url: input.contactLinkedinUrl ?? null,
+      assigned_to_profile_id: input.assignedToProfileId ?? null,
+      last_updated_by_profile_id: user?.id ?? null,
+      last_updated_at: new Date().toISOString(),
       created_by_profile_id: user?.id ?? null,
     })
     .select()
@@ -225,6 +594,46 @@ export async function createLeadAction(input: {
 
   const row = data as DbLead;
 
+  // Insert tag associations
+  if (input.tagIds && input.tagIds.length > 0) {
+    const tagInserts = input.tagIds.map((tagId) => ({
+      lead_id: row.id,
+      tag_id: tagId,
+    }));
+    await supabase.from("crm_lead_tags").insert(tagInserts);
+  }
+
+  // Sync to Google Calendar if leadDate is set
+  if (input.leadDate) {
+    await syncLeadToGoogleCalendar(supabase, orgId, row.id);
+  }
+
+  // Sync Todo task
+  await syncLeadTask(supabase, orgId, row.id, user?.id ?? null);
+
+  // Auto-create Google Drive folder inside NAIA'S-INFOS
+  try {
+    const companyName = input.companyId
+      ? ((
+          await supabase
+            .from("crm_companies")
+            .select("name")
+            .eq("id", input.companyId)
+            .single()
+        ).data?.name ?? input.topic)
+      : input.topic;
+    await createLeadDriveFolderIfConnected(
+      supabase,
+      orgId,
+      row.id,
+      companyName,
+      input.topic,
+    );
+  } catch (driveErr) {
+    // Non-blocking — Drive failure must not block lead creation
+    console.error("Drive folder auto-create error:", driveErr);
+  }
+
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
 
@@ -234,21 +643,84 @@ export async function createLeadAction(input: {
     type: "success",
   });
 
+  // Query back populated lead
+  const { data: populated, error: popErr } = await supabase
+    .from("crm_leads")
+    .select(
+      `
+      *,
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      crm_lead_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("id", row.id)
+    .single();
+
+  if (popErr || !populated) {
+    return {
+      success: true,
+      lead: {
+        id: row.id,
+        organizationId: row.organization_id,
+        companyId: row.company_id ?? undefined,
+        contactId: row.contact_id ?? undefined,
+        topic: row.topic,
+        source: row.source ?? undefined,
+        status: row.status,
+        notes: row.notes ?? undefined,
+        nextAction: row.next_action ?? undefined,
+        leadDate: row.lead_date ?? row.next_action_date ?? undefined,
+        contactJobTitle: row.contact_job_title ?? undefined,
+        contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
+        lastContactedAt: row.last_contacted_at ?? undefined,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+      },
+    };
+  }
+
+  const popRow = populated as any;
   return {
     success: true,
     lead: {
-      id: row.id,
-      organizationId: row.organization_id,
-      companyId: row.company_id ?? undefined,
-      contactId: row.contact_id ?? undefined,
-      topic: row.topic,
-      source: row.source ?? undefined,
-      status: row.status,
-      notes: row.notes ?? undefined,
-      nextAction: row.next_action ?? undefined,
-      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
+      id: popRow.id,
+      organizationId: popRow.organization_id,
+      companyId: popRow.company_id ?? undefined,
+      contactId: popRow.contact_id ?? undefined,
+      topic: popRow.topic,
+      source: popRow.source ?? undefined,
+      status: popRow.status,
+      notes: popRow.notes ?? undefined,
+      nextAction: popRow.next_action ?? undefined,
+      leadDate: popRow.lead_date ?? popRow.next_action_date ?? undefined,
+      contactJobTitle: popRow.contact_job_title ?? undefined,
+      contactLinkedinUrl: popRow.contact_linkedin_url ?? undefined,
+      assignedToProfileId: popRow.assigned_to_profile_id ?? undefined,
+      assignedToName:
+        popRow.assigned_to?.full_name ||
+        popRow.assigned_to?.email?.split("@")[0] ||
+        undefined,
+      lastUpdatedByProfileId: popRow.last_updated_by_profile_id ?? undefined,
+      lastUpdatedByName:
+        popRow.last_updated_by?.full_name ||
+        popRow.last_updated_by?.email?.split("@")[0] ||
+        undefined,
+      lastUpdatedAt: popRow.last_updated_at ?? undefined,
+      lastContactedAt: popRow.last_contacted_at ?? undefined,
+      tags: (popRow.crm_lead_tags ?? [])
+        .map((lt: any) => lt.crm_tags)
+        .filter(Boolean)
+        .map((t: any) => ({
+          id: t.id,
+          organizationId: t.organization_id,
+          name: t.name,
+          color: t.color,
+        })),
+      createdAt: popRow.created_at,
+      updatedAt: popRow.updated_at,
     },
   };
 }
@@ -262,12 +734,21 @@ function createDummyLead(input: {
   notes?: string;
   nextAction?: string;
   leadDate?: string;
+  contactJobTitle?: string;
+  contactLinkedinUrl?: string;
+  assignedToProfileId?: string;
+  tagIds?: string[];
 }): { success: true; lead: CrmLeadSummary } {
   const now = new Date().toISOString();
   const suffix = Math.random().toString(36).slice(2, 9);
+  const { company } = parseContactInfoFromNotes(input.notes);
   const lead: CrmLeadSummary = {
+    assignedToProfileId: input.assignedToProfileId,
     companyId: input.companyId,
+    companyName: company || undefined,
     contactId: input.contactId,
+    contactJobTitle: input.contactJobTitle,
+    contactLinkedinUrl: input.contactLinkedinUrl,
     createdAt: now,
     id: `demo-lead-${Date.now().toString(36)}-${suffix}`,
     leadDate: input.leadDate
@@ -300,16 +781,13 @@ export async function updateLeadStatusAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  const { data, error } = await supabase
+  const { error } = await supabase
     .from("crm_leads")
     .update({ status, updated_at: new Date().toISOString() })
     .eq("id", leadId)
-    .eq("organization_id", orgId)
-    .select("id")
-    .maybeSingle();
+    .eq("organization_id", orgId);
 
   if (error) return { success: false, error: error.message };
-  if (!data) return { success: false, error: "Lead not found" };
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
@@ -327,6 +805,10 @@ export async function updateLeadAction(
     source: string;
     companyId: string;
     contactId: string;
+    contactJobTitle: string;
+    contactLinkedinUrl: string;
+    assignedToProfileId: string | null;
+    tagIds: string[];
   }>,
 ): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
@@ -335,7 +817,78 @@ export async function updateLeadAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  const { data: updatedData, error } = await supabase
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  let companyId =
+    updates.companyId !== undefined ? updates.companyId : undefined;
+  let contactId =
+    updates.contactId !== undefined ? updates.contactId : undefined;
+
+  // Auto-create and link company/contact if notes are updated
+  if (
+    (companyId === undefined || contactId === undefined) &&
+    updates.notes !== undefined
+  ) {
+    const { company, contact } = parseContactInfoFromNotes(updates.notes);
+
+    if (companyId === undefined && company) {
+      const { data: existingComp } = await supabase
+        .from("crm_companies")
+        .select("id")
+        .eq("organization_id", orgId)
+        .eq("name", company)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingComp) {
+        companyId = existingComp.id;
+      } else {
+        const { data: newComp } = await supabase
+          .from("crm_companies")
+          .insert({
+            organization_id: orgId,
+            name: company,
+            created_by_profile_id: user?.id ?? null,
+          })
+          .select("id")
+          .single();
+        if (newComp) companyId = newComp.id;
+      }
+    }
+
+    if (companyId && contactId === undefined && contact) {
+      const { data: existingCont } = await supabase
+        .from("crm_contacts")
+        .select("id")
+        .eq("organization_id", orgId)
+        .eq("company_id", companyId)
+        .eq("name", contact)
+        .limit(1)
+        .maybeSingle();
+
+      if (existingCont) {
+        contactId = existingCont.id;
+      } else {
+        const { data: newCont } = await supabase
+          .from("crm_contacts")
+          .insert({
+            organization_id: orgId,
+            company_id: companyId,
+            name: contact,
+            job_title: updates.contactJobTitle ?? null,
+            linkedin_url: updates.contactLinkedinUrl ?? null,
+            created_by_profile_id: user?.id ?? null,
+          })
+          .select("id")
+          .single();
+        if (newCont) contactId = newCont.id;
+      }
+    }
+  }
+
+  const { error } = await supabase
     .from("crm_leads")
     .update({
       ...(updates.topic !== undefined && { topic: updates.topic }),
@@ -350,22 +903,109 @@ export async function updateLeadAction(
           : null,
       }),
       ...(updates.source !== undefined && { source: updates.source }),
-      ...(updates.companyId !== undefined && { company_id: updates.companyId }),
-      ...(updates.contactId !== undefined && { contact_id: updates.contactId }),
+      ...(companyId !== undefined && { company_id: companyId }),
+      ...(contactId !== undefined && { contact_id: contactId }),
+      ...(updates.contactJobTitle !== undefined && {
+        contact_job_title: updates.contactJobTitle || null,
+      }),
+      ...(updates.contactLinkedinUrl !== undefined && {
+        contact_linkedin_url: updates.contactLinkedinUrl || null,
+      }),
+      ...(updates.assignedToProfileId !== undefined && {
+        assigned_to_profile_id: updates.assignedToProfileId,
+      }),
+      last_updated_by_profile_id: user?.id ?? null,
+      last_updated_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
-    .eq("organization_id", orgId)
-    .select("*")
-    .maybeSingle();
+    .eq("organization_id", orgId);
 
   if (error) return { success: false, error: error.message };
-  if (!updatedData) return { success: false, error: "Lead not found" };
+
+  // Sync tags if provided
+  if (updates.tagIds !== undefined) {
+    // Delete existing associations
+    await supabase.from("crm_lead_tags").delete().eq("lead_id", leadId);
+
+    // Insert new associations
+    if (updates.tagIds.length > 0) {
+      const tagInserts = updates.tagIds.map((tagId) => ({
+        lead_id: leadId,
+        tag_id: tagId,
+      }));
+      await supabase.from("crm_lead_tags").insert(tagInserts);
+    }
+  }
+
+  await syncLeadToGoogleCalendar(supabase, orgId, leadId);
+
+  // Sync Todo task
+  await syncLeadTask(supabase, orgId, leadId, user?.id ?? null);
+
+  // Query back populated lead
+  const { data: updatedData } = await supabase
+    .from("crm_leads")
+    .select(
+      `
+      *,
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      crm_lead_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("id", leadId)
+    .eq("organization_id", orgId)
+    .single();
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
 
-  return { success: true, lead: mapLeadRow(updatedData as DbLead) };
+  let updatedLead: CrmLeadSummary | undefined;
+  if (updatedData) {
+    const row = updatedData as any;
+    updatedLead = {
+      id: row.id,
+      organizationId: row.organization_id,
+      companyId: row.company_id ?? undefined,
+      contactId: row.contact_id ?? undefined,
+      topic: row.topic,
+      source: row.source ?? undefined,
+      status: row.status,
+      notes: row.notes ?? undefined,
+      nextAction: row.next_action ?? undefined,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
+      contactJobTitle: row.contact_job_title ?? undefined,
+      contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
+      assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+      assignedToName:
+        row.assigned_to?.full_name ||
+        row.assigned_to?.email?.split("@")[0] ||
+        undefined,
+      lastUpdatedByProfileId: row.last_updated_by_profile_id ?? undefined,
+      lastUpdatedByName:
+        row.last_updated_by?.full_name ||
+        row.last_updated_by?.email?.split("@")[0] ||
+        undefined,
+      lastUpdatedAt: row.last_updated_at ?? undefined,
+      lastContactedAt: row.last_contacted_at ?? undefined,
+      tags: (row.crm_lead_tags ?? [])
+        .map((lt: any) => lt.crm_tags)
+        .filter(Boolean)
+        .map((t: any) => ({
+          id: t.id,
+          organizationId: t.organization_id,
+          name: t.name,
+          color: t.color,
+        })),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  return { success: true, lead: updatedLead };
 }
 
 export async function deleteLeadAction(
@@ -459,6 +1099,27 @@ export async function fetchCompaniesAction(): Promise<CrmCompanySummary[]> {
   const orgId = await getOrgId();
   if (!orgId) return fallbackCompanies();
 
+  // Run the backfill first to ensure any text-only companies from leads are created & linked
+  try {
+    const { data: leadsData } = await supabase
+      .from("crm_leads")
+      .select("*")
+      .eq("organization_id", orgId);
+    if (leadsData) {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      await backfillLeads(
+        supabase,
+        orgId,
+        leadsData as DbLead[],
+        user?.id ?? null,
+      );
+    }
+  } catch (e) {
+    console.error("Backfill failed in fetchCompaniesAction:", e);
+  }
+
   const { data, error } = await supabase
     .from("crm_companies")
     .select("id, organization_id, name, drive_folder_url")
@@ -547,6 +1208,144 @@ export async function updateCompanyDriveFolderAction(
   return { success: true };
 }
 
+export async function updateCompanyAction(
+  companyId: string,
+  updates: Partial<{
+    name: string;
+    industry: string;
+    website: string;
+    notes: string;
+  }>,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_companies")
+    .update({
+      ...(updates.name !== undefined && { name: updates.name }),
+      ...(updates.industry !== undefined && {
+        industry: updates.industry || null,
+      }),
+      ...(updates.website !== undefined && {
+        website: updates.website || null,
+      }),
+      ...(updates.notes !== undefined && { notes: updates.notes || null }),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", companyId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/clients");
+  return { success: true };
+}
+
+export async function fetchCompanyDetailAction(companyId: string): Promise<{
+  company: import("./contracts").CrmCompanyDetail | null;
+  contacts: import("./contracts").CrmContactSummary[];
+  leads: import("./contracts").CrmLeadSummary[];
+}> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { company: null, contacts: [], leads: [] };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { company: null, contacts: [], leads: [] };
+
+  const [companyRes, contactsRes, leadsRes] = await Promise.all([
+    supabase
+      .from("crm_companies")
+      .select(
+        "id, organization_id, name, industry, website, drive_folder_url, notes",
+      )
+      .eq("id", companyId)
+      .eq("organization_id", orgId)
+      .single(),
+    supabase
+      .from("crm_contacts")
+      .select(
+        `
+        id, organization_id, company_id, name, email, phone, job_title, linkedin_url,
+        crm_contact_tags(
+          crm_tags(id, name, color)
+        )
+        `,
+      )
+      .eq("company_id", companyId)
+      .eq("organization_id", orgId)
+      .order("name"),
+    supabase
+      .from("crm_leads")
+      .select("*")
+      .eq("company_id", companyId)
+      .eq("organization_id", orgId)
+      .order("created_at", { ascending: false }),
+  ]);
+
+  if (companyRes.error || !companyRes.data) {
+    return { company: null, contacts: [], leads: [] };
+  }
+
+  const row = companyRes.data as DbCompany;
+  const company: import("./contracts").CrmCompanyDetail = {
+    id: row.id,
+    organizationId: row.organization_id,
+    name: row.name,
+    driveFolderUrl: row.drive_folder_url ?? undefined,
+    industry: row.industry ?? undefined,
+    website: row.website ?? undefined,
+    notes: row.notes ?? undefined,
+  };
+
+  const contacts: import("./contracts").CrmContactSummary[] = (
+    (contactsRes.data ?? []) as any[]
+  ).map((c) => ({
+    id: c.id,
+    organizationId: c.organization_id,
+    companyId: c.company_id ?? undefined,
+    name: c.name,
+    email: c.email ?? undefined,
+    phone: c.phone ?? undefined,
+    jobTitle: c.job_title ?? undefined,
+    linkedinUrl: c.linkedin_url ?? undefined,
+    tags: (c.crm_contact_tags ?? [])
+      .map((ct: any) => ct.crm_tags)
+      .filter(Boolean)
+      .map((t: any) => ({
+        id: t.id,
+        organizationId: t.organization_id,
+        name: t.name,
+        color: t.color,
+      })),
+  }));
+
+  const leads: import("./contracts").CrmLeadSummary[] = (
+    (leadsRes.data ?? []) as DbLead[]
+  ).map((l) => ({
+    id: l.id,
+    organizationId: l.organization_id,
+    companyId: l.company_id ?? undefined,
+    contactId: l.contact_id ?? undefined,
+    topic: l.topic,
+    source: l.source ?? undefined,
+    status: l.status,
+    notes: l.notes ?? undefined,
+    nextAction: l.next_action ?? undefined,
+    leadDate: l.lead_date ?? l.next_action_date ?? undefined,
+    contactJobTitle: l.contact_job_title ?? undefined,
+    contactLinkedinUrl: l.contact_linkedin_url ?? undefined,
+    createdAt: l.created_at,
+    updatedAt: l.updated_at,
+  }));
+
+  return { company, contacts, leads };
+}
+
 // ────────────────────────────────────────────────────────────
 // CONTACTS
 // ────────────────────────────────────────────────────────────
@@ -560,13 +1359,20 @@ export async function fetchContactsAction(): Promise<CrmContactSummary[]> {
 
   const { data, error } = await supabase
     .from("crm_contacts")
-    .select("id, organization_id, company_id, name, email, phone, job_title")
+    .select(
+      `
+      id, organization_id, company_id, name, email, phone, job_title, linkedin_url,
+      crm_contact_tags(
+        crm_tags(id, name, color)
+      )
+      `,
+    )
     .eq("organization_id", orgId)
     .order("name");
 
   if (error || !data || data.length === 0) return fallbackContacts();
 
-  return (data as DbContact[]).map((row) => ({
+  return data.map((row: any) => ({
     id: row.id,
     organizationId: row.organization_id,
     companyId: row.company_id ?? undefined,
@@ -574,6 +1380,16 @@ export async function fetchContactsAction(): Promise<CrmContactSummary[]> {
     email: row.email ?? undefined,
     phone: row.phone ?? undefined,
     jobTitle: row.job_title ?? undefined,
+    linkedinUrl: row.linkedin_url ?? undefined,
+    tags: (row.crm_contact_tags ?? [])
+      .map((ct: any) => ct.crm_tags)
+      .filter(Boolean)
+      .map((t: any) => ({
+        id: t.id,
+        organizationId: t.organization_id,
+        name: t.name,
+        color: t.color,
+      })),
   }));
 }
 
@@ -583,7 +1399,9 @@ export async function createContactAction(input: {
   email?: string;
   phone?: string;
   jobTitle?: string;
+  linkedinUrl?: string;
   notes?: string;
+  tagIds?: string[];
 }): Promise<{ success: boolean; contact?: CrmContactSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
@@ -604,6 +1422,7 @@ export async function createContactAction(input: {
       email: input.email ?? null,
       phone: input.phone ?? null,
       job_title: input.jobTitle ?? null,
+      linkedin_url: input.linkedinUrl ?? null,
       notes: input.notes ?? null,
       created_by_profile_id: user?.id ?? null,
     })
@@ -614,20 +1433,172 @@ export async function createContactAction(input: {
     return { success: false, error: error?.message ?? "Insert failed" };
   }
 
-  revalidatePath("/crm");
   const row = data as DbContact;
+
+  if (input.tagIds && input.tagIds.length > 0) {
+    const tagInserts = input.tagIds.map((tagId) => ({
+      contact_id: row.id,
+      tag_id: tagId,
+    }));
+    await supabase.from("crm_contact_tags").insert(tagInserts);
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/clients");
+
+  // Query contact with populated tags
+  const { data: populated } = await supabase
+    .from("crm_contacts")
+    .select(
+      `
+      id, organization_id, company_id, name, email, phone, job_title, linkedin_url,
+      crm_contact_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("id", row.id)
+    .single();
+
+  const pop = (populated || row) as any;
+
   return {
     success: true,
     contact: {
-      id: row.id,
-      organizationId: row.organization_id,
-      companyId: row.company_id ?? undefined,
-      name: row.name,
-      email: row.email ?? undefined,
-      phone: row.phone ?? undefined,
-      jobTitle: row.job_title ?? undefined,
+      id: pop.id,
+      organizationId: pop.organization_id,
+      companyId: pop.company_id ?? undefined,
+      name: pop.name,
+      email: pop.email ?? undefined,
+      phone: pop.phone ?? undefined,
+      jobTitle: pop.job_title ?? undefined,
+      linkedinUrl: pop.linkedin_url ?? undefined,
+      tags: (pop.crm_contact_tags ?? [])
+        .map((ct: any) => ct.crm_tags)
+        .filter(Boolean)
+        .map((t: any) => ({
+          id: t.id,
+          organizationId: t.organization_id,
+          name: t.name,
+          color: t.color,
+        })),
     },
   };
+}
+
+export async function updateContactAction(
+  contactId: string,
+  updates: {
+    name: string;
+    companyId?: string;
+    email?: string;
+    phone?: string;
+    jobTitle?: string;
+    linkedinUrl?: string;
+    tagIds?: string[];
+  },
+): Promise<{ success: boolean; contact?: CrmContactSummary; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_contacts")
+    .update({
+      name: updates.name,
+      company_id: updates.companyId ?? null,
+      email: updates.email || null,
+      phone: updates.phone || null,
+      job_title: updates.jobTitle || null,
+      linkedin_url: updates.linkedinUrl || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", contactId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  if (updates.tagIds !== undefined) {
+    await supabase
+      .from("crm_contact_tags")
+      .delete()
+      .eq("contact_id", contactId);
+
+    if (updates.tagIds.length > 0) {
+      const tagInserts = updates.tagIds.map((tagId) => ({
+        contact_id: contactId,
+        tag_id: tagId,
+      }));
+      await supabase.from("crm_contact_tags").insert(tagInserts);
+    }
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/clients");
+
+  const { data: populated } = await supabase
+    .from("crm_contacts")
+    .select(
+      `
+      id, organization_id, company_id, name, email, phone, job_title, linkedin_url,
+      crm_contact_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("id", contactId)
+    .single();
+
+  if (!populated)
+    return { success: false, error: "Failed to fetch updated contact" };
+  const pop = populated as any;
+
+  return {
+    success: true,
+    contact: {
+      id: pop.id,
+      organizationId: pop.organization_id,
+      companyId: pop.company_id ?? undefined,
+      name: pop.name,
+      email: pop.email ?? undefined,
+      phone: pop.phone ?? undefined,
+      jobTitle: pop.job_title ?? undefined,
+      linkedinUrl: pop.linkedin_url ?? undefined,
+      tags: (pop.crm_contact_tags ?? [])
+        .map((ct: any) => ct.crm_tags)
+        .filter(Boolean)
+        .map((t: any) => ({
+          id: t.id,
+          organizationId: t.organization_id,
+          name: t.name,
+          color: t.color,
+        })),
+    },
+  };
+}
+
+export async function deleteContactAction(
+  contactId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_contacts")
+    .delete()
+    .eq("id", contactId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/clients");
+  return { success: true };
 }
 
 // ────────────────────────────────────────────────────────────
@@ -808,6 +1779,9 @@ Retourne UNIQUEMENT un JSON valide:
 // GOOGLE DRIVE INTEGRATION ACTIONS
 // ────────────────────────────────────────────────────────────
 
+// ID of the parent "NAIA'S-INFOS" folder on Drive (hamza@qarizmi.com)
+const NAIAS_INFOS_FOLDER_ID = "14GE31ZqlrmH6_1OoRHZEjSfEjQ9oF0tF";
+
 export async function checkGoogleAuthAction(): Promise<boolean> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return false;
@@ -897,18 +1871,36 @@ export async function createGoogleDriveFolderAction(
   }
 
   try {
-    // Create folder in Google Drive
-    const createRes = await fetch("https://www.googleapis.com/drive/v3/files", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    // Fetch lead topic for folder naming
+    const { data: leadRow } = await supabase
+      .from("crm_leads")
+      .select("topic, drive_folder_url")
+      .eq("id", leadId)
+      .single();
+
+    // If already has a folder, return it
+    if (leadRow?.drive_folder_url) {
+      return { success: true, folderLink: leadRow.drive_folder_url };
+    }
+
+    const folderName = `${companyName} - ${leadRow?.topic ?? "Lead"}`;
+
+    // Create folder inside NAIA'S-INFOS
+    const createRes = await fetch(
+      "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          name: folderName,
+          mimeType: "application/vnd.google-apps.folder",
+          parents: [NAIAS_INFOS_FOLDER_ID],
+        }),
       },
-      body: JSON.stringify({
-        name: `Client - ${companyName}`,
-        mimeType: "application/vnd.google-apps.folder",
-      }),
-    });
+    );
 
     if (!createRes.ok) {
       const errText = await createRes.text();
@@ -919,7 +1911,7 @@ export async function createGoogleDriveFolderAction(
     const folderId = folder.id;
     const folderLink = `https://drive.google.com/drive/folders/${folderId}`;
 
-    // Create subfolders inside the client folder
+    // Create subfolders
     const subfolders = [
       "01_Pitch",
       "02_Meeting Notes",
@@ -927,33 +1919,41 @@ export async function createGoogleDriveFolderAction(
       "04_Contract",
       "05_Delivery",
     ];
-
     for (const subName of subfolders) {
-      await fetch("https://www.googleapis.com/drive/v3/files", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
+      await fetch(
+        "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            name: subName,
+            mimeType: "application/vnd.google-apps.folder",
+            parents: [folderId],
+          }),
         },
-        body: JSON.stringify({
-          name: subName,
-          mimeType: "application/vnd.google-apps.folder",
-          parents: [folderId],
-        }),
-      });
+      );
     }
 
-    // Get lead notes
-    const { data: lead, error: leadError } = await supabase
+    // Store folder URL directly on the lead
+    await supabase
       .from("crm_leads")
-      .select("company_id, notes")
-      .eq("id", leadId)
-      .eq("organization_id", orgId)
-      .single();
+      .update({
+        drive_folder_url: folderLink,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", leadId);
 
-    if (!leadError && lead) {
-      // Update company drive folder url if company exists
-      if (lead.company_id) {
+    // Also update company drive_folder_url if exists
+    if (leadRow) {
+      const { data: lead } = await supabase
+        .from("crm_leads")
+        .select("company_id")
+        .eq("id", leadId)
+        .single();
+      if (lead?.company_id) {
         await supabase
           .from("crm_companies")
           .update({
@@ -962,29 +1962,15 @@ export async function createGoogleDriveFolderAction(
           })
           .eq("id", lead.company_id);
       }
-
-      // Update lead notes to append the drive link
-      const existingNotes = lead.notes || "";
-      const updatedNotes = existingNotes
-        ? `${existingNotes}\n[Google Drive Folder: Client - ${companyName}](${folderLink})`
-        : `[Google Drive Folder: Client - ${companyName}](${folderLink})`;
-
-      await supabase
-        .from("crm_leads")
-        .update({
-          notes: updatedNotes,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadId);
     }
 
     revalidatePath("/crm");
-    revalidatePath("/crm");
+    revalidatePath("/dashboard/leads");
     revalidatePath("/dashboard/documents");
 
     await createSystemNotification({
       title: "Dossier Drive créé",
-      description: `Le dossier pour le client "${companyName}" a été créé sur Google Drive le ${new Date().toLocaleString("fr-FR")}.`,
+      description: `Le dossier "${folderName}" a été créé dans NAIA'S-INFOS sur Google Drive le ${new Date().toLocaleString("fr-FR")}.`,
       type: "success",
       link_url: folderLink,
     });
@@ -994,6 +1980,89 @@ export async function createGoogleDriveFolderAction(
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
   }
+}
+
+/** Non-blocking helper called during createLeadAction */
+async function createLeadDriveFolderIfConnected(
+  supabase: any,
+  orgId: string,
+  leadId: string,
+  companyName: string,
+  topic: string,
+): Promise<void> {
+  // Check if Google is connected
+  const { data: connection } = await supabase
+    .from("integration_connections")
+    .select("*")
+    .eq("organization_id", orgId)
+    .eq("provider", "google")
+    .limit(1)
+    .maybeSingle();
+
+  if (!connection || connection.status !== "connected") return;
+
+  const accessToken = await getOrRefreshGoogleToken(
+    supabase,
+    orgId,
+    connection,
+  );
+  if (!accessToken) return;
+
+  const folderName = `${companyName} - ${topic}`;
+
+  const createRes = await fetch(
+    "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: folderName,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [NAIAS_INFOS_FOLDER_ID],
+      }),
+    },
+  );
+
+  if (!createRes.ok) return;
+
+  const folder = await createRes.json();
+  const folderId = folder.id;
+  const folderLink = `https://drive.google.com/drive/folders/${folderId}`;
+
+  // Create subfolders in background (no await needed)
+  const subfolders = [
+    "01_Pitch",
+    "02_Meeting Notes",
+    "03_Proposal",
+    "04_Contract",
+    "05_Delivery",
+  ];
+  for (const subName of subfolders) {
+    fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        name: subName,
+        mimeType: "application/vnd.google-apps.folder",
+        parents: [folderId],
+      }),
+    }).catch(() => {});
+  }
+
+  // Store on lead
+  await supabase
+    .from("crm_leads")
+    .update({
+      drive_folder_url: folderLink,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", leadId);
 }
 
 async function getOrRefreshGoogleToken(
@@ -1651,5 +2720,866 @@ export async function reorderCategoriesAction(
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
 
+  return { success: true };
+}
+
+// ────────────────────────────────────────────────────────────
+// TEAM MEMBERS
+// ────────────────────────────────────────────────────────────
+
+export async function fetchTeamMembersAction(): Promise<
+  { id: string; fullName: string; email: string; avatarUrl?: string }[]
+> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("organization_memberships")
+    .select(
+      `
+      profile_id,
+      profiles:profile_id(id, full_name, email, avatar_url)
+    `,
+    )
+    .eq("organization_id", orgId);
+
+  if (error || !data) return [];
+
+  return data
+    .map((row: any) => {
+      const p = row.profiles;
+      if (!p) return null;
+      return {
+        id: p.id,
+        fullName: p.full_name || p.email.split("@")[0],
+        email: p.email,
+        avatarUrl: p.avatar_url ?? undefined,
+      };
+    })
+    .filter(Boolean) as {
+    id: string;
+    fullName: string;
+    email: string;
+    avatarUrl?: string;
+  }[];
+}
+
+// ────────────────────────────────────────────────────────────
+// TAGS CRUD
+// ────────────────────────────────────────────────────────────
+
+export async function fetchTagsAction(): Promise<CrmTag[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_tags")
+    .select("*")
+    .eq("organization_id", orgId)
+    .order("name");
+
+  if (error || !data) return [];
+
+  return data.map((row: any) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    name: row.name,
+    color: row.color,
+  }));
+}
+
+export async function createTagAction(
+  name: string,
+  color: string,
+): Promise<{ success: boolean; tag?: CrmTag; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { data, error } = await supabase
+    .from("crm_tags")
+    .insert({
+      organization_id: orgId,
+      name: name.trim(),
+      color,
+    })
+    .select()
+    .single();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" };
+  }
+
+  return {
+    success: true,
+    tag: {
+      id: data.id,
+      organizationId: data.organization_id,
+      name: data.name,
+      color: data.color,
+    },
+  };
+}
+
+export async function updateTagAction(
+  tagId: string,
+  name: string,
+  color: string,
+): Promise<{ success: boolean; tag?: CrmTag; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { data, error } = await supabase
+    .from("crm_tags")
+    .update({
+      name: name.trim(),
+      color,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", tagId)
+    .eq("organization_id", orgId)
+    .select()
+    .single();
+
+  if (error || !data)
+    return { success: false, error: error?.message ?? "Update failed" };
+
+  return {
+    success: true,
+    tag: {
+      id: data.id,
+      organizationId: data.organization_id,
+      name: data.name,
+      color: data.color,
+    },
+  };
+}
+
+export async function deleteTagAction(
+  tagId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_tags")
+    .delete()
+    .eq("id", tagId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  return { success: true };
+}
+
+// ────────────────────────────────────────────────────────────
+// LEAD NOTES CRUD
+// ────────────────────────────────────────────────────────────
+
+export async function fetchLeadNotesAction(
+  leadId: string,
+): Promise<CrmLeadNote[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_lead_notes")
+    .select(
+      `
+      *,
+      creator:created_by_profile_id(full_name, email),
+      assignee:assigned_to_profile_id(full_name, email)
+    `,
+    )
+    .eq("lead_id", leadId)
+    .eq("organization_id", orgId)
+    .order("created_at", { ascending: false });
+
+  if (error || !data) return [];
+
+  return data.map((row: any) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    leadId: row.lead_id,
+    content: row.content,
+    createdByProfileId: row.created_by_profile_id ?? undefined,
+    createdByName:
+      row.creator?.full_name || row.creator?.email?.split("@")[0] || undefined,
+    assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+    assignedToName:
+      row.assignee?.full_name ||
+      row.assignee?.email?.split("@")[0] ||
+      undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function createLeadNoteAction(
+  leadId: string,
+  content: string,
+  assignedToProfileId?: string,
+): Promise<{ success: boolean; note?: CrmLeadNote; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data, error } = await supabase
+    .from("crm_lead_notes")
+    .insert({
+      organization_id: orgId,
+      lead_id: leadId,
+      content: content.trim(),
+      created_by_profile_id: user?.id ?? null,
+      assigned_to_profile_id: assignedToProfileId || null,
+    })
+    .select(
+      `
+      *,
+      creator:created_by_profile_id(full_name, email),
+      assignee:assigned_to_profile_id(full_name, email)
+    `,
+    )
+    .single();
+
+  if (error || !data)
+    return { success: false, error: error?.message ?? "Insert failed" };
+
+  // Update lead last update metadata
+  await supabase
+    .from("crm_leads")
+    .update({
+      last_updated_by_profile_id: user?.id ?? null,
+      last_updated_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", leadId)
+    .eq("organization_id", orgId);
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return {
+    success: true,
+    note: {
+      id: data.id,
+      organizationId: data.organization_id,
+      leadId: data.lead_id,
+      content: data.content,
+      createdByProfileId: data.created_by_profile_id ?? undefined,
+      createdByName:
+        data.creator?.full_name ||
+        data.creator?.email?.split("@")[0] ||
+        undefined,
+      assignedToProfileId: data.assigned_to_profile_id ?? undefined,
+      assignedToName:
+        data.assignee?.full_name ||
+        data.assignee?.email?.split("@")[0] ||
+        undefined,
+      createdAt: data.created_at,
+      updatedAt: data.updated_at,
+    },
+  };
+}
+
+export async function updateLeadNoteAction(
+  noteId: string,
+  content: string,
+  assignedToProfileId?: string,
+): Promise<{ success: boolean; note?: CrmLeadNote; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data: note, error: noteErr } = await supabase
+    .from("crm_lead_notes")
+    .update({
+      content: content.trim(),
+      assigned_to_profile_id: assignedToProfileId || null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", noteId)
+    .eq("organization_id", orgId)
+    .select(
+      `
+      *,
+      creator:created_by_profile_id(full_name, email),
+      assignee:assigned_to_profile_id(full_name, email)
+    `,
+    )
+    .single();
+
+  if (noteErr || !note)
+    return { success: false, error: noteErr?.message ?? "Update failed" };
+
+  // Update lead last update metadata
+  await supabase
+    .from("crm_leads")
+    .update({
+      last_updated_by_profile_id: user?.id ?? null,
+      last_updated_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", note.lead_id)
+    .eq("organization_id", orgId);
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+
+  return {
+    success: true,
+    note: {
+      id: note.id,
+      organizationId: note.organization_id,
+      leadId: note.lead_id,
+      content: note.content,
+      createdByProfileId: note.created_by_profile_id ?? undefined,
+      createdByName:
+        note.creator?.full_name ||
+        note.creator?.email?.split("@")[0] ||
+        undefined,
+      assignedToProfileId: note.assigned_to_profile_id ?? undefined,
+      assignedToName:
+        note.assignee?.full_name ||
+        note.assignee?.email?.split("@")[0] ||
+        undefined,
+      createdAt: note.created_at,
+      updatedAt: note.updated_at,
+    },
+  };
+}
+
+export async function deleteLeadNoteAction(
+  noteId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data: note } = await supabase
+    .from("crm_lead_notes")
+    .select("lead_id")
+    .eq("id", noteId)
+    .eq("organization_id", orgId)
+    .single();
+
+  const { error } = await supabase
+    .from("crm_lead_notes")
+    .delete()
+    .eq("id", noteId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  if (note?.lead_id) {
+    // Update lead last update metadata
+    await supabase
+      .from("crm_leads")
+      .update({
+        last_updated_by_profile_id: user?.id ?? null,
+        last_updated_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", note.lead_id)
+      .eq("organization_id", orgId);
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  return { success: true };
+}
+
+export async function fetchLeadFollowUpsAction(
+  leadId: string,
+): Promise<import("./contracts").CrmLeadFollowUp[]> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  const { data, error } = await supabase
+    .from("crm_lead_follow_ups")
+    .select(
+      `
+      *,
+      profiles:created_by_profile_id(full_name, email)
+    `,
+    )
+    .eq("lead_id", leadId)
+    .eq("organization_id", orgId)
+    .order("contacted_at", { ascending: false });
+
+  if (error || !data) return [];
+
+  return data.map((row: any) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    leadId: row.lead_id,
+    contactedAt: row.contacted_at,
+    comment: row.comment ?? undefined,
+    createdByProfileId: row.created_by_profile_id ?? undefined,
+    createdByName:
+      row.profiles?.full_name ||
+      row.profiles?.email?.split("@")[0] ||
+      undefined,
+  }));
+}
+
+export async function createFollowUpAction(
+  leadId: string,
+  comment: string,
+): Promise<{
+  success: boolean;
+  followUp?: import("./contracts").CrmLeadFollowUp;
+  error?: string;
+}> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const now = new Date().toISOString();
+
+  // 1. Insert follow-up log
+  const { data, error } = await supabase
+    .from("crm_lead_follow_ups")
+    .insert({
+      organization_id: orgId,
+      lead_id: leadId,
+      comment: comment.trim(),
+      contacted_at: now,
+      created_by_profile_id: user?.id ?? null,
+    })
+    .select(
+      `
+      *,
+      profiles:created_by_profile_id(full_name, email)
+    `,
+    )
+    .single();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" };
+  }
+
+  // 2. Update lead's last_contacted_at and metadata
+  await supabase
+    .from("crm_leads")
+    .update({
+      last_contacted_at: now,
+      last_updated_by_profile_id: user?.id ?? null,
+      last_updated_at: now,
+      updated_at: now,
+    })
+    .eq("id", leadId)
+    .eq("organization_id", orgId);
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  revalidatePath("/dashboard/follow-ups");
+
+  return {
+    success: true,
+    followUp: {
+      id: data.id,
+      organizationId: data.organization_id,
+      leadId: data.lead_id,
+      contactedAt: data.contacted_at,
+      comment: data.comment ?? undefined,
+      createdByProfileId: data.created_by_profile_id ?? undefined,
+      createdByName:
+        data.profiles?.full_name ||
+        data.profiles?.email?.split("@")[0] ||
+        undefined,
+    },
+  };
+}
+
+export async function fetchTasksAction(): Promise<
+  import("./contracts").CrmTask[]
+> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return [];
+  const orgId = await getOrgId();
+  if (!orgId) return [];
+
+  // Optimized on-demand backfill for existing CRM leads with next actions
+  try {
+    const { data: existingTasks } = await supabase
+      .from("crm_tasks")
+      .select("lead_id")
+      .eq("organization_id", orgId)
+      .not("lead_id", "is", null);
+
+    const existingLeadIds = new Set(
+      (existingTasks || []).map((t) => t.lead_id),
+    );
+
+    const { data: leadsData } = await supabase
+      .from("crm_leads")
+      .select(
+        "id, topic, next_action, lead_date, assigned_to_profile_id, status",
+      )
+      .eq("organization_id", orgId)
+      .not("next_action", "is", null);
+
+    if (leadsData && leadsData.length > 0) {
+      const inserts = [];
+      for (const lead of leadsData) {
+        if (
+          lead.next_action &&
+          lead.next_action.trim() &&
+          !existingLeadIds.has(lead.id)
+        ) {
+          const taskStatus =
+            lead.status === "won" || lead.status === "dead-end"
+              ? "done"
+              : "todo";
+          inserts.push({
+            organization_id: orgId,
+            title: lead.next_action.trim(),
+            description: `Tâche de suivi pour le lead: ${lead.topic}`,
+            status: taskStatus,
+            due_date: lead.lead_date
+              ? new Date(lead.lead_date).toISOString()
+              : null,
+            lead_id: lead.id,
+            assigned_to_profile_id: lead.assigned_to_profile_id,
+          });
+        }
+      }
+      if (inserts.length > 0) {
+        await supabase.from("crm_tasks").insert(inserts);
+      }
+    }
+  } catch (err) {
+    console.error("Backfill tasks error:", err);
+  }
+
+  const { data, error } = await supabase
+    .from("crm_tasks")
+    .select(
+      `
+      *,
+      lead:lead_id(topic),
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      crm_task_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("organization_id", orgId)
+    .order("created_at", { ascending: false });
+
+  if (error || !data) {
+    if (error) console.error("fetchTasksAction error:", error);
+    return [];
+  }
+
+  return (data as any[]).map((row) => ({
+    id: row.id,
+    organizationId: row.organization_id,
+    title: row.title,
+    description: row.description ?? undefined,
+    status: row.status,
+    dueDate: row.due_date ?? undefined,
+    leadId: row.lead_id ?? undefined,
+    leadTopic: row.lead?.topic ?? undefined,
+    assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+    assignedToName:
+      row.assigned_to?.full_name ||
+      row.assigned_to?.email?.split("@")[0] ||
+      undefined,
+    tags: (row.crm_task_tags ?? [])
+      .map((tt: any) => tt.crm_tags)
+      .filter(Boolean)
+      .map((t: any) => ({
+        id: t.id,
+        organizationId: t.organization_id,
+        name: t.name,
+        color: t.color,
+      })),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+export async function createTaskAction(input: {
+  title: string;
+  description?: string;
+  status?: import("./contracts").CrmTaskStatus;
+  dueDate?: string;
+  leadId?: string;
+  assignedToProfileId?: string;
+  tagIds?: string[];
+}): Promise<{
+  success: boolean;
+  task?: import("./contracts").CrmTask;
+  error?: string;
+}> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const { data, error } = await supabase
+    .from("crm_tasks")
+    .insert({
+      organization_id: orgId,
+      title: input.title.trim(),
+      description: input.description?.trim() || null,
+      status: input.status || "todo",
+      due_date: input.dueDate ? new Date(input.dueDate).toISOString() : null,
+      lead_id: input.leadId || null,
+      assigned_to_profile_id: input.assignedToProfileId || null,
+      created_by_profile_id: user?.id ?? null,
+    })
+    .select()
+    .single();
+
+  if (error || !data) {
+    return { success: false, error: error?.message ?? "Insert failed" };
+  }
+
+  // Insert tags if any
+  if (input.tagIds && input.tagIds.length > 0) {
+    const tagInserts = input.tagIds.map((tagId) => ({
+      task_id: data.id,
+      tag_id: tagId,
+    }));
+    await supabase.from("crm_task_tags").insert(tagInserts);
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/todo");
+
+  // Query back populated task
+  const { data: populated } = await supabase
+    .from("crm_tasks")
+    .select(
+      `
+      *,
+      lead:lead_id(topic),
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      crm_task_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("id", data.id)
+    .single();
+
+  const row = populated as any;
+  return {
+    success: true,
+    task: {
+      id: row.id,
+      organizationId: row.organization_id,
+      title: row.title,
+      description: row.description ?? undefined,
+      status: row.status,
+      dueDate: row.due_date ?? undefined,
+      leadId: row.lead_id ?? undefined,
+      leadTopic: row.lead?.topic ?? undefined,
+      assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+      assignedToName:
+        row.assigned_to?.full_name ||
+        row.assigned_to?.email?.split("@")[0] ||
+        undefined,
+      tags: (row.crm_task_tags ?? [])
+        .map((tt: any) => tt.crm_tags)
+        .filter(Boolean)
+        .map((t: any) => ({
+          id: t.id,
+          organizationId: t.organization_id,
+          name: t.name,
+          color: t.color,
+        })),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    },
+  };
+}
+
+export async function updateTaskAction(
+  taskId: string,
+  updates: Partial<{
+    title: string;
+    description: string | null;
+    status: import("./contracts").CrmTaskStatus;
+    dueDate: string | null;
+    leadId: string | null;
+    assignedToProfileId: string | null;
+    tagIds: string[];
+  }>,
+): Promise<{
+  success: boolean;
+  task?: import("./contracts").CrmTask;
+  error?: string;
+}> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_tasks")
+    .update({
+      ...(updates.title !== undefined && { title: updates.title.trim() }),
+      ...(updates.description !== undefined && {
+        description: updates.description || null,
+      }),
+      ...(updates.status !== undefined && { status: updates.status }),
+      ...(updates.dueDate !== undefined && {
+        due_date: updates.dueDate
+          ? new Date(updates.dueDate).toISOString()
+          : null,
+      }),
+      ...(updates.leadId !== undefined && { lead_id: updates.leadId || null }),
+      ...(updates.assignedToProfileId !== undefined && {
+        assigned_to_profile_id: updates.assignedToProfileId || null,
+      }),
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", taskId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  // Sync tags if provided
+  if (updates.tagIds !== undefined) {
+    await supabase.from("crm_task_tags").delete().eq("task_id", taskId);
+    if (updates.tagIds.length > 0) {
+      const tagInserts = updates.tagIds.map((tagId) => ({
+        task_id: taskId,
+        tag_id: tagId,
+      }));
+      await supabase.from("crm_task_tags").insert(tagInserts);
+    }
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/todo");
+
+  // Query back populated task
+  const { data: populated } = await supabase
+    .from("crm_tasks")
+    .select(
+      `
+      *,
+      lead:lead_id(topic),
+      assigned_to:assigned_to_profile_id(id, full_name, email),
+      crm_task_tags(
+        crm_tags(id, name, color)
+      )
+    `,
+    )
+    .eq("id", taskId)
+    .eq("organization_id", orgId)
+    .single();
+
+  if (!populated) return { success: true };
+
+  const row = populated as any;
+  return {
+    success: true,
+    task: {
+      id: row.id,
+      organizationId: row.organization_id,
+      title: row.title,
+      description: row.description ?? undefined,
+      status: row.status,
+      dueDate: row.due_date ?? undefined,
+      leadId: row.lead_id ?? undefined,
+      leadTopic: row.lead?.topic ?? undefined,
+      assignedToProfileId: row.assigned_to_profile_id ?? undefined,
+      assignedToName:
+        row.assigned_to?.full_name ||
+        row.assigned_to?.email?.split("@")[0] ||
+        undefined,
+      tags: (row.crm_task_tags ?? [])
+        .map((tt: any) => tt.crm_tags)
+        .filter(Boolean)
+        .map((t: any) => ({
+          id: t.id,
+          organizationId: t.organization_id,
+          name: t.name,
+          color: t.color,
+        })),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    },
+  };
+}
+
+export async function updateTaskStatusAction(
+  taskId: string,
+  status: import("./contracts").CrmTaskStatus,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_tasks")
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq("id", taskId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/todo");
+  return { success: true };
+}
+
+export async function deleteTaskAction(
+  taskId: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const { error } = await supabase
+    .from("crm_tasks")
+    .delete()
+    .eq("id", taskId)
+    .eq("organization_id", orgId);
+
+  if (error) return { success: false, error: error.message };
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/todo");
   return { success: true };
 }
