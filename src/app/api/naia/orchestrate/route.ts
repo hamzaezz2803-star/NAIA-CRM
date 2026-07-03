@@ -414,9 +414,7 @@ async function hydrateCrmLeadDrafts({
       };
     }),
     response:
-      result.response.includes("formulaire") || result.response.length > 220
-        ? result.response
-        : "Salma prend le relais CRM. J'ai pre-rempli le formulaire du lead avec l'extraction IA; verifie les champs puis valide la creation.",
+      "Salma prend le relais CRM. J'ai pre-rempli le formulaire du lead avec l'extraction IA. Verifie les champs, puis clique sur \"Valider et creer le lead\" pour l'ecrire dans le pipeline.",
   };
 }
 

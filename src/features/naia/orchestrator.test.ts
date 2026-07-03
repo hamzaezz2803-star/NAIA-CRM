@@ -40,6 +40,25 @@ describe("NAIA orchestrator", () => {
     });
   });
 
+  it("creates a CRM lead action from a definite French lead command", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "j'ai parlé à Yassine Mseffer de Delassus, il veut organiser un meeting vendredi 10 juillet à 11h, dis à Selma de créer le lead dans le CRM",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.createLead",
+      payload: {
+        companyName: "Delassus",
+        contactName: "Yassine Mseffer",
+      },
+    });
+  });
+
   it("routes feature requests to the developer agent", () => {
     expect(
       classifyNaiaAgent("NAIA demande a Codex d'ajouter une nouvelle feature"),

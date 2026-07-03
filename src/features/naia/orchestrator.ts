@@ -318,6 +318,10 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
     includesAny(normalize(command), [
       "cree un lead",
       "creer un lead",
+      "cree le lead",
+      "creer le lead",
+      "cree ce lead",
+      "creer ce lead",
       "ajoute un lead",
       "nouveau lead",
       "nouvelle opportunite",
@@ -499,15 +503,18 @@ function extractSimpleLeadIdentity(command: string) {
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
     .trim()
     .replace(/[.!?]$/g, "");
-  const chezMatch = withoutPrefix.match(/^(.+?)\s+chez\s+(.+)$/i);
+  const contextualMatch =
+    withoutPrefix.match(
+      /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+)\b/i,
+    ) ?? withoutPrefix.match(/\b(.+?)\s+chez\s+([^,.;]+)\b/i);
 
-  if (!chezMatch) {
+  if (!contextualMatch) {
     return {};
   }
 
   return {
-    companyName: chezMatch[2].trim().slice(0, 120),
-    contactName: chezMatch[1].trim().slice(0, 120),
+    companyName: contextualMatch[2].trim().slice(0, 120),
+    contactName: contextualMatch[1].trim().slice(0, 120),
   };
 }
 
