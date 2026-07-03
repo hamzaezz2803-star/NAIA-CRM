@@ -21,6 +21,7 @@ Trello references in older planning notes are historical context only. Do not ad
 
 - `/crm`: module entry and current empty state
 - `/crm/handoff`: developer handoff summary
+- `/dashboard/leads`: current production CRM pipeline and shell CRM entry target
 
 Add subroutes such as:
 
@@ -135,6 +136,8 @@ Recommended table names:
 ## Module Registration
 
 The shell already registers CRM in `src/platform/core/modules.ts`. Do not edit the registry for normal CRM screens. Add pages under the CRM route instead.
+
+The app shell links the CRM parent item directly to `/dashboard/leads`. The pipeline page is intentionally compact and full-width: avoid reintroducing large KPI cards or wide page gutters above the Kanban unless Ali asks for a dashboard view.
 
 If CRM later needs dashboard widgets, expose a CRM-owned widget descriptor from `src/features/crm` and coordinate with Ali before adding it to the Dashboard.
 

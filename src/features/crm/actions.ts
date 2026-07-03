@@ -333,7 +333,8 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
       *,
       assigned_to:assigned_to_profile_id(id, full_name, email),
       last_updated_by:last_updated_by_profile_id(id, full_name, email),
-      crm_companies(name),
+      company:company_id(id, name),
+      contact:contact_id(id, name, email, phone),
       crm_lead_tags(
         crm_tags(id, name, color)
       )
@@ -360,8 +361,11 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
     id: row.id,
     organizationId: row.organization_id,
     companyId: row.company_id ?? undefined,
-    companyName: row.crm_companies?.name ?? undefined,
+    companyName: row.company?.name ?? undefined,
     contactId: row.contact_id ?? undefined,
+    contactName: row.contact?.name ?? undefined,
+    contactEmail: row.contact?.email ?? undefined,
+    contactPhone: row.contact?.phone ?? undefined,
     topic: row.topic,
     source: row.source ?? undefined,
     status: row.status,
@@ -477,7 +481,11 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
 export async function createLeadAction(input: {
   topic: string;
   companyId?: string;
+  companyName?: string;
   contactId?: string;
+  contactEmail?: string;
+  contactName?: string;
+  contactPhone?: string;
   source?: string;
   status?: CrmLeadStatus;
   notes?: string;
@@ -509,7 +517,9 @@ export async function createLeadAction(input: {
   let companyId = input.companyId ?? null;
   let contactId = input.contactId ?? null;
 
-  const { company, contact } = parseContactInfoFromNotes(input.notes);
+  const parsedContactInfo = parseContactInfoFromNotes(input.notes);
+  const company = input.companyName?.trim() || parsedContactInfo.company;
+  const contact = input.contactName?.trim() || parsedContactInfo.contact;
   if (!companyId && company) {
     // Find or create company
     const { data: existingComp } = await supabase
@@ -556,6 +566,8 @@ export async function createLeadAction(input: {
           organization_id: orgId,
           company_id: companyId,
           name: contact,
+          email: input.contactEmail ?? null,
+          phone: input.contactPhone ?? null,
           job_title: input.contactJobTitle ?? null,
           linkedin_url: input.contactLinkedinUrl ?? null,
           created_by_profile_id: user?.id ?? null,
@@ -651,6 +663,8 @@ export async function createLeadAction(input: {
       *,
       assigned_to:assigned_to_profile_id(id, full_name, email),
       last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      company:company_id(id, name),
+      contact:contact_id(id, name, email, phone),
       crm_lead_tags(
         crm_tags(id, name, color)
       )
@@ -666,7 +680,11 @@ export async function createLeadAction(input: {
         id: row.id,
         organizationId: row.organization_id,
         companyId: row.company_id ?? undefined,
+        companyName: input.companyName ?? company ?? undefined,
         contactId: row.contact_id ?? undefined,
+        contactName: input.contactName ?? contact ?? undefined,
+        contactEmail: input.contactEmail ?? undefined,
+        contactPhone: input.contactPhone ?? undefined,
         topic: row.topic,
         source: row.source ?? undefined,
         status: row.status,
@@ -689,7 +707,11 @@ export async function createLeadAction(input: {
       id: popRow.id,
       organizationId: popRow.organization_id,
       companyId: popRow.company_id ?? undefined,
+      companyName: popRow.company?.name ?? undefined,
       contactId: popRow.contact_id ?? undefined,
+      contactName: popRow.contact?.name ?? undefined,
+      contactEmail: popRow.contact?.email ?? undefined,
+      contactPhone: popRow.contact?.phone ?? undefined,
       topic: popRow.topic,
       source: popRow.source ?? undefined,
       status: popRow.status,
@@ -728,7 +750,11 @@ export async function createLeadAction(input: {
 function createDummyLead(input: {
   topic: string;
   companyId?: string;
+  companyName?: string;
   contactId?: string;
+  contactEmail?: string;
+  contactName?: string;
+  contactPhone?: string;
   source?: string;
   status?: CrmLeadStatus;
   notes?: string;
@@ -741,12 +767,15 @@ function createDummyLead(input: {
 }): { success: true; lead: CrmLeadSummary } {
   const now = new Date().toISOString();
   const suffix = Math.random().toString(36).slice(2, 9);
-  const { company } = parseContactInfoFromNotes(input.notes);
+  const { company, contact } = parseContactInfoFromNotes(input.notes);
   const lead: CrmLeadSummary = {
     assignedToProfileId: input.assignedToProfileId,
     companyId: input.companyId,
-    companyName: company || undefined,
+    companyName: input.companyName ?? company ?? undefined,
     contactId: input.contactId,
+    contactEmail: input.contactEmail,
+    contactName: input.contactName ?? contact ?? undefined,
+    contactPhone: input.contactPhone,
     contactJobTitle: input.contactJobTitle,
     contactLinkedinUrl: input.contactLinkedinUrl,
     createdAt: now,
@@ -951,6 +980,8 @@ export async function updateLeadAction(
       *,
       assigned_to:assigned_to_profile_id(id, full_name, email),
       last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      company:company_id(id, name),
+      contact:contact_id(id, name, email, phone),
       crm_lead_tags(
         crm_tags(id, name, color)
       )
@@ -970,7 +1001,11 @@ export async function updateLeadAction(
       id: row.id,
       organizationId: row.organization_id,
       companyId: row.company_id ?? undefined,
+      companyName: row.company?.name ?? undefined,
       contactId: row.contact_id ?? undefined,
+      contactName: row.contact?.name ?? undefined,
+      contactEmail: row.contact?.email ?? undefined,
+      contactPhone: row.contact?.phone ?? undefined,
       topic: row.topic,
       source: row.source ?? undefined,
       status: row.status,

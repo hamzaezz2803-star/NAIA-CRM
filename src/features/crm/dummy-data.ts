@@ -191,10 +191,23 @@ export const dummyCrmLeads: CrmLeadSummary[] = [
 
 const sessionDummyCrmLeads: CrmLeadSummary[] = [];
 
+function enrichLeadRelations(lead: CrmLeadSummary): CrmLeadSummary {
+  const company = dummyCrmCompanies.find(({ id }) => id === lead.companyId);
+  const contact = dummyCrmContacts.find(({ id }) => id === lead.contactId);
+
+  return {
+    ...lead,
+    companyName: lead.companyName ?? company?.name,
+    contactEmail: lead.contactEmail ?? contact?.email,
+    contactName: lead.contactName ?? contact?.name,
+    contactPhone: lead.contactPhone ?? contact?.phone,
+  };
+}
+
 export function addDummyCrmLead(lead: CrmLeadSummary) {
-  sessionDummyCrmLeads.unshift(lead);
+  sessionDummyCrmLeads.unshift(enrichLeadRelations(lead));
 }
 
 export function getDummyCrmLeads() {
-  return [...sessionDummyCrmLeads, ...dummyCrmLeads];
+  return [...sessionDummyCrmLeads, ...dummyCrmLeads.map(enrichLeadRelations)];
 }

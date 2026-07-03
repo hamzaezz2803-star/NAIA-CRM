@@ -23,6 +23,8 @@ Navigation is driven by `src/platform/core/modules.ts`. Feature teams should con
 
 The CRM module has a stable route at `/crm` and a developer handoff page at `/crm/handoff`. Hamza can add CRM screens below the CRM route and feature folder without editing the app shell.
 
+The shell CRM entry opens the working pipeline directly at `/dashboard/leads`. That route intentionally uses a denser full-width shell layout so the Kanban can show all CRM columns at once on desktop instead of centering a narrow dashboard canvas.
+
 NAIA has a stable route at `/naia`. It is the voice-first orchestrator for the platform modules and routes user intent to specialized agents such as CRM, finance, delivery, HR, integrations, and developer workflow. The NAIA home uses the imported Jarvis wake/sphere visual in `src/features/naia/vendor/jarvis` with a local notice; review AGPL obligations before public redistribution.
 
 NAIA agent pages currently live under `/naia/leads`, `/naia/cash-flow`, `/naia/crm`, `/naia/projects`, and `/naia/hr`. The home cockpit keeps the sphere/orbit experience and routes voice/text commands to these modules.

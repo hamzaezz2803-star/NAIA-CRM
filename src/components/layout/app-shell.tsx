@@ -75,6 +75,10 @@ export function AppShell({
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
+  const isCrmPipelinePage =
+    pathname === "/dashboard/leads" ||
+    pathname === "/crm" ||
+    pathname === "/naia/crm";
 
   // Profile Popover state
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -257,7 +261,14 @@ export function AppShell({
             </div>
           </div>
         </header>
-        <main className="mx-auto w-full max-w-7xl px-4 py-8 md:px-6 lg:px-8">
+        <main
+          className={cn(
+            "mx-auto w-full",
+            isCrmPipelinePage
+              ? "max-w-none px-2 py-3 md:px-3 lg:px-4"
+              : "max-w-7xl px-4 py-8 md:px-6 lg:px-8",
+          )}
+        >
           {children}
         </main>
       </div>
@@ -285,7 +296,6 @@ function ShellSidebar({
     pathname.startsWith("/dashboard/follow-ups") ||
     pathname.startsWith("/dashboard/todo") ||
     pathname.startsWith("/dashboard/clients");
-  const [isCrmOpen, setIsCrmOpen] = useState(isCrmActive);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -323,14 +333,9 @@ function ShellSidebar({
             pathname === module.href || pathname.startsWith(`${module.href}/`);
 
           if (module.id === "crm") {
-            const handleCrmClick = (e: React.MouseEvent) => {
-              e.preventDefault();
-              setIsCrmOpen(!isCrmOpen);
-            };
-
             return (
               <React.Fragment key={module.id}>
-                <button
+                <Link
                   className={cn(
                     "group flex w-full min-h-11 items-center gap-3 rounded-md py-2 text-sm font-medium transition text-left focus:outline-none",
                     isCollapsed ? "justify-center px-0" : "px-3",
@@ -338,7 +343,8 @@ function ShellSidebar({
                       ? "bg-teal-50 text-teal-900 dark:bg-teal-950/40 dark:text-teal-400"
                       : "text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white",
                   )}
-                  onClick={handleCrmClick}
+                  href={module.href}
+                  onClick={onNavigate}
                   title={isCollapsed ? module.name : undefined}
                 >
                   <Icon
@@ -357,14 +363,14 @@ function ShellSidebar({
                       <ChevronDown
                         className={cn(
                           "h-4 w-4 text-stone-400 transition-transform duration-200 group-hover:text-stone-600 dark:group-hover:text-stone-300",
-                          isCrmOpen ? "rotate-180" : "",
+                          isCrmActive ? "rotate-180" : "",
                         )}
                       />
                     </>
                   )}
-                </button>
+                </Link>
                 {/* CRM sub-links */}
-                {isCrmOpen && !isCollapsed && (
+                {isCrmActive && !isCollapsed && (
                   <div className="ml-6 mt-1 space-y-0.5 pl-4 border-l border-stone-200 dark:border-stone-800">
                     {[
                       {

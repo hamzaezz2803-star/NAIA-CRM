@@ -87,6 +87,9 @@ export type CrmLeadSummary = {
   lastContactedAt?: string;
   driveFolderUrl?: string;
   companyName?: string;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
   tags?: CrmTag[];
   createdAt: string;
   updatedAt: string;
