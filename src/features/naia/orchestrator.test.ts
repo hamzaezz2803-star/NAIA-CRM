@@ -55,6 +55,7 @@ describe("NAIA orchestrator", () => {
       payload: {
         companyName: "Delassus",
         contactName: "Yassine Mseffer",
+        status: "meeting-booked",
       },
     });
   });

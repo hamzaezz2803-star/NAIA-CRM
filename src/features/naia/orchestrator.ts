@@ -280,6 +280,45 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
 function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
   const status = inferCrmStatus(command);
   const matchedLead = findBestLeadMatch(command, crmLeads);
+  const wantsLeadCreation = includesAny(normalize(command), [
+    "cree un lead",
+    "creer un lead",
+    "cree le lead",
+    "creer le lead",
+    "cree ce lead",
+    "creer ce lead",
+    "ajoute un lead",
+    "nouveau lead",
+    "nouvelle opportunite",
+    "opportunite",
+    "prospect",
+  ]);
+
+  if (wantsLeadCreation) {
+    return [
+      {
+        agentId: "crm",
+        approvalRequired: true,
+        description:
+          "Salma creera un lead avec le texte de la commande comme contexte initial.",
+        id: `crm-create-${stableActionSuffix(command)}`,
+        kind: "crm.createLead",
+        label: "Creer le lead CRM",
+        payload: {
+          nextAction:
+            status === "meeting-booked"
+              ? "Preparer le meeting et confirmer le contexte avec le contact"
+              : "Qualifier le besoin et confirmer le prochain rendez-vous",
+          notes: command,
+          source: "NAIA",
+          status: status ?? "lead-to-contact",
+          topic: extractLeadTopic(command),
+          ...extractSimpleLeadIdentity(command),
+        },
+        risk: "medium",
+      } satisfies NaiaActionDraft,
+    ];
+  }
 
   if (status && matchedLead) {
     const nextAction =
@@ -308,44 +347,6 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
               ? `NAIA: action preparee depuis la commande "${command}".`
               : undefined,
           status,
-        },
-        risk: "medium",
-      } satisfies NaiaActionDraft,
-    ];
-  }
-
-  if (
-    includesAny(normalize(command), [
-      "cree un lead",
-      "creer un lead",
-      "cree le lead",
-      "creer le lead",
-      "cree ce lead",
-      "creer ce lead",
-      "ajoute un lead",
-      "nouveau lead",
-      "nouvelle opportunite",
-      "opportunite",
-      "prospect",
-    ])
-  ) {
-    return [
-      {
-        agentId: "crm",
-        approvalRequired: true,
-        description:
-          "Salma creera un lead avec le texte de la commande comme contexte initial.",
-        id: `crm-create-${stableActionSuffix(command)}`,
-        kind: "crm.createLead",
-        label: "Creer le lead CRM",
-        payload: {
-          nextAction:
-            "Qualifier le besoin et confirmer le prochain rendez-vous",
-          notes: command,
-          source: "NAIA",
-          status: status ?? "lead-to-contact",
-          topic: extractLeadTopic(command),
-          ...extractSimpleLeadIdentity(command),
         },
         risk: "medium",
       } satisfies NaiaActionDraft,
