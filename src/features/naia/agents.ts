@@ -249,14 +249,14 @@ export function getNaiaAgent(agentId: NaiaAgentId) {
 }
 
 export const accentClasses: Record<NaiaAgent["accent"], string> = {
-  blue: "border-sky-300/50 bg-sky-300/12 text-sky-100 shadow-sky-500/25",
-  cyan: "border-cyan-300/50 bg-cyan-300/12 text-cyan-100 shadow-cyan-500/25",
+  blue: "border-sky-300 bg-sky-50 text-sky-950 shadow-sky-500/20 dark:border-sky-300/50 dark:bg-sky-300/12 dark:text-sky-100 dark:shadow-sky-500/25",
+  cyan: "border-cyan-300 bg-cyan-50 text-cyan-950 shadow-cyan-500/20 dark:border-cyan-300/50 dark:bg-cyan-300/12 dark:text-cyan-100 dark:shadow-cyan-500/25",
   emerald:
-    "border-emerald-300/50 bg-emerald-300/12 text-emerald-100 shadow-emerald-500/25",
-  gold: "border-amber-300/60 bg-amber-300/12 text-amber-100 shadow-amber-500/25",
-  rose: "border-rose-300/50 bg-rose-300/12 text-rose-100 shadow-rose-500/25",
+    "border-emerald-300 bg-emerald-50 text-emerald-950 shadow-emerald-500/20 dark:border-emerald-300/50 dark:bg-emerald-300/12 dark:text-emerald-100 dark:shadow-emerald-500/25",
+  gold: "border-amber-300 bg-amber-50 text-amber-950 shadow-amber-500/20 dark:border-amber-300/60 dark:bg-amber-300/12 dark:text-amber-100 dark:shadow-amber-500/25",
+  rose: "border-rose-300 bg-rose-50 text-rose-950 shadow-rose-500/20 dark:border-rose-300/50 dark:bg-rose-300/12 dark:text-rose-100 dark:shadow-rose-500/25",
   violet:
-    "border-violet-300/50 bg-violet-300/12 text-violet-100 shadow-violet-500/25",
+    "border-violet-300 bg-violet-50 text-violet-950 shadow-violet-500/20 dark:border-violet-300/50 dark:bg-violet-300/12 dark:text-violet-100 dark:shadow-violet-500/25",
 };
 
 export const agentStatusIcon = BadgeCheck;

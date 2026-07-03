@@ -133,6 +133,12 @@ const crmStatusLabels: Record<string, string> = {
   won: "Gagné",
 };
 
+const fieldClassName =
+  "mt-1 min-h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-cyan-200 dark:focus:ring-cyan-200/40";
+
+const emeraldFieldClassName =
+  "mt-1 min-h-10 w-full rounded-md border border-emerald-200 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-emerald-200 dark:focus:ring-emerald-200/40";
+
 export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
   const [command, setCommand] = useState(commandExamples[0]);
   const [result, setResult] = useState<ApiResult | null>(null);
@@ -595,12 +601,12 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
   };
 
   return (
-    <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden bg-[#020611] text-white">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_46%,transparent_0,transparent_28%,rgba(2,6,17,0.34)_52%,rgba(2,6,17,0.82)_100%)]" />
+    <section className="relative min-h-[calc(100dvh-4rem)] overflow-hidden bg-slate-50 text-slate-950 dark:bg-[#020611] dark:text-slate-50">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_46%,transparent_0,transparent_30%,rgba(226,232,240,0.38)_58%,rgba(248,250,252,0.96)_100%)] dark:bg-[radial-gradient(circle_at_50%_46%,transparent_0,transparent_28%,rgba(2,6,17,0.34)_52%,rgba(2,6,17,0.82)_100%)]" />
       <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(34,211,238,0.08)_1px,transparent_1px),linear-gradient(0deg,rgba(34,211,238,0.05)_1px,transparent_1px)] bg-[size:72px_72px] opacity-35" />
 
       <div className="relative z-10 grid min-h-[calc(100dvh-4rem)] gap-6 px-4 py-4 sm:px-6 lg:px-8 xl:grid-cols-[minmax(0,1fr)_400px] xl:items-start">
-        <div className="relative min-h-[560px] overflow-hidden rounded-lg border border-white/10 bg-black/10 shadow-2xl shadow-cyan-950/50 backdrop-blur-sm xl:min-h-[calc(100dvh-6rem)]">
+        <div className="relative min-h-[560px] overflow-hidden rounded-lg border border-slate-200 bg-white/55 shadow-xl shadow-slate-300/50 backdrop-blur-sm dark:border-slate-800 dark:bg-black/10 dark:shadow-2xl dark:shadow-cyan-950/50 xl:min-h-[calc(100dvh-6rem)]">
           <div className="absolute inset-0">
             <WakeSequence
               bootLines={bootLines}
@@ -645,7 +651,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
               <p className="text-xs font-semibold uppercase text-cyan-100/80">
                 Voice orchestrator
               </p>
-              <p className="mt-2 text-3xl font-semibold text-white">NAIA</p>
+              <p className="mt-2 text-3xl font-semibold text-slate-50">NAIA</p>
             </div>
 
             {visibleAgents.map((agent) => {
@@ -657,7 +663,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                     accentClasses[agent.accent]
                   } ${
                     agent.isActive
-                      ? "ring-2 ring-white/70"
+                      ? "ring-2 ring-slate-50/70"
                       : "opacity-88 hover:opacity-100"
                   }`}
                   href={agent.route}
@@ -669,17 +675,17 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                     } as CSSProperties
                   }
                 >
-                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-white/10">
+                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-950/5 dark:bg-slate-50/10">
                     <Icon className="h-4 w-4" aria-hidden="true" />
                   </span>
                   <span>
                     <span className="block text-sm font-semibold">
                       {agent.label}
                     </span>
-                    <span className="block text-xs text-white/68">
+                    <span className="block text-xs text-slate-600 dark:text-slate-100/68">
                       {agent.name} · {agent.role}
                     </span>
-                    <span className="mt-1 inline-flex rounded-full border border-white/10 bg-white/8 px-2 py-0.5 text-[11px] font-semibold uppercase text-white/72">
+                    <span className="mt-1 inline-flex rounded-full border border-slate-900/10 bg-slate-950/5 px-2 py-0.5 text-[11px] font-semibold uppercase text-slate-700 dark:border-slate-50/10 dark:bg-slate-50/8 dark:text-slate-100/72">
                       {agent.status === "guarded" ? "Guarded" : "Live"}
                     </span>
                   </span>
@@ -702,7 +708,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                     <Icon className="h-4 w-4" aria-hidden="true" />
                     <span className="text-sm font-semibold">
                       {agent.label} · {agent.name}
-                      <span className="ml-2 text-xs font-medium uppercase text-white/58">
+                      <span className="ml-2 text-xs font-medium uppercase text-slate-600 dark:text-slate-100/58">
                         {agent.status}
                       </span>
                     </span>
@@ -717,13 +723,13 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
           <Panel>
             <div className="flex items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold text-cyan-100">
+                <p className="text-sm font-semibold text-cyan-700 dark:text-cyan-100">
                   Agent actif
                 </p>
-                <h2 className="mt-1 text-2xl font-semibold text-white">
+                <h2 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-slate-50">
                   {activeAgent.name}
                 </h2>
-                <p className="mt-1 text-sm text-slate-300">
+                <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">
                   {activeAgent.role}
                 </p>
               </div>
@@ -735,11 +741,11 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                 <activeAgent.icon className="h-5 w-5" aria-hidden="true" />
               </span>
             </div>
-            <p className="mt-4 text-sm leading-6 text-slate-200">
+            <p className="mt-4 text-sm leading-6 text-slate-700 dark:text-slate-200">
               {activeAgent.mission}
             </p>
             <Link
-              className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md border border-white/12 bg-white/8 px-3 text-sm font-semibold text-white transition hover:bg-white/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200"
+              className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-50 dark:hover:bg-slate-800 dark:focus-visible:ring-cyan-200"
               href={activeAgent.route}
             >
               Ouvrir le module
@@ -748,14 +754,14 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
           </Panel>
 
           <Panel>
-            <div className="flex items-center gap-2 text-sm font-semibold text-white">
+            <div className="flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-slate-50">
               <Route className="h-4 w-4 text-cyan-200" aria-hidden="true" />
               Console NAIA
             </div>
-            <label className="mt-4 block text-sm font-semibold text-slate-200">
+            <label className="mt-4 block text-sm font-semibold text-slate-700 dark:text-slate-200">
               Commande
               <textarea
-                className="mt-2 min-h-24 w-full resize-none rounded-md border border-white/12 bg-slate-950/78 px-3 py-3 text-sm leading-6 text-white outline-none transition placeholder:text-slate-500 focus:border-cyan-200 focus:ring-2 focus:ring-cyan-200/40"
+                className="mt-2 min-h-24 w-full resize-none rounded-md border border-slate-200 bg-white px-3 py-3 text-sm leading-6 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-cyan-200 dark:focus:ring-cyan-200/40"
                 onChange={(event) => setCommand(event.target.value)}
                 value={command}
               />
@@ -797,17 +803,17 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
               </audio>
             ) : null}
 
-            <div className="mt-4 rounded-md border border-white/10 bg-white/6 p-3">
+            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-900/70">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-white">
+                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-slate-50">
                     <Headphones
                       className="h-4 w-4 text-cyan-200"
                       aria-hidden="true"
                     />
                     Voix ElevenLabs
                   </div>
-                  <p className="mt-1 text-xs leading-5 text-slate-300">
+                  <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">
                     {selectedVoice
                       ? selectedVoice.name
                       : voiceCatalog?.mode === "missing-elevenlabs-key"
@@ -816,7 +822,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                   </p>
                 </div>
                 <button
-                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-white/12 bg-white/8 px-3 text-xs font-semibold text-white transition hover:bg-white/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-50"
+                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:hover:bg-slate-700 dark:focus-visible:ring-cyan-200"
                   disabled={!selectedVoiceId || isSpeaking}
                   onClick={() =>
                     speakText("Bonjour Ali, je suis NAIA. Je t'ecoute.")
@@ -830,7 +836,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                 <label className="mt-3 block">
                   <span className="sr-only">Choisir la voix ElevenLabs</span>
                   <select
-                    className="min-h-11 w-full rounded-md border border-white/12 bg-slate-950/78 px-3 text-sm text-white outline-none transition focus:border-cyan-200 focus:ring-2 focus:ring-cyan-200/40"
+                    className={fieldClassName}
                     onChange={(event) => changeVoice(event.target.value)}
                     value={selectedVoiceId}
                   >
@@ -843,7 +849,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
                 </label>
               ) : null}
               {selectedVoice ? (
-                <p className="mt-2 text-xs leading-5 text-slate-400">
+                <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
                   {[
                     selectedVoice.category,
                     selectedVoice.labels.gender,
@@ -858,7 +864,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
             <div className="mt-4 grid gap-2">
               {commandExamples.map((example) => (
                 <button
-                  className="flex min-h-11 items-start gap-2 rounded-md border border-white/10 bg-white/6 px-3 py-2 text-left text-sm leading-5 text-slate-200 transition hover:bg-white/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200"
+                  className="flex min-h-11 items-start gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm leading-5 text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:ring-cyan-200"
                   disabled={isRunning}
                   key={example}
                   onClick={() => {
@@ -879,7 +885,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
 
           <Panel>
             <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-sm font-semibold text-white">
+              <div className="flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-slate-50">
                 <ShieldCheck
                   className="h-4 w-4 text-emerald-200"
                   aria-hidden="true"
@@ -888,11 +894,11 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
               </div>
               {result ? (
                 <div className="flex flex-wrap justify-end gap-2">
-                  <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-xs font-semibold text-cyan-100">
+                  <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-semibold text-cyan-800 dark:border-slate-700 dark:bg-slate-900/70 dark:text-cyan-100">
                     {Math.round(result.confidence * 100)}%
                   </span>
                   {result.mode ? (
-                    <span className="rounded-full border border-white/10 bg-white/8 px-2 py-1 text-xs font-semibold text-slate-200">
+                    <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
                       {result.mode === "groq-orchestrated" ? "Groq" : "Local"}
                     </span>
                   ) : null}
@@ -900,13 +906,13 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
               ) : null}
             </div>
 
-            <p className="mt-4 min-h-20 whitespace-pre-line text-sm leading-6 text-slate-200">
+            <p className="mt-4 min-h-20 whitespace-pre-line text-sm leading-6 text-slate-700 dark:text-slate-200">
               {result?.response ??
                 "NAIA attend une instruction vocale ou texte pour router vers le bon agent."}
             </p>
 
             {transcript ? (
-              <p className="mt-3 rounded-md border border-white/10 bg-white/6 px-3 py-2 text-xs leading-5 text-slate-300">
+              <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-300">
                 {transcript}
               </p>
             ) : null}
@@ -927,7 +933,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
             ) : null}
 
             {notice ? (
-              <p className="mt-4 rounded-md border border-amber-300/25 bg-amber-300/10 px-3 py-2 text-sm leading-6 text-amber-100">
+              <p className="mt-4 rounded-md border border-amber-300/40 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900 dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100">
                 {notice}
               </p>
             ) : null}
@@ -1024,19 +1030,21 @@ function ActionCard({
   }
 
   return (
-    <article className="rounded-md border border-emerald-300/25 bg-emerald-300/10 p-3">
+    <article className="rounded-md border border-emerald-300/45 bg-emerald-50 p-3 dark:border-emerald-300/25 dark:bg-emerald-300/10">
       <div className="flex items-start gap-3">
         <CheckCircle2
-          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200"
+          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-200"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-white">{action.label}</h3>
-          <p className="mt-1 text-sm leading-5 text-emerald-50/82">
+          <h3 className="text-sm font-semibold text-emerald-950 dark:text-slate-50">
+            {action.label}
+          </h3>
+          <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
             {action.description}
           </p>
           <button
-            className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-300 px-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-not-allowed disabled:opacity-60"
+            className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200 dark:focus-visible:ring-emerald-100"
             disabled={disabled}
             onClick={() => onApply()}
             type="button"
@@ -1070,15 +1078,17 @@ function LeadDraftActionCard({
   };
 
   return (
-    <article className="rounded-md border border-emerald-300/25 bg-emerald-300/10 p-3">
+    <article className="rounded-md border border-emerald-300/45 bg-emerald-50 p-3 dark:border-emerald-300/25 dark:bg-emerald-300/10">
       <div className="flex items-start gap-3">
         <CheckCircle2
-          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-200"
+          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-200"
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-white">{action.label}</h3>
-          <p className="mt-1 text-sm leading-5 text-emerald-50/82">
+          <h3 className="text-sm font-semibold text-emerald-950 dark:text-slate-50">
+            {action.label}
+          </h3>
+          <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
             {action.description}
           </p>
 
@@ -1126,10 +1136,10 @@ function LeadDraftActionCard({
               onChange={(value) => updateDraft({ nextAction: value })}
               value={draft.nextAction ?? ""}
             />
-            <label className="block text-xs font-semibold text-emerald-50">
+            <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
               Statut initial
               <select
-                className="mt-1 min-h-10 w-full rounded-md border border-white/12 bg-slate-950/78 px-3 text-sm text-white outline-none transition focus:border-emerald-200 focus:ring-2 focus:ring-emerald-200/40"
+                className={emeraldFieldClassName}
                 onChange={(event) =>
                   updateDraft({ status: event.target.value })
                 }
@@ -1142,10 +1152,10 @@ function LeadDraftActionCard({
                 ))}
               </select>
             </label>
-            <label className="block text-xs font-semibold text-emerald-50">
+            <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
               Notes & contexte
               <textarea
-                className="mt-1 min-h-20 w-full resize-none rounded-md border border-white/12 bg-slate-950/78 px-3 py-2 text-sm leading-5 text-white outline-none transition placeholder:text-slate-500 focus:border-emerald-200 focus:ring-2 focus:ring-emerald-200/40"
+                className="mt-1 min-h-20 w-full resize-none rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm leading-5 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-emerald-200 dark:focus:ring-emerald-200/40"
                 onChange={(event) => updateDraft({ notes: event.target.value })}
                 value={draft.notes ?? ""}
               />
@@ -1153,7 +1163,7 @@ function LeadDraftActionCard({
           </div>
 
           <button
-            className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-300 px-3 text-sm font-semibold text-emerald-950 transition hover:bg-emerald-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-not-allowed disabled:opacity-60"
+            className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200 dark:focus-visible:ring-emerald-100"
             disabled={disabled || !draft.topic.trim()}
             onClick={() => onApply(draft)}
             type="button"
@@ -1183,11 +1193,11 @@ function LeadField({
   value: string;
 }) {
   return (
-    <label className="block text-xs font-semibold text-emerald-50">
+    <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
       {label}
       {required ? " *" : ""}
       <input
-        className="mt-1 min-h-10 w-full rounded-md border border-white/12 bg-slate-950/78 px-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-emerald-200 focus:ring-2 focus:ring-emerald-200/40"
+        className={emeraldFieldClassName}
         onChange={(event) => onChange(event.target.value)}
         value={value}
       />
@@ -1197,16 +1207,20 @@ function LeadField({
 
 function SignalCard({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border border-white/10 bg-white/8 p-3 shadow-lg shadow-black/20 backdrop-blur-md">
-      <p className="text-xs font-semibold uppercase text-slate-300">{label}</p>
-      <p className="mt-2 text-2xl font-semibold text-white">{value}</p>
+    <div className="rounded-md border border-slate-200 bg-white/90 p-3 shadow-lg shadow-slate-300/25 backdrop-blur-md dark:border-slate-800 dark:bg-slate-950/52 dark:shadow-black/20">
+      <p className="text-xs font-semibold uppercase text-slate-500 dark:text-slate-300">
+        {label}
+      </p>
+      <p className="mt-2 text-2xl font-semibold text-slate-950 dark:text-slate-50">
+        {value}
+      </p>
     </div>
   );
 }
 
 function Panel({ children }: { children: ReactNode }) {
   return (
-    <section className="rounded-lg border border-white/10 bg-slate-950/62 p-4 shadow-2xl shadow-black/30 backdrop-blur-xl">
+    <section className="rounded-lg border border-slate-200 bg-white/92 p-4 shadow-xl shadow-slate-200/70 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/72 dark:shadow-2xl dark:shadow-black/30">
       {children}
     </section>
   );
@@ -1231,8 +1245,8 @@ function ActionButton({
     <button
       className={
         tone === "primary"
-          ? "inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-cyan-200 px-4 text-sm font-semibold text-slate-950 transition hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white disabled:cursor-not-allowed disabled:opacity-60"
-          : "inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-white/12 bg-white/8 px-4 text-sm font-semibold text-white transition hover:bg-white/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 disabled:cursor-not-allowed disabled:opacity-60"
+          ? "inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-cyan-200 px-4 text-sm font-semibold text-slate-950 transition hover:bg-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:focus-visible:ring-cyan-100"
+          : "inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-50 dark:hover:bg-slate-800 dark:focus-visible:ring-cyan-200"
       }
       disabled={disabled}
       onClick={onClick}
