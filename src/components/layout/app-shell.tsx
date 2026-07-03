@@ -24,6 +24,7 @@ import {
   Building2,
   Clock,
   ListTodo,
+  Sparkles,
 } from "lucide-react";
 
 import { NotificationBell } from "./notification-bell";
@@ -455,6 +456,40 @@ function ShellSidebar({
                   </>
                 )}
               </Link>
+
+              {/* N.A.I.A. button inserted below Dashboard, above CRM. */}
+              {module.id === "dashboard" && (
+                <Link
+                  href="/dashboard/naia"
+                  onClick={onNavigate}
+                  title={isCollapsed ? "N.A.I.A. Intelligence Core" : undefined}
+                  className={cn(
+                    "group flex min-h-11 items-center gap-3 rounded-md py-2 text-sm font-medium transition",
+                    isCollapsed ? "justify-center px-0" : "px-3",
+                    pathname.startsWith("/dashboard/naia")
+                      ? "bg-teal-50 text-teal-900 dark:bg-teal-950/40 dark:text-teal-400"
+                      : "text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-white",
+                  )}
+                >
+                  <Sparkles
+                    className={cn(
+                      "h-5 w-5 flex-none",
+                      pathname.startsWith("/dashboard/naia")
+                        ? "text-teal-700 dark:text-teal-400"
+                        : "text-stone-500 group-hover:text-stone-700 dark:text-stone-400 dark:group-hover:text-stone-300",
+                    )}
+                  />
+
+                  {!isCollapsed && (
+                    <>
+                      <span className="min-w-0 flex-1 truncate">N.A.I.A.</span>
+                      <span className="hidden text-xs uppercase tracking-[0.12em] text-stone-500 dark:text-stone-400 md:inline">
+                        Intelligence Core
+                      </span>
+                    </>
+                  )}
+                </Link>
+              )}
             </React.Fragment>
           );
         })}
