@@ -22,13 +22,14 @@ export const plannedIntegrationProviders = [
     capabilities: [
       "Dossiers Drive depuis le CRM",
       "Synchronisation Calendar",
+      "Verification des disponibilites",
       "OAuth utilisateur",
     ],
     envVars: ["GOOGLE_CLIENT_ID", "GOOGLE_CLIENT_SECRET"],
     isImplemented: true,
     provider: "google",
     label: "Google Workspace",
-    plannedScopes: ["Gmail", "Drive", "Calendar", "Meet"],
+    plannedScopes: ["Google login", "Drive", "Calendar", "FreeBusy"],
   },
   {
     capabilities: [

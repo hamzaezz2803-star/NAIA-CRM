@@ -112,7 +112,7 @@ async function enhanceWithGroqOrchestrator({
           messages: [
             {
               content:
-                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
+                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. Si la demande mentionne un rendez-vous, call ou meeting avec un prospect/client potentiel, choisis toujours "crm" pour que Salma cree ou mette a jour le lead; Adam intervient ensuite pour le calendrier. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
               role: "system",
             },
             {
@@ -305,6 +305,10 @@ async function executeAction({
     }
 
     const response = await createLeadAction({
+      companyName: leadDraft.companyName,
+      contactEmail: leadDraft.contactEmail,
+      contactName: leadDraft.contactName,
+      contactPhone: leadDraft.contactPhone,
       leadDate: leadDraft.leadDate,
       nextAction: leadDraft.nextAction?.slice(0, 280),
       notes: buildLeadNotes(leadDraft),
@@ -312,15 +316,36 @@ async function executeAction({
       status,
       topic,
     });
+    const calendarSuccess = Boolean(response.calendarSynced);
+    let calendarMessage = "";
+
+    if (response.success && leadDraft.leadDate) {
+      calendarMessage = response.calendarSynced
+        ? response.calendarLink
+          ? ` Adam a verifie Google Calendar et cree l'evenement: ${response.calendarLink}`
+          : " Adam a verifie Google Calendar."
+        : ` Adam n'a pas pu creer l'evenement Calendar: ${response.calendarError ?? "connexion Google a verifier"}`;
+    }
 
     return Response.json({
       action,
+      calendarSuccess,
       execution: response.success ? "applied" : "failed",
       lead: response.lead,
       message: response.success
-        ? "Lead CRM cree sans action provider externe."
+        ? `Lead CRM cree.${calendarMessage}`
         : (response.error ?? "Creation du lead impossible."),
       success: response.success,
+    });
+  }
+
+  if (action.kind === "calendar.scheduleMeeting") {
+    return Response.json({
+      action,
+      execution: "prepared",
+      message:
+        "Adam passera par le lead CRM valide pour verifier les disponibilites Google Calendar et creer l'evenement. Valide d'abord l'action Salma si le lead n'existe pas encore.",
+      success: true,
     });
   }
 
@@ -395,9 +420,27 @@ async function hydrateCrmLeadDrafts({
 
   const extracted = await extractLeadDraft(command);
 
+  const hasCalendarAction = result.actions.some(
+    (action) => action.kind === "calendar.scheduleMeeting",
+  );
+
   return {
     ...result,
     actions: result.actions.map((action) => {
+      if (action.kind === "calendar.scheduleMeeting") {
+        return {
+          ...action,
+          payload: {
+            ...action.payload,
+            requestedDate: extracted.leadDate,
+            title:
+              extracted.companyName || extracted.contactName
+                ? `Meeting ${[extracted.companyName, extracted.contactName].filter(Boolean).join(" - ")}`
+                : action.payload.title,
+          },
+        };
+      }
+
       if (action.kind !== "crm.createLead") return action;
 
       return {
@@ -413,8 +456,9 @@ async function hydrateCrmLeadDrafts({
         }),
       };
     }),
-    response:
-      "Salma prend le relais CRM. J'ai pre-rempli le formulaire du lead avec l'extraction IA. Verifie les champs, puis clique sur \"Valider et creer le lead\" pour l'ecrire dans le pipeline.",
+    response: hasCalendarAction
+      ? "Salma prend le relais CRM et Adam prepare le calendrier. J'ai pre-rempli le lead; valide-le pour l'ecrire en meeting booked dans le pipeline et laisser Adam verifier Google Calendar avant de creer l'evenement."
+      : "Salma prend le relais CRM. J'ai pre-rempli le formulaire du lead avec l'extraction IA. Verifie les champs, puis clique sur \"Valider et creer le lead\" pour l'ecrire dans le pipeline.",
   };
 }
 
@@ -446,6 +490,31 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
     .trim()
     .replace(/[.!?]$/g, "");
+  const prospectMeetingMatch = clean.match(
+    /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
+  );
+  const isMeetingCommand =
+    /\b(meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion)\b/i.test(
+      clean,
+    );
+
+  if (prospectMeetingMatch) {
+    const contactName = prospectMeetingMatch[1].trim();
+    const companyName = prospectMeetingMatch[2].trim();
+
+    return {
+      companyName,
+      contactName,
+      nextAction: isMeetingCommand
+        ? "Preparer le meeting et confirmer le contexte avec le contact"
+        : "Qualifier le besoin et confirmer le prochain rendez-vous",
+      notes: `Commande NAIA: ${command}`,
+      source: "NAIA",
+      status: isMeetingCommand ? "meeting-booked" : "lead-to-contact",
+      topic: `${companyName} - nouveau lead`,
+    };
+  }
+
   const chezMatch = clean.match(/^(.+?)\s+chez\s+(.+)$/i);
 
   if (chezMatch) {

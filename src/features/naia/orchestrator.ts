@@ -26,6 +26,23 @@ export type NaiaActionDraft =
       risk: NaiaActionRisk;
     }
   | {
+      agentId: "meetings";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "calendar.scheduleMeeting";
+      label: string;
+      payload: {
+        companyName?: string;
+        contactName?: string;
+        leadActionId?: string;
+        notes: string;
+        requestedDate?: string;
+        title: string;
+      };
+      risk: NaiaActionRisk;
+    }
+  | {
       agentId: "crm";
       approvalRequired: true;
       description: string;
@@ -100,7 +117,12 @@ export function orchestrateNaiaCommand({
 }): NaiaOrchestrationResult {
   const cleanCommand = command.trim();
   const localAgentId = classifyNaiaAgent(cleanCommand);
-  const agentId = agentIdOverride ?? localAgentId;
+  const normalized = normalize(cleanCommand);
+  const forceCrmForProspectMeeting =
+    localAgentId === "crm" && isPotentialClientMeeting(normalized);
+  const agentId = forceCrmForProspectMeeting
+    ? "crm"
+    : (agentIdOverride ?? localAgentId);
   const agent = getNaiaAgent(agentId);
   const actions =
     agentId === "crm" || localAgentId === "crm"
@@ -123,7 +145,9 @@ export function orchestrateNaiaCommand({
       (cleanCommand ? confidenceFor(agentId, cleanCommand) : 0.2),
     intent: intentForAgent(agentId),
     response:
-      responseOverride?.trim().slice(0, 1200) ||
+      (forceCrmForProspectMeeting ? undefined : responseOverride)
+        ?.trim()
+        .slice(0, 1200) ||
       buildResponse(agentId, cleanCommand, actions, crmLeads),
   };
 }
@@ -179,6 +203,10 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
       return "leads";
     }
 
+    return "crm";
+  }
+
+  if (isPotentialClientMeeting(normalized)) {
     return "crm";
   }
 
@@ -280,7 +308,8 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
 function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
   const status = inferCrmStatus(command);
   const matchedLead = findBestLeadMatch(command, crmLeads);
-  const wantsLeadCreation = includesAny(normalize(command), [
+  const normalized = normalize(command);
+  const wantsLeadCreation = includesAny(normalized, [
     "cree un lead",
     "creer un lead",
     "cree le lead",
@@ -293,31 +322,57 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
     "opportunite",
     "prospect",
   ]);
+  const wantsProspectMeeting = isPotentialClientMeeting(normalized);
 
-  if (wantsLeadCreation) {
-    return [
-      {
-        agentId: "crm",
+  if (wantsLeadCreation || wantsProspectMeeting) {
+    const identity = extractSimpleLeadIdentity(command);
+    const effectiveStatus = status ?? "lead-to-contact";
+    const createLeadAction = {
+      agentId: "crm",
+      approvalRequired: true,
+      description:
+        wantsProspectMeeting && !wantsLeadCreation
+          ? "Salma creera le lead CRM car un rendez-vous avec un prospect doit toujours etre rattache au pipeline."
+          : "Salma creera un lead avec le texte de la commande comme contexte initial.",
+      id: `crm-create-${stableActionSuffix(command)}`,
+      kind: "crm.createLead",
+      label: "Creer le lead CRM",
+      payload: {
+        nextAction:
+          effectiveStatus === "meeting-booked"
+            ? "Preparer le meeting et confirmer le contexte avec le contact"
+            : "Qualifier le besoin et confirmer le prochain rendez-vous",
+        notes: command,
+        source: "NAIA",
+        status: effectiveStatus,
+        topic: extractLeadTopic(command),
+        ...identity,
+      },
+      risk: "medium",
+    } satisfies NaiaActionDraft;
+    const actions: NaiaActionDraft[] = [createLeadAction];
+
+    if (effectiveStatus === "meeting-booked") {
+      actions.push({
+        agentId: "meetings",
         approvalRequired: true,
         description:
-          "Salma creera un lead avec le texte de la commande comme contexte initial.",
-        id: `crm-create-${stableActionSuffix(command)}`,
-        kind: "crm.createLead",
-        label: "Creer le lead CRM",
+          "Adam verifiera Google Calendar via le lead CRM, proposera un autre creneau si tu es deja pris, puis creera l'evenement apres validation.",
+        id: `calendar-schedule-${stableActionSuffix(command)}`,
+        kind: "calendar.scheduleMeeting",
+        label: "Verifier le calendrier",
         payload: {
-          nextAction:
-            status === "meeting-booked"
-              ? "Preparer le meeting et confirmer le contexte avec le contact"
-              : "Qualifier le besoin et confirmer le prochain rendez-vous",
+          companyName: identity.companyName,
+          contactName: identity.contactName,
+          leadActionId: createLeadAction.id,
           notes: command,
-          source: "NAIA",
-          status: status ?? "lead-to-contact",
-          topic: extractLeadTopic(command),
-          ...extractSimpleLeadIdentity(command),
+          title: buildMeetingTitle(command, identity),
         },
         risk: "medium",
-      } satisfies NaiaActionDraft,
-    ];
+      });
+    }
+
+    return actions;
   }
 
   if (status && matchedLead) {
@@ -422,8 +477,15 @@ function buildResponse(
 
   if (agentId === "crm") {
     if (actions.length > 0) {
-      const action = actions[0];
-      return `${agent.name} prend le relais CRM. J'ai prepare l'action "${action.label}" avec validation humaine avant ecriture dans le pipeline.`;
+      const actionLabels = actions.map((action) => `"${action.label}"`);
+      if (
+        actions.some((action) => action.kind === "crm.createLead") &&
+        actions.some((action) => action.kind === "calendar.scheduleMeeting")
+      ) {
+        return `${agent.name} prend le relais CRM avec Adam en support calendrier. J'ai prepare ${actionLabels.join(" et ")}: le lead sera cree en meeting booked, puis Google Calendar sera verifie avant creation de l'evenement.`;
+      }
+
+      return `${agent.name} prend le relais CRM. J'ai prepare l'action ${actionLabels[0]} avec validation humaine avant ecriture dans le pipeline.`;
     }
 
     if (crmLeads.length === 0) {
@@ -506,7 +568,7 @@ function extractSimpleLeadIdentity(command: string) {
     .replace(/[.!?]$/g, "");
   const contextualMatch =
     withoutPrefix.match(
-      /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+)\b/i,
+      /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
     ) ?? withoutPrefix.match(/\b(.+?)\s+chez\s+([^,.;]+)\b/i);
 
   if (!contextualMatch) {
@@ -517,6 +579,61 @@ function extractSimpleLeadIdentity(command: string) {
     companyName: contextualMatch[2].trim().slice(0, 120),
     contactName: contextualMatch[1].trim().slice(0, 120),
   };
+}
+
+function buildMeetingTitle(
+  command: string,
+  identity: { companyName?: string; contactName?: string },
+) {
+  if (identity.companyName && identity.contactName) {
+    return `Meeting ${identity.companyName} - ${identity.contactName}`;
+  }
+
+  if (identity.companyName) {
+    return `Meeting ${identity.companyName}`;
+  }
+
+  return extractLeadTopic(command) || "Meeting prospect";
+}
+
+function isPotentialClientMeeting(normalizedCommand: string) {
+  const hasMeetingIntent = includesAny(normalizedCommand, [
+    "meeting",
+    "rdv",
+    "rendez vous",
+    "rendez-vous",
+    "reunion",
+    "call",
+    "demo",
+    "visio",
+  ]);
+  const hasCommercialConversation = includesAny(normalizedCommand, [
+    "j ai parle",
+    "j ai discute",
+    "j ai echange",
+    "on a parle",
+    "on a discute",
+    "parle a",
+    "parle avec",
+    "discute avec",
+    "echange avec",
+    "contact avec",
+  ]);
+  const hasPersonCompanyPattern =
+    /\b(?:de|chez)\s+[\p{Letter}\p{Number}\s&'-]{2,}/u.test(normalizedCommand);
+  const isExplicitInternalMeeting = includesAny(normalizedCommand, [
+    "interne",
+    "daily",
+    "standup",
+    "equipe",
+    "team meeting",
+  ]);
+
+  return (
+    hasMeetingIntent &&
+    !isExplicitInternalMeeting &&
+    (hasCommercialConversation || hasPersonCompanyPattern)
+  );
 }
 
 function includesAny(value: string, needles: string[]) {

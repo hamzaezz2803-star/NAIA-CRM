@@ -169,7 +169,9 @@ Safe defaults:
 - Prepare drafts for status changes and lead creation.
 - Execute CRM writes only after an explicit UI validation step.
 - Execute status-only updates through `updateLeadStatusAction()` so NAIA does not trigger provider side effects such as Calendar sync from generic lead updates.
-- Trigger Google Calendar only through `syncLeadToGoogleCalendarAction()` or an equivalent explicitly approved UI action, not as a side effect of lead create/update.
+- Treat prospect/client meetings as CRM-first. A command like "j'ai parlé à X de Y, meeting vendredi" should create or update the CRM lead in `meeting-booked`; Adam/Meetings then checks Google Calendar from that validated lead context.
+- For leads with a planned meeting date, Calendar sync must check Google FreeBusy before event creation and return a suggested alternative if the requested slot is busy.
+- Trigger Google Calendar only after an explicit UI validation step, either through `syncLeadToGoogleCalendarAction()` or the validated NAIA lead creation flow.
 - Keep provider actions such as email, WhatsApp, Google Drive, Calendar sync,
   and delete flows behind a human approval foundation.
 - Treat `viewer` as read-only. CRM insert/update policies use

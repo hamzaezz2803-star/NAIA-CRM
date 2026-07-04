@@ -21,12 +21,16 @@ export async function POST(request: Request) {
 
     const groqForm = new FormData();
     groqForm.append("file", audio, getAudioFileName(audio));
-    groqForm.append("language", "fr");
     groqForm.append(
       "model",
       process.env.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
     );
+    groqForm.append(
+      "prompt",
+      "Business voice command for Qarizmi OS. The speaker may mix French and English in the same sentence. Preserve the original languages, CRM terms, company names, people names, dates, and times.",
+    );
     groqForm.append("response_format", "json");
+    groqForm.append("temperature", "0");
 
     const groqResponse = await fetch(
       "https://api.groq.com/openai/v1/audio/transcriptions",

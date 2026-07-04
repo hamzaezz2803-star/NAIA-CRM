@@ -86,7 +86,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       return {
         capabilities: [...provider.capabilities],
         detail:
-          "Credentials serveur presents. Connexion utilisateur requise depuis le CRM.",
+          "Credentials serveur presents. Connexion utilisateur Google Workspace requise.",
         envVars: [...provider.envVars],
         externalAccountLabel: connection?.external_account_label ?? undefined,
         isImplemented: true,

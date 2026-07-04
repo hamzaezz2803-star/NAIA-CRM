@@ -54,7 +54,8 @@ export async function GET(request: NextRequest) {
   const orgId = membership.organization_id;
 
   try {
-    const redirectUri = `${getAppBaseUrl()}/api/integrations/google/callback`;
+    const appBaseUrl = getAppBaseUrl();
+    const redirectUri = `${appBaseUrl}/api/integrations/google/callback`;
 
     // Exchange auth code for tokens
     const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
@@ -117,6 +118,7 @@ export async function GET(request: NextRequest) {
           scopes: [
             "https://www.googleapis.com/auth/drive.file",
             "https://www.googleapis.com/auth/calendar.events",
+            "https://www.googleapis.com/auth/calendar.freebusy",
           ],
           encrypted_token_reference: JSON.stringify(tokenData),
           connected_by_profile_id: user.id,
@@ -146,7 +148,7 @@ export async function GET(request: NextRequest) {
           <p>Authentication successful. You can close this window now.</p>
           <script>
             if (window.opener) {
-              window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, '*');
+              window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, ${JSON.stringify(appBaseUrl)});
             }
             window.close();
           </script>

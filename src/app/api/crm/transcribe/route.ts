@@ -66,7 +66,10 @@ export async function POST(req: NextRequest) {
         type: contentType,
       }),
       model: "whisper-large-v3",
+      prompt:
+        "Business CRM note. The speaker may mix French and English. Preserve CRM terms, people names, company names, dates, and times.",
       response_format: "json",
+      temperature: 0,
     });
 
     return NextResponse.json({ text: transcription.text });

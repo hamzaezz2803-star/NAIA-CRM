@@ -10,6 +10,8 @@ operational drag while keeping external actions behind a visible human gate.
 - Use Salma CRM as the proof point: natural-language lead commands, lead
   creation, status movement, pitch/proposal next actions, and server-signed
   approvals.
+- Route all prospect/client meetings through CRM first, then let Adam verify
+  Google Calendar availability and create the event after validation.
 - Keep Nora, Ilyas, Yasmine, Idriss, Lina, Omar, and Rayan visible as agents
   with clear live or guarded status.
 - Show approval and integration health signals even before provider sends are
@@ -34,8 +36,9 @@ operational drag while keeping external actions behind a visible human gate.
 - Add a guarded developer agent that can prepare a spec, branch proposal, test
   plan, migration review, and PR checklist. Actual code changes, migrations,
   shell/module registry edits, and PR creation require Ali approval.
-- Add Slack/Gmail/Drive/Calendar OAuth with scoped tokens, sync health, and
-  provider-specific failure states.
+- Expand Slack/Gmail/Microsoft OAuth with scoped tokens, sync health, and
+  provider-specific failure states. Google Workspace already has the first
+  scoped OAuth foundation for Drive, Calendar events, and FreeBusy.
 
 ## Guardrails
 

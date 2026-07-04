@@ -48,7 +48,7 @@ describe("NAIA orchestrator", () => {
     });
 
     expect(result.agent.id).toBe("crm");
-    expect(result.actions).toHaveLength(1);
+    expect(result.actions).toHaveLength(2);
     expect(result.actions[0]).toMatchObject({
       approvalRequired: true,
       kind: "crm.createLead",
@@ -58,6 +58,53 @@ describe("NAIA orchestrator", () => {
         status: "meeting-booked",
       },
     });
+    expect(result.actions[1]).toMatchObject({
+      agentId: "meetings",
+      approvalRequired: true,
+      kind: "calendar.scheduleMeeting",
+    });
+  });
+
+  it("treats prospect meetings as CRM opportunities even without explicit lead wording", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "J'ai parlé à Achraf Hakimi de fédération de foot et il faut faire un meeting vendredi à 11h",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.agent.name).toBe("Salma");
+    expect(result.actions).toHaveLength(2);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.createLead",
+      payload: {
+        companyName: "fédération de foot",
+        contactName: "Achraf Hakimi",
+        status: "meeting-booked",
+      },
+    });
+    expect(result.actions[1]).toMatchObject({
+      agentId: "meetings",
+      approvalRequired: true,
+      kind: "calendar.scheduleMeeting",
+    });
+  });
+
+  it("keeps CRM in charge when Groq tries to route a prospect meeting to Adam", () => {
+    const result = orchestrateNaiaCommand({
+      agentIdOverride: "meetings",
+      command:
+        "J'ai parlé à Achraf Hakimi de fédération de foot et il faut faire un meeting vendredi à 11h",
+      crmLeads,
+      responseOverride: "Adam prend le relais meeting.",
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.response).toContain("Salma");
+    expect(
+      result.actions.some((action) => action.kind === "crm.createLead"),
+    ).toBe(true);
   });
 
   it("routes feature requests to the developer agent", () => {

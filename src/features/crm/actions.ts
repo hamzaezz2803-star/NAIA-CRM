@@ -478,6 +478,15 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
   }));
 }
 
+type CreateLeadActionResult = {
+  calendarError?: string;
+  calendarLink?: string;
+  calendarSynced?: boolean;
+  error?: string;
+  lead?: CrmLeadSummary;
+  success: boolean;
+};
+
 export async function createLeadAction(input: {
   topic: string;
   companyId?: string;
@@ -495,7 +504,7 @@ export async function createLeadAction(input: {
   contactLinkedinUrl?: string;
   assignedToProfileId?: string;
   tagIds?: string[];
-}): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
+}): Promise<CreateLeadActionResult> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) {
     return shouldUseDummyCrmData()
@@ -615,9 +624,15 @@ export async function createLeadAction(input: {
     await supabase.from("crm_lead_tags").insert(tagInserts);
   }
 
+  let calendarSyncResult: { error?: string; success: boolean } | null = null;
+
   // Sync to Google Calendar if leadDate is set
   if (input.leadDate) {
-    await syncLeadToGoogleCalendar(supabase, orgId, row.id);
+    calendarSyncResult = await syncLeadToGoogleCalendar(
+      supabase,
+      orgId,
+      row.id,
+    );
   }
 
   // Sync Todo task
@@ -676,6 +691,8 @@ export async function createLeadAction(input: {
   if (popErr || !populated) {
     return {
       success: true,
+      calendarError: calendarSyncResult?.error,
+      calendarSynced: calendarSyncResult?.success,
       lead: {
         id: row.id,
         organizationId: row.organization_id,
@@ -703,6 +720,9 @@ export async function createLeadAction(input: {
   const popRow = populated as any;
   return {
     success: true,
+    calendarError: calendarSyncResult?.error,
+    calendarLink: extractGoogleCalendarEventLink(popRow.notes),
+    calendarSynced: calendarSyncResult?.success,
     lead: {
       id: popRow.id,
       organizationId: popRow.organization_id,
@@ -2166,6 +2186,12 @@ function parseGoogleError(errText: string): string {
     const parsed = JSON.parse(errText);
     const message = parsed?.error?.message || "";
     if (
+      message.includes("Request had insufficient authentication scopes") ||
+      errText.includes("ACCESS_TOKEN_SCOPE_INSUFFICIENT")
+    ) {
+      return "Google Workspace doit etre reconnecte pour autoriser la verification des disponibilites Calendar.";
+    }
+    if (
       message.includes("Google Calendar API has not been used in project") ||
       errText.includes("SERVICE_DISABLED")
     ) {
@@ -2177,6 +2203,184 @@ function parseGoogleError(errText: string): string {
   } catch {
     return errText;
   }
+}
+
+type GoogleBusyBlock = {
+  end: string;
+  start: string;
+};
+
+type AvailabilityCheckResult =
+  | { available: true }
+  | { available: false; suggestedStart?: Date }
+  | { error: string };
+
+const CALENDAR_TIME_ZONE = "Africa/Casablanca";
+const DEFAULT_MEETING_DURATION_MS = 60 * 60 * 1000;
+const SLOT_SEARCH_STEP_MS = 30 * 60 * 1000;
+
+async function checkPrimaryCalendarAvailability(
+  accessToken: string,
+  requestedStart: Date,
+  requestedEnd: Date,
+): Promise<AvailabilityCheckResult> {
+  const searchEnd = new Date(
+    requestedStart.getTime() + 7 * 24 * 60 * 60 * 1000,
+  );
+  const busyResponse = await fetch(
+    "https://www.googleapis.com/calendar/v3/freeBusy",
+    {
+      body: JSON.stringify({
+        calendarExpansionMax: 1,
+        items: [{ id: "primary" }],
+        timeMax: searchEnd.toISOString(),
+        timeMin: requestedStart.toISOString(),
+        timeZone: CALENDAR_TIME_ZONE,
+      }),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    },
+  );
+
+  if (!busyResponse.ok) {
+    return { error: parseGoogleError(await busyResponse.text()) };
+  }
+
+  const payload = (await busyResponse.json()) as {
+    calendars?: Record<
+      string,
+      {
+        busy?: GoogleBusyBlock[];
+        errors?: Array<{ reason?: string }>;
+      }
+    >;
+  };
+  const calendar = payload.calendars?.primary;
+  const calendarError = calendar?.errors?.[0]?.reason;
+  if (calendarError) {
+    return { error: `Google Calendar indisponible: ${calendarError}` };
+  }
+
+  const busyBlocks = calendar?.busy ?? [];
+  if (!hasBusyOverlap(busyBlocks, requestedStart, requestedEnd)) {
+    return { available: true };
+  }
+
+  const suggestedStart = findNextAvailableMeetingSlot(
+    busyBlocks,
+    new Date(requestedStart.getTime() + SLOT_SEARCH_STEP_MS),
+    requestedEnd.getTime() - requestedStart.getTime(),
+    searchEnd,
+  );
+
+  return { available: false, suggestedStart };
+}
+
+function hasBusyOverlap(
+  busyBlocks: GoogleBusyBlock[],
+  candidateStart: Date,
+  candidateEnd: Date,
+) {
+  return busyBlocks.some((block) => {
+    const busyStart = new Date(block.start);
+    const busyEnd = new Date(block.end);
+    return candidateStart < busyEnd && candidateEnd > busyStart;
+  });
+}
+
+function findNextAvailableMeetingSlot(
+  busyBlocks: GoogleBusyBlock[],
+  searchStart: Date,
+  durationMs: number,
+  searchEnd: Date,
+) {
+  for (
+    let candidateStart = new Date(searchStart);
+    candidateStart < searchEnd;
+    candidateStart = new Date(candidateStart.getTime() + SLOT_SEARCH_STEP_MS)
+  ) {
+    const candidateEnd = new Date(candidateStart.getTime() + durationMs);
+    if (
+      isBusinessHourSlot(candidateStart, candidateEnd) &&
+      !hasBusyOverlap(busyBlocks, candidateStart, candidateEnd)
+    ) {
+      return candidateStart;
+    }
+  }
+
+  return undefined;
+}
+
+function isBusinessHourSlot(candidateStart: Date, candidateEnd: Date) {
+  const start = getZonedDateParts(candidateStart);
+  const end = getZonedDateParts(candidateEnd);
+  const isSameLocalDay =
+    start.year === end.year &&
+    start.month === end.month &&
+    start.day === end.day;
+  const isWeekday = start.weekday >= 1 && start.weekday <= 5;
+
+  return (
+    isSameLocalDay &&
+    isWeekday &&
+    start.hour >= 9 &&
+    (end.hour < 18 || (end.hour === 18 && end.minute === 0))
+  );
+}
+
+function getZonedDateParts(date: Date) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    day: "2-digit",
+    hour: "2-digit",
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    timeZone: CALENDAR_TIME_ZONE,
+    weekday: "short",
+    year: "numeric",
+  }).formatToParts(date);
+  const value = (type: string) =>
+    parts.find((part) => part.type === type)?.value ?? "";
+  const weekdays: Record<string, number> = {
+    Mon: 1,
+    Tue: 2,
+    Wed: 3,
+    Thu: 4,
+    Fri: 5,
+    Sat: 6,
+    Sun: 7,
+  };
+
+  return {
+    day: Number(value("day")),
+    hour: Number(value("hour")),
+    minute: Number(value("minute")),
+    month: Number(value("month")),
+    weekday: weekdays[value("weekday")] ?? 0,
+    year: Number(value("year")),
+  };
+}
+
+function formatCalendarSuggestion(date: Date) {
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "long",
+    timeZone: CALENDAR_TIME_ZONE,
+    weekday: "long",
+  }).format(date);
+}
+
+function extractGoogleCalendarEventLink(notes?: string | null) {
+  const eventLinkMatch = (notes ?? "").match(
+    /\[Google Calendar Event Link:\s*([^\]]+)\]/,
+  );
+
+  return eventLinkMatch ? eventLinkMatch[1].trim() : undefined;
 }
 
 async function syncLeadToGoogleCalendar(
@@ -2314,7 +2518,9 @@ async function syncLeadToGoogleCalendar(
     } else {
       const startDate = new Date(leadDateStr);
       const startIso = startDate.toISOString();
-      const endDate = new Date(startDate.getTime() + 60 * 60 * 1000); // 1 hour duration
+      const endDate = new Date(
+        startDate.getTime() + DEFAULT_MEETING_DURATION_MS,
+      );
       const endIso = endDate.toISOString();
       eventPayload = {
         summary: lead.topic,
@@ -2326,6 +2532,36 @@ async function syncLeadToGoogleCalendar(
           dateTime: endIso,
         },
       };
+    }
+
+    if (
+      !existingEventId &&
+      eventPayload.start.dateTime &&
+      eventPayload.end.dateTime
+    ) {
+      const requestedStart = new Date(eventPayload.start.dateTime);
+      const requestedEnd = new Date(eventPayload.end.dateTime);
+      const availability = await checkPrimaryCalendarAvailability(
+        accessToken,
+        requestedStart,
+        requestedEnd,
+      );
+
+      if ("error" in availability) {
+        return {
+          success: false,
+          error: availability.error,
+        };
+      }
+
+      if (!availability.available) {
+        return {
+          success: false,
+          error: availability.suggestedStart
+            ? `Tu as deja un evenement sur ce creneau. Adam suggere ${formatCalendarSuggestion(availability.suggestedStart)}. Modifie la date du lead puis relance la synchronisation.`
+            : "Tu as deja un evenement sur ce creneau et Adam n'a pas trouve de creneau libre dans les 7 prochains jours ouvrables.",
+        };
+      }
     }
 
     if (existingEventId) {
@@ -2463,11 +2699,7 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
-    const notesStr = row.notes || "";
-    const eventLinkMatch = notesStr.match(
-      /\[Google Calendar Event Link:\s*([^\]]+)\]/,
-    );
-    link = eventLinkMatch ? eventLinkMatch[1].trim() : undefined;
+    link = extractGoogleCalendarEventLink(row.notes);
   }
 
   revalidatePath("/crm");

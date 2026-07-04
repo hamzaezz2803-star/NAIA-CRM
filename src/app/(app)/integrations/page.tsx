@@ -5,6 +5,7 @@ import {
   PlugZap,
 } from "lucide-react";
 
+import { GoogleConnectButton } from "@/components/integrations/google-connect-button";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { requireModule } from "@/platform/core/modules";
@@ -136,6 +137,12 @@ function IntegrationCard({ integration }: { integration: IntegrationHealth }) {
           </p>
         </div>
       </div>
+
+      {integration.provider === "google" &&
+      integration.status !== "connected" &&
+      integration.status !== "not-configured" ? (
+        <GoogleConnectButton className="mt-5" />
+      ) : null}
     </article>
   );
 }
