@@ -87,9 +87,25 @@ export type CrmLeadSummary = {
   lastContactedAt?: string;
   driveFolderUrl?: string;
   companyName?: string;
+  contactName?: string;
+  contactEmail?: string;
+  contactPhone?: string;
   tags?: CrmTag[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type CrmLeadDraft = {
+  companyName?: string;
+  contactEmail?: string;
+  contactName?: string;
+  contactPhone?: string;
+  leadDate?: string;
+  nextAction?: string;
+  notes?: string;
+  source?: string;
+  status: CrmLeadStatus;
+  topic: string;
 };
 
 export type CrmLeadFollowUp = {

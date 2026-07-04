@@ -10,31 +10,49 @@ import {
   Bot,
   FolderOpen,
   Mail,
+  MessageCircle,
+  PlugZap,
   Shield,
   User,
   Building2,
   KeyRound,
 } from "lucide-react";
+import { type IntegrationHealth } from "@/platform/integrations/contracts";
+import { getIntegrationReadiness } from "@/platform/integrations/readiness";
 
-type IntegrationStatus = "connected" | "not-configured" | "partial";
+type SystemIntegrationStatus =
+  | "connected"
+  | "not-configured"
+  | "ready-to-connect"
+  | "not-implemented"
+  | "needs-review";
 
 type Integration = {
   id: string;
   name: string;
   description: string;
-  status: IntegrationStatus;
+  status: SystemIntegrationStatus;
   icon: React.ReactNode;
   detail?: string;
 };
 
-function getIntegrations(): Integration[] {
+function getSystemIntegrations(
+  providerReadiness: IntegrationHealth[],
+): Integration[] {
   const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const supabaseKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const groqKey = process.env.GROQ_API_KEY;
-  const googleClientId = process.env.GOOGLE_CLIENT_ID;
-  const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
+  const google = providerReadiness.find(
+    (integration) => integration.provider === "google",
+  );
+  const slack = providerReadiness.find(
+    (integration) => integration.provider === "slack",
+  );
+  const whatsapp = providerReadiness.find(
+    (integration) => integration.provider === "whatsapp",
+  );
 
   return [
     {
@@ -61,57 +79,78 @@ function getIntegrations(): Integration[] {
     },
     {
       id: "google-drive",
-      name: "Google Drive",
+      name: "Google Drive / Calendar",
       description:
-        "Création automatique de dossiers clients, stockage des propositions, contrats et notes de réunion.",
-      status:
-        googleClientId && googleClientSecret ? "partial" : "not-configured",
+        "Création de dossiers clients et synchronisation Calendar déclenchées depuis des actions CRM.",
+      status: google?.status ?? "not-configured",
       icon: <FolderOpen className="h-5 w-5" />,
       detail:
-        googleClientId && googleClientSecret
-          ? "Credentials OAuth configurés — connexion utilisateur requise"
-          : "GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET manquant",
+        google?.detail ?? "GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET manquant",
     },
     {
       id: "gmail",
       name: "Gmail",
       description:
-        "Envoi de relances et propositions par email directement depuis le CRM avec validation humaine.",
-      status:
-        googleClientId && googleClientSecret ? "partial" : "not-configured",
+        "Brouillons de relance prêts à ouvrir dans Gmail. Aucun envoi Gmail API n'est fait par NAIA pour l'instant.",
+      status: "not-implemented",
       icon: <Mail className="h-5 w-5" />,
       detail:
-        googleClientId && googleClientSecret
-          ? "Partage les credentials OAuth Google — scope Gmail requis"
-          : "Dépend de la connexion Google OAuth",
+        "Le scope Gmail et la route d'envoi ne sont pas encore implémentés.",
+    },
+    {
+      id: "slack",
+      name: "Slack",
+      description:
+        "Prévu pour les récapitulatifs de canaux, notifications et suivis approuvés.",
+      status: slack?.status ?? "not-implemented",
+      icon: <PlugZap className="h-5 w-5" />,
+      detail:
+        slack?.detail ??
+        "SLACK_CLIENT_ID / SLACK_CLIENT_SECRET ne suffisent pas sans route OAuth Slack.",
+    },
+    {
+      id: "whatsapp",
+      name: "WhatsApp",
+      description:
+        "Brouillons ouvrables dans WhatsApp. Aucun envoi Business API n'est fait automatiquement.",
+      status: whatsapp?.status ?? "not-implemented",
+      icon: <MessageCircle className="h-5 w-5" />,
+      detail:
+        whatsapp?.detail ??
+        "Connecteur Business API à implémenter derrière approbation humaine.",
     },
   ];
 }
 
-function StatusIcon({ status }: { status: IntegrationStatus }) {
+function StatusIcon({ status }: { status: SystemIntegrationStatus }) {
   if (status === "connected")
     return <CheckCircle2 className="h-5 w-5 text-emerald-600" />;
-  if (status === "partial")
+  if (status === "ready-to-connect" || status === "needs-review")
     return <AlertCircle className="h-5 w-5 text-amber-500" />;
   return <AlertCircle className="h-5 w-5 text-stone-400" />;
 }
 
-function statusLabel(status: IntegrationStatus): string {
+function statusLabel(status: SystemIntegrationStatus): string {
   if (status === "connected") return "Connecté";
-  if (status === "partial") return "Partiellement configuré";
+  if (status === "ready-to-connect") return "Prêt à connecter";
+  if (status === "needs-review") return "À vérifier";
+  if (status === "not-implemented") return "Non implémenté";
   return "Non configuré";
 }
 
-function statusBadgeClass(status: IntegrationStatus): string {
+function statusBadgeClass(status: SystemIntegrationStatus): string {
   if (status === "connected")
     return "bg-emerald-50 text-emerald-700 border-emerald-200";
-  if (status === "partial")
+  if (status === "ready-to-connect" || status === "needs-review")
     return "bg-amber-50 text-amber-700 border-amber-200";
+  if (status === "not-implemented")
+    return "bg-stone-50 text-stone-500 border-stone-200";
   return "bg-stone-100 text-stone-500 border-stone-200";
 }
 
 export default async function SettingsPage() {
-  const integrations = getIntegrations();
+  const providerReadiness = await getIntegrationReadiness();
+  const integrations = getSystemIntegrations(providerReadiness);
   const session = await getAppSession();
 
   return (
@@ -297,12 +336,22 @@ export default async function SettingsPage() {
                 },
                 {
                   name: "GOOGLE_CLIENT_ID",
-                  usage: "OAuth Google Drive & Gmail",
+                  usage: "OAuth Google Drive & Calendar",
                   visibility: "Serveur uniquement",
                 },
                 {
                   name: "GOOGLE_CLIENT_SECRET",
-                  usage: "OAuth Google Drive & Gmail",
+                  usage: "OAuth Google Drive & Calendar",
+                  visibility: "Serveur uniquement",
+                },
+                {
+                  name: "SLACK_CLIENT_ID / SLACK_CLIENT_SECRET",
+                  usage: "OAuth Slack futur",
+                  visibility: "Serveur uniquement",
+                },
+                {
+                  name: "WHATSAPP_BUSINESS_ACCOUNT_ID",
+                  usage: "WhatsApp Business futur",
                   visibility: "Serveur uniquement",
                 },
                 {

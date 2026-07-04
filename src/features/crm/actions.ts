@@ -16,6 +16,13 @@ import type {
   CrmTag,
   CrmLeadNote,
 } from "./contracts";
+import {
+  addDummyCrmLead,
+  dummyCrmCompanies,
+  dummyCrmContacts,
+  dummyCrmOrganizationId,
+  getDummyCrmLeads,
+} from "./dummy-data";
 import { inferLeadStatusFromNaturalText } from "./extraction";
 
 // ────────────────────────────────────────────────────────────
@@ -118,6 +125,26 @@ function sanitizeJsonString(str: string): string {
     }
   }
   return result;
+}
+
+function shouldUseDummyCrmData() {
+  return (
+    process.env.CRM_DUMMY_DATA === "enabled" ||
+    (process.env.NODE_ENV === "development" &&
+      process.env.CRM_DUMMY_DATA !== "disabled")
+  );
+}
+
+function fallbackLeads() {
+  return shouldUseDummyCrmData() ? getDummyCrmLeads() : [];
+}
+
+function fallbackCompanies() {
+  return shouldUseDummyCrmData() ? dummyCrmCompanies : [];
+}
+
+function fallbackContacts() {
+  return shouldUseDummyCrmData() ? dummyCrmContacts : [];
 }
 
 function parseContactInfoFromNotes(notes?: string | null) {
@@ -294,10 +321,10 @@ async function syncLeadTask(
 
 export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
   const supabase = await createServerSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) return fallbackLeads();
 
   const orgId = await getOrgId();
-  if (!orgId) return [];
+  if (!orgId) return fallbackLeads();
 
   const { data, error } = await supabase
     .from("crm_leads")
@@ -306,7 +333,8 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
       *,
       assigned_to:assigned_to_profile_id(id, full_name, email),
       last_updated_by:last_updated_by_profile_id(id, full_name, email),
-      crm_companies(name),
+      company:company_id(id, name),
+      contact:contact_id(id, name, email, phone),
       crm_lead_tags(
         crm_tags(id, name, color)
       )
@@ -317,10 +345,11 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
 
   if (error || !data) {
     if (error) console.error("fetchLeadsAction query error:", error);
-    return [];
+    return fallbackLeads();
   }
 
   const rows = data as any[];
+  if (rows.length === 0) return fallbackLeads();
 
   // Perform backfill
   const {
@@ -332,8 +361,11 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
     id: row.id,
     organizationId: row.organization_id,
     companyId: row.company_id ?? undefined,
-    companyName: row.crm_companies?.name ?? undefined,
+    companyName: row.company?.name ?? undefined,
     contactId: row.contact_id ?? undefined,
+    contactName: row.contact?.name ?? undefined,
+    contactEmail: row.contact?.email ?? undefined,
+    contactPhone: row.contact?.phone ?? undefined,
     topic: row.topic,
     source: row.source ?? undefined,
     status: row.status,
@@ -449,7 +481,11 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
 export async function createLeadAction(input: {
   topic: string;
   companyId?: string;
+  companyName?: string;
   contactId?: string;
+  contactEmail?: string;
+  contactName?: string;
+  contactPhone?: string;
   source?: string;
   status?: CrmLeadStatus;
   notes?: string;
@@ -461,10 +497,18 @@ export async function createLeadAction(input: {
   tagIds?: string[];
 }): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
-  if (!supabase) return { success: false, error: "Not configured" };
+  if (!supabase) {
+    return shouldUseDummyCrmData()
+      ? createDummyLead(input)
+      : { success: false, error: "Not configured" };
+  }
 
   const orgId = await getOrgId();
-  if (!orgId) return { success: false, error: "Not authenticated" };
+  if (!orgId) {
+    return shouldUseDummyCrmData()
+      ? createDummyLead(input)
+      : { success: false, error: "Not authenticated" };
+  }
 
   const {
     data: { user },
@@ -473,7 +517,9 @@ export async function createLeadAction(input: {
   let companyId = input.companyId ?? null;
   let contactId = input.contactId ?? null;
 
-  const { company, contact } = parseContactInfoFromNotes(input.notes);
+  const parsedContactInfo = parseContactInfoFromNotes(input.notes);
+  const company = input.companyName?.trim() || parsedContactInfo.company;
+  const contact = input.contactName?.trim() || parsedContactInfo.contact;
   if (!companyId && company) {
     // Find or create company
     const { data: existingComp } = await supabase
@@ -520,6 +566,8 @@ export async function createLeadAction(input: {
           organization_id: orgId,
           company_id: companyId,
           name: contact,
+          email: input.contactEmail ?? null,
+          phone: input.contactPhone ?? null,
           job_title: input.contactJobTitle ?? null,
           linkedin_url: input.contactLinkedinUrl ?? null,
           created_by_profile_id: user?.id ?? null,
@@ -615,6 +663,8 @@ export async function createLeadAction(input: {
       *,
       assigned_to:assigned_to_profile_id(id, full_name, email),
       last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      company:company_id(id, name),
+      contact:contact_id(id, name, email, phone),
       crm_lead_tags(
         crm_tags(id, name, color)
       )
@@ -630,7 +680,11 @@ export async function createLeadAction(input: {
         id: row.id,
         organizationId: row.organization_id,
         companyId: row.company_id ?? undefined,
+        companyName: input.companyName ?? company ?? undefined,
         contactId: row.contact_id ?? undefined,
+        contactName: input.contactName ?? contact ?? undefined,
+        contactEmail: input.contactEmail ?? undefined,
+        contactPhone: input.contactPhone ?? undefined,
         topic: row.topic,
         source: row.source ?? undefined,
         status: row.status,
@@ -653,7 +707,11 @@ export async function createLeadAction(input: {
       id: popRow.id,
       organizationId: popRow.organization_id,
       companyId: popRow.company_id ?? undefined,
+      companyName: popRow.company?.name ?? undefined,
       contactId: popRow.contact_id ?? undefined,
+      contactName: popRow.contact?.name ?? undefined,
+      contactEmail: popRow.contact?.email ?? undefined,
+      contactPhone: popRow.contact?.phone ?? undefined,
       topic: popRow.topic,
       source: popRow.source ?? undefined,
       status: popRow.status,
@@ -686,6 +744,59 @@ export async function createLeadAction(input: {
       createdAt: popRow.created_at,
       updatedAt: popRow.updated_at,
     },
+  };
+}
+
+function createDummyLead(input: {
+  topic: string;
+  companyId?: string;
+  companyName?: string;
+  contactId?: string;
+  contactEmail?: string;
+  contactName?: string;
+  contactPhone?: string;
+  source?: string;
+  status?: CrmLeadStatus;
+  notes?: string;
+  nextAction?: string;
+  leadDate?: string;
+  contactJobTitle?: string;
+  contactLinkedinUrl?: string;
+  assignedToProfileId?: string;
+  tagIds?: string[];
+}): { success: true; lead: CrmLeadSummary } {
+  const now = new Date().toISOString();
+  const suffix = Math.random().toString(36).slice(2, 9);
+  const { company, contact } = parseContactInfoFromNotes(input.notes);
+  const lead: CrmLeadSummary = {
+    assignedToProfileId: input.assignedToProfileId,
+    companyId: input.companyId,
+    companyName: input.companyName ?? company ?? undefined,
+    contactId: input.contactId,
+    contactEmail: input.contactEmail,
+    contactName: input.contactName ?? contact ?? undefined,
+    contactPhone: input.contactPhone,
+    contactJobTitle: input.contactJobTitle,
+    contactLinkedinUrl: input.contactLinkedinUrl,
+    createdAt: now,
+    id: `demo-lead-${Date.now().toString(36)}-${suffix}`,
+    leadDate: input.leadDate
+      ? new Date(input.leadDate).toISOString()
+      : undefined,
+    nextAction: input.nextAction,
+    notes: input.notes,
+    organizationId: dummyCrmOrganizationId,
+    source: input.source ?? "NAIA",
+    status: input.status ?? "lead-to-contact",
+    topic: input.topic,
+    updatedAt: now,
+  };
+
+  addDummyCrmLead(lead);
+
+  return {
+    lead,
+    success: true,
   };
 }
 
@@ -869,6 +980,8 @@ export async function updateLeadAction(
       *,
       assigned_to:assigned_to_profile_id(id, full_name, email),
       last_updated_by:last_updated_by_profile_id(id, full_name, email),
+      company:company_id(id, name),
+      contact:contact_id(id, name, email, phone),
       crm_lead_tags(
         crm_tags(id, name, color)
       )
@@ -888,7 +1001,11 @@ export async function updateLeadAction(
       id: row.id,
       organizationId: row.organization_id,
       companyId: row.company_id ?? undefined,
+      companyName: row.company?.name ?? undefined,
       contactId: row.contact_id ?? undefined,
+      contactName: row.contact?.name ?? undefined,
+      contactEmail: row.contact?.email ?? undefined,
+      contactPhone: row.contact?.phone ?? undefined,
       topic: row.topic,
       source: row.source ?? undefined,
       status: row.status,
@@ -1012,10 +1129,10 @@ export async function deleteLeadAction(
 
 export async function fetchCompaniesAction(): Promise<CrmCompanySummary[]> {
   const supabase = await createServerSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) return fallbackCompanies();
 
   const orgId = await getOrgId();
-  if (!orgId) return [];
+  if (!orgId) return fallbackCompanies();
 
   // Run the backfill first to ensure any text-only companies from leads are created & linked
   try {
@@ -1044,7 +1161,7 @@ export async function fetchCompaniesAction(): Promise<CrmCompanySummary[]> {
     .eq("organization_id", orgId)
     .order("name");
 
-  if (error || !data) return [];
+  if (error || !data || data.length === 0) return fallbackCompanies();
 
   return (data as DbCompany[]).map((row) => ({
     id: row.id,
@@ -1270,10 +1387,10 @@ export async function fetchCompanyDetailAction(companyId: string): Promise<{
 
 export async function fetchContactsAction(): Promise<CrmContactSummary[]> {
   const supabase = await createServerSupabaseClient();
-  if (!supabase) return [];
+  if (!supabase) return fallbackContacts();
 
   const orgId = await getOrgId();
-  if (!orgId) return [];
+  if (!orgId) return fallbackContacts();
 
   const { data, error } = await supabase
     .from("crm_contacts")
@@ -1288,7 +1405,7 @@ export async function fetchContactsAction(): Promise<CrmContactSummary[]> {
     .eq("organization_id", orgId)
     .order("name");
 
-  if (error || !data) return [];
+  if (error || !data || data.length === 0) return fallbackContacts();
 
   return data.map((row: any) => ({
     id: row.id,

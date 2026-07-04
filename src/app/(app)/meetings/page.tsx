@@ -1,10 +1,17 @@
-import { ModulePlaceholderPage } from "@/components/layout/module-placeholder-page";
+import { fetchLeadsAction } from "@/features/crm/actions";
+import { NaiaCommandCenter } from "@/features/naia/naia-command-center";
 
-export default function MeetingsPage() {
+export default async function MeetingsPage() {
+  const leads = await fetchLeadsAction();
+
   return (
-    <ModulePlaceholderPage
-      detail="Meeting intelligence will handle transcripts, summaries, participants, requirements, pains, decision-makers, next steps, and CRM updates."
-      moduleId="meetings"
+    <NaiaCommandCenter
+      initialCrmStats={{
+        leadCount: leads.length,
+        openLeadCount: leads.filter(
+          (lead) => lead.status !== "won" && lead.status !== "dead-end",
+        ).length,
+      }}
     />
   );
 }

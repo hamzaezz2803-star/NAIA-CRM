@@ -33,7 +33,7 @@ export default function DocumentsPage() {
       <PageHeader
         eyebrow="CRM · Documents"
         title="Dossiers clients"
-        description="Accédez aux dossiers Google Drive synchronisés pour chaque entreprise cliente."
+        description="Accédez aux dossiers Google Drive enregistrés pour chaque entreprise cliente."
         actions={<StatusBadge status="ready-for-build" />}
       />
 
@@ -48,8 +48,8 @@ export default function DocumentsPage() {
               Intégration Google Drive
             </h3>
             <p className="mt-1 text-sm leading-6 text-teal-700">
-              Les dossiers Drive sont créés automatiquement depuis la fiche
-              lead. Configurez votre connexion Google dans{" "}
+              Les dossiers Drive sont créés depuis une action CRM validée sur la
+              fiche lead. Configurez votre connexion Google dans{" "}
               <span className="font-medium">Paramètres → Intégrations</span>.
             </p>
           </div>

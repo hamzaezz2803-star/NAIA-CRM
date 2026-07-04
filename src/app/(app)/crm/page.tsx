@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import LeadsPage from "../dashboard/leads/page";
 
 export default function CrmPage() {
-  redirect("/dashboard/leads");
+  return <LeadsPage />;
 }

@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useTransition, useRef } from "react";
-import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import {
   Plus,
@@ -27,9 +26,6 @@ import {
   ChevronLeft,
   ChevronRight,
   List,
-  Trophy,
-  Activity,
-  Users,
   Mic,
   Check,
   Edit3,
@@ -122,6 +118,22 @@ function formatLeadDateForDisplay(dateStr?: string): string {
   } catch {
     return dateStr;
   }
+}
+
+function inferCompanyNameFromTopic(topic: string) {
+  const cleanTopic = topic.trim();
+  const companyPrefix = cleanTopic.split(" - ")[0]?.trim();
+
+  if (
+    companyPrefix &&
+    companyPrefix.length >= 3 &&
+    !/^projet\b/i.test(companyPrefix)
+  ) {
+    return companyPrefix;
+  }
+
+  const meetingMatch = cleanTopic.match(/(?:avec|chez)\s+(.+)$/i);
+  return meetingMatch?.[1]?.trim() ?? "";
 }
 
 // ────────────────────────────────────────────────────────────
@@ -362,16 +374,6 @@ export default function LeadsPage() {
 
   const hourlyScrollContainerRef = React.useRef<HTMLDivElement>(null);
   const kanbanContainerRef = useRef<HTMLDivElement>(null);
-
-  const scrollKanban = (direction: "left" | "right") => {
-    if (kanbanContainerRef.current) {
-      const scrollAmount = 300;
-      kanbanContainerRef.current.scrollBy({
-        left: direction === "left" ? -scrollAmount : scrollAmount,
-        behavior: "smooth",
-      });
-    }
-  };
 
   // Helper functions for modern calendar views
   function getDaysOfWeek(date: Date): Date[] {
@@ -886,15 +888,14 @@ export default function LeadsPage() {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // Determine format support
-      let options = { mimeType: "audio/webm" };
-      if (!MediaRecorder.isTypeSupported("audio/webm")) {
-        if (MediaRecorder.isTypeSupported("audio/mp4")) {
-          options = { mimeType: "audio/mp4" };
-        } else {
-          options = { mimeType: "" }; // default browser format
-        }
-      }
+      const supportedMimeType = [
+        "audio/mp4",
+        "audio/webm;codecs=opus",
+        "audio/webm",
+      ].find((mimeType) => MediaRecorder.isTypeSupported(mimeType));
+      const options = supportedMimeType
+        ? { mimeType: supportedMimeType }
+        : undefined;
 
       const recorder = new MediaRecorder(stream, options);
       const chunks: Blob[] = [];
@@ -917,7 +918,7 @@ export default function LeadsPage() {
         }
 
         const audioBlob = new Blob(chunks, {
-          type: options.mimeType || "audio/webm",
+          type: recorder.mimeType || supportedMimeType || "audio/webm",
         });
         if (audioBlob.size === 0) return;
 
@@ -1365,63 +1366,6 @@ export default function LeadsPage() {
     };
   }
 
-  const totalLeads = leads.length;
-  const activeLeads = leads.filter(
-    (l) => l.status !== "dead-end" && l.status !== "won",
-  ).length;
-  const meetingLeads = leads.filter(
-    (l) => l.status === "meeting-booked",
-  ).length;
-  const wonLeads = leads.filter((l) => l.status === "won").length;
-
-  const conversionRate =
-    totalLeads > 0 ? Math.round((wonLeads / totalLeads) * 100) : 0;
-  const activePercentage =
-    totalLeads > 0 ? Math.round((activeLeads / totalLeads) * 100) : 0;
-
-  const STATS_CARDS = [
-    {
-      label: "Total leads",
-      value: totalLeads,
-      description: "Opportunités enregistrées",
-      icon: Users,
-      colorClass:
-        "from-blue-50/50 to-indigo-50/30 border-blue-100/80 hover:border-blue-300 dark:from-blue-950/20 dark:to-indigo-950/10 dark:border-blue-900/40 dark:hover:border-blue-800/60",
-      iconColor:
-        "text-blue-600 bg-blue-100/85 dark:text-blue-400 dark:bg-blue-900/40",
-    },
-    {
-      label: "Actifs",
-      value: activeLeads,
-      description: `${activePercentage}% du total`,
-      icon: Activity,
-      colorClass:
-        "from-amber-50/50 to-orange-50/30 border-amber-100 hover:border-amber-300 dark:from-amber-950/20 dark:to-orange-950/10 dark:border-amber-900/40 dark:hover:border-amber-800/60",
-      iconColor:
-        "text-amber-600 bg-amber-100/85 dark:text-amber-400 dark:bg-amber-900/40",
-    },
-    {
-      label: "Meetings",
-      value: meetingLeads,
-      description: "Rendez-vous fixés",
-      icon: CalendarDays,
-      colorClass:
-        "from-violet-50/50 to-purple-50/30 border-violet-100 hover:border-violet-300 dark:from-violet-950/20 dark:to-purple-950/10 dark:border-violet-900/40 dark:hover:border-violet-800/60",
-      iconColor:
-        "text-violet-600 bg-violet-100/85 dark:text-violet-400 dark:bg-violet-900/40",
-    },
-    {
-      label: "Gagnés",
-      value: wonLeads,
-      description: `${conversionRate}% de conversion`,
-      icon: Trophy,
-      colorClass:
-        "from-teal-50/50 to-emerald-50/30 border-teal-100 hover:border-teal-300 dark:from-teal-950/20 dark:to-emerald-950/10 dark:border-teal-900/40 dark:hover:border-teal-800/60",
-      iconColor:
-        "text-teal-600 bg-teal-100/85 dark:text-teal-400 dark:bg-teal-900/40",
-    },
-  ];
-
   // Check for overdue leads (active leads with leadDate in the past)
   const overdueLeads = React.useMemo(() => {
     return leads.filter((lead) => {
@@ -1436,20 +1380,22 @@ export default function LeadsPage() {
   }, [leads]);
 
   return (
-    <div className="space-y-8">
-      {/* Title & integrations header */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <PageHeader
-          eyebrow="CRM · Leads"
-          title="Pipeline commercial"
-          description="Gérez votre pipeline de ventes, ajoutez des leads en langage naturel et générez des relances avec l'IA."
-        />
+    <div className="space-y-2">
+      <div className="flex flex-col gap-2 border-b border-stone-200 pb-2 dark:border-stone-800 lg:flex-row lg:items-center lg:justify-between">
+        <div className="min-w-0">
+          <p className="text-[11px] font-semibold uppercase text-teal-700 dark:text-teal-400">
+            CRM · Pipeline
+          </p>
+          <h1 className="text-xl font-semibold leading-tight text-stone-950 dark:text-stone-50">
+            Pipeline commercial
+          </h1>
+        </div>
 
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           {isGoogleConnected ? (
-            <div className="flex items-center gap-2 rounded-md border border-teal-200 bg-teal-50 dark:border-teal-900/50 dark:bg-teal-950/30 px-3 py-1.5 text-xs text-teal-800 dark:text-teal-400 font-medium">
-              <span className="h-2 w-2 rounded-full bg-teal-500 animate-pulse" />
-              Google Workspace connecté
+            <div className="flex h-8 items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-2.5 text-xs font-medium text-teal-800 dark:border-teal-900/50 dark:bg-teal-950/30 dark:text-teal-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+              Google connecté
               <button
                 onClick={handleDisconnectGoogle}
                 title="Déconnecter Google"
@@ -1462,10 +1408,10 @@ export default function LeadsPage() {
             <Button
               onClick={handleConnectGoogle}
               variant="outline"
-              className="text-xs border-stone-200 text-stone-700 hover:bg-stone-50"
+              className="h-8 border-stone-200 text-xs text-stone-700 hover:bg-stone-50"
             >
-              <Globe className="mr-2 h-4 w-4 text-teal-600" />
-              Connecter Google
+              <Globe className="mr-1.5 h-3.5 w-3.5 text-teal-600" />
+              Google
             </Button>
           )}
 
@@ -1475,155 +1421,108 @@ export default function LeadsPage() {
               resetForm();
               setIsAddOpen(true);
             }}
-            className="text-xs gap-2"
+            className="h-8 gap-1.5 text-xs"
           >
-            <Plus className="h-4 w-4" />
+            <Plus className="h-3.5 w-3.5" />
             Nouveau lead
           </Button>
 
-          {/* Segmented control for views */}
-          <div className="flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1">
+          {viewMode === "kanban" && (
+            <Button
+              type="button"
+              onClick={() => openCategoryModal(null)}
+              variant="outline"
+              className="h-8 gap-1.5 border-dashed border-stone-200 text-xs text-stone-700 shadow-sm hover:bg-stone-50 hover:text-stone-950"
+            >
+              <Plus className="h-3.5 w-3.5 text-teal-600" />
+              Colonne
+            </Button>
+          )}
+
+          <div className="flex h-9 items-center gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-900">
             <button
               onClick={() => setViewMode("kanban")}
-              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+              className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition ${
                 viewMode === "kanban"
-                  ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
-                  : "text-stone-500 hover:text-stone-900"
+                  ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
+                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
               }`}
             >
-              <LayoutGrid className="h-3.5 w-3.5 text-stone-500" />
+              <LayoutGrid className="h-3.5 w-3.5" />
               Kanban
             </button>
             <button
               onClick={() => setViewMode("calendar")}
-              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+              className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition ${
                 viewMode === "calendar"
-                  ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
-                  : "text-stone-500 hover:text-stone-900"
+                  ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
+                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
               }`}
             >
-              <CalendarDays className="h-3.5 w-3.5 text-stone-500" />
+              <CalendarDays className="h-3.5 w-3.5" />
               Calendrier
             </button>
             <button
               onClick={() => setViewMode("list")}
-              className={`flex items-center gap-1 px-3 py-1.5 rounded-md text-xs font-semibold transition ${
+              className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition ${
                 viewMode === "list"
-                  ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
-                  : "text-stone-500 hover:text-stone-900"
+                  ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
+                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
               }`}
             >
-              <List className="h-3.5 w-3.5 text-stone-500" />
+              <List className="h-3.5 w-3.5" />
               Liste
             </button>
           </div>
         </div>
       </div>
 
-      {/* Stats strip */}
-      <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-        {STATS_CARDS.map((s) => {
-          const Icon = s.icon;
-          return (
-            <div
-              key={s.label}
-              className={`group relative overflow-hidden rounded-xl border border-stone-200 bg-white bg-gradient-to-br p-5 shadow-sm transition-all duration-300 hover:-translate-y-0.5 hover:shadow-md ${s.colorClass}`}
-            >
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">
-                    {s.label}
-                  </p>
-                  <p className="mt-2 text-3xl font-extrabold tracking-tight text-stone-900">
-                    {s.value}
-                  </p>
-                </div>
-                <div
-                  className={`rounded-xl p-2.5 transition-transform duration-300 group-hover:scale-105 ${s.iconColor}`}
-                >
-                  <Icon className="h-5 w-5" />
-                </div>
-              </div>
-              <p className="mt-3 text-xs font-semibold text-stone-500 flex items-center gap-1.5">
-                <span className="h-1.5 w-1.5 rounded-full bg-stone-400" />
-                {s.description}
-              </p>
-            </div>
-          );
-        })}
-      </div>
-
-      {/* Échéances Dépassées Section */}
       {overdueLeads.length > 0 && (
-        <section className="rounded-xl border border-red-200 bg-red-50/30 p-4 shadow-sm">
-          <div className="flex items-center gap-2 mb-3">
-            <AlertCircle className="h-4.5 w-4.5 text-red-600 animate-pulse" />
-            <h3 className="text-xs font-bold text-red-800 uppercase tracking-wider">
-              Échéances Dépassées ({overdueLeads.length})
-            </h3>
+        <section className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50/60 px-2 py-1.5 shadow-sm dark:border-red-900/40 dark:bg-red-950/20">
+          <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-bold uppercase text-red-800 dark:text-red-300">
+            <AlertCircle className="h-3.5 w-3.5 text-red-600" />
+            Retards ({overdueLeads.length})
           </div>
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-            {overdueLeads.map((lead) => {
+          <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+            {overdueLeads.slice(0, 8).map((lead) => {
               const noteLines = (lead.notes ?? "").split("\n");
-              const companyName = noteLines
-                .find((l) => l.startsWith("Entreprise:"))
-                ?.replace("Entreprise:", "")
-                .trim();
+              const companyName =
+                lead.companyName ??
+                noteLines
+                  .find((l) => l.startsWith("Entreprise:"))
+                  ?.replace("Entreprise:", "")
+                  .trim() ??
+                lead.topic;
               const contactName = noteLines
                 .find((l) => l.startsWith("Contact:"))
                 ?.replace("Contact:", "")
                 .trim();
-              const colConfig = getColumnConfig(lead.status);
 
               return (
-                <div
+                <button
+                  type="button"
                   key={lead.id}
                   onClick={() => openEditModal(lead)}
-                  className="cursor-pointer group flex flex-col justify-between rounded-lg border border-red-100 bg-white p-2.5 shadow-sm hover:border-red-300 transition hover:shadow-md min-h-[95px]"
+                  className="flex min-w-[190px] max-w-[240px] items-center gap-2 rounded-md border border-red-100 bg-white px-2 py-1 text-left shadow-sm transition hover:border-red-300 hover:shadow dark:border-red-900/40 dark:bg-stone-950"
                 >
-                  <div className="space-y-1">
-                    <div className="flex items-start justify-between gap-2">
-                      <h4 className="text-[13px] font-bold text-stone-900 line-clamp-1 group-hover:text-red-700 transition-colors">
-                        {lead.topic}
-                      </h4>
-                      <span
-                        className={`flex-none inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-bold uppercase ${colConfig.color}`}
-                      >
-                        <span
-                          className={`h-1 w-1 rounded-full ${colConfig.dot}`}
-                        />
-                        {colConfig.label}
-                      </span>
-                    </div>
-
-                    <div className="space-y-0.5">
-                      {companyName && (
-                        <p className="flex items-center gap-1 text-[11px] text-stone-600 font-semibold truncate">
-                          <Building2 className="h-3 w-3 text-stone-400 flex-shrink-0" />
-                          <span className="truncate">{companyName}</span>
-                        </p>
-                      )}
-                      {contactName && (
-                        <p className="flex items-center gap-1 text-[11px] text-stone-500 font-medium truncate">
-                          <User className="h-3 w-3 text-stone-400 flex-shrink-0" />
-                          <span className="truncate">{contactName}</span>
-                        </p>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="mt-2.5 flex items-center justify-between border-t border-stone-50 pt-1.5 text-[10px]">
-                    <span className="text-red-700 font-bold flex items-center gap-1 bg-red-50 border border-red-200/45 px-1.5 py-0.5 rounded">
-                      <Calendar className="h-3 w-3 text-red-650" />
+                  <Calendar className="h-3.5 w-3.5 shrink-0 text-red-600" />
+                  <div className="min-w-0">
+                    <p className="truncate text-[11px] font-semibold text-stone-950 dark:text-stone-50">
+                      {companyName}
+                    </p>
+                    <p className="truncate text-[10px] text-stone-500 dark:text-stone-400">
+                      {contactName ? `${contactName} · ` : ""}
                       {formatLeadDateForDisplay(lead.leadDate)}
-                    </span>
-                    <span className="text-stone-400 italic font-medium group-hover:text-stone-600 transition-colors">
-                      Modifier →
-                    </span>
+                    </p>
                   </div>
-                </div>
+                </button>
               );
             })}
+            {overdueLeads.length > 8 ? (
+              <span className="flex items-center rounded-md px-2 text-[11px] font-medium text-red-700 dark:text-red-300">
+                +{overdueLeads.length - 8}
+              </span>
+            ) : null}
           </div>
         </section>
       )}
@@ -1637,46 +1536,16 @@ export default function LeadsPage() {
           </span>
         </div>
       ) : viewMode === "kanban" ? (
-        <div className="space-y-4">
-          {/* Header actions for Kanban: Add column left, scroll buttons right */}
-          <div className="flex items-center justify-between">
-            <Button
-              type="button"
-              onClick={() => openCategoryModal(null)}
-              variant="outline"
-              className="text-xs h-8 gap-2 border-stone-200 text-stone-700 hover:bg-stone-50 hover:text-stone-950 shadow-sm border-dashed"
-            >
-              <Plus className="h-3.5 w-3.5 text-teal-600" />
-              Ajouter une colonne
-            </Button>
-
-            <div className="flex items-center gap-1 bg-stone-100 p-1 rounded-lg border border-stone-200/60 shadow-sm">
-              <Button
-                variant="ghost"
-                onClick={() => scrollKanban("left")}
-                className="h-7 w-7 p-0 rounded-md bg-white hover:bg-stone-50 shadow-sm border border-stone-200/40 text-stone-600 hover:text-stone-900"
-                title="Faire défiler à gauche"
-              >
-                <ChevronLeft className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                onClick={() => scrollKanban("right")}
-                className="h-7 w-7 p-0 rounded-md bg-white hover:bg-stone-50 shadow-sm border border-stone-200/40 text-stone-600 hover:text-stone-900"
-                title="Faire défiler à droite"
-              >
-                <ChevronRight className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-
+        <div>
           <div
             ref={kanbanContainerRef}
-            className="overflow-x-auto pb-4 scrollbar-thin scroll-smooth"
+            className="overflow-x-auto pb-2 scrollbar-thin scroll-smooth"
           >
             <div
-              className="flex gap-4 items-start"
-              style={{ minWidth: "900px" }}
+              className="grid min-w-[980px] items-start gap-2 lg:min-w-0"
+              style={{
+                gridTemplateColumns: `repeat(${categories.length}, minmax(140px, 1fr))`,
+              }}
             >
               {categories.map((col, index) => {
                 const colLeads = leads.filter(
@@ -1686,7 +1555,7 @@ export default function LeadsPage() {
                 return (
                   <div
                     key={col.id}
-                    className="flex w-56 flex-none flex-col gap-3 group/col rounded-lg p-1 transition-colors border border-transparent hover:border-stone-200/40 hover:bg-stone-50/10"
+                    className="group/col flex min-w-0 flex-col gap-1.5 rounded-lg border border-stone-200/70 bg-stone-50/70 p-1 transition-colors hover:border-stone-300 dark:border-stone-800 dark:bg-stone-950/45"
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
                       e.preventDefault();
@@ -1701,20 +1570,20 @@ export default function LeadsPage() {
                   >
                     {/* Column header */}
                     <div
-                      className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 ${style.color}`}
+                      className={`flex min-h-7 items-center gap-1.5 rounded-md border px-2 py-1 ${style.color}`}
                     >
                       <span
-                        className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
+                        className={`h-1.5 w-1.5 flex-none rounded-full ${style.dot}`}
                       />
-                      <span className="truncate text-xs font-bold uppercase tracking-wide flex-1">
+                      <span className="flex-1 truncate text-[11px] font-bold uppercase">
                         {col.name}
                       </span>
-                      <span className="text-[10px] font-bold opacity-60 px-1 bg-stone-50/20 rounded">
+                      <span className="rounded bg-white/45 px-1 text-[10px] font-bold opacity-70 dark:bg-stone-950/30">
                         {colLeads.length}
                       </span>
 
                       {/* Column order & settings actions */}
-                      <div className="flex items-center gap-0.5 opacity-0 group-hover/col:opacity-100 transition-opacity ml-1">
+                      <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/col:opacity-100">
                         {index > 0 && (
                           <button
                             type="button"
@@ -1751,9 +1620,9 @@ export default function LeadsPage() {
                     </div>
 
                     {/* Lead cards */}
-                    <div className="flex flex-col gap-2 min-h-[300px]">
+                    <div className="flex max-h-[calc(100dvh-12.5rem)] min-h-[calc(100dvh-12.5rem)] flex-col gap-1.5 overflow-y-auto pr-0.5">
                       {colLeads.length === 0 && (
-                        <div className="rounded-md border border-dashed border-stone-200 p-4 text-center text-xs text-stone-400">
+                        <div className="rounded-md border border-dashed border-stone-200 p-3 text-center text-xs text-stone-400 dark:border-stone-800">
                           Vide
                         </div>
                       )}
@@ -3652,7 +3521,7 @@ export default function LeadsPage() {
                           rel="noreferrer"
                           className="inline-flex items-center gap-1 rounded bg-teal-700 hover:bg-teal-850 px-2.5 py-1 text-[10px] font-bold text-white transition"
                         >
-                          Envoyer via Gmail ↗
+                          Ouvrir dans Gmail ↗
                         </a>
                       </div>
                       <div className="px-4 py-3">
@@ -3673,7 +3542,7 @@ export default function LeadsPage() {
                           rel="noreferrer"
                           className="inline-flex items-center gap-1 rounded bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[10px] font-bold text-white transition"
                         >
-                          Envoyer WhatsApp ↗
+                          Ouvrir dans WhatsApp ↗
                         </a>
                       </div>
                       <div className="px-4 py-3">
@@ -4157,8 +4026,15 @@ function LeadCard({
     .find((l) => l.startsWith("Contact:"))
     ?.replace("Contact:", "")
     .trim();
+  const companyName =
+    lead.companyName?.trim() ||
+    companyLine ||
+    inferCompanyNameFromTopic(lead.topic) ||
+    "Sans entreprise";
+  const contactName =
+    lead.contactName?.trim() || contactLine || "Contact à qualifier";
+  const showProject = lead.topic.trim() && lead.topic.trim() !== companyName;
 
-  // Check if lead date is in the past
   const isOverdue = React.useMemo(() => {
     if (!lead.leadDate) return false;
     if (lead.status === "won" || lead.status === "dead-end") return false;
@@ -4191,22 +4067,20 @@ function LeadCard({
     "dead-end": "DEAD END",
   };
 
-  const tagColors: Record<string, string> = {
-    blue: "bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-950/20 dark:text-blue-400 dark:border-blue-900/30",
-    gray: "bg-stone-50 text-stone-600 border-stone-200 dark:bg-stone-900/50 dark:text-stone-400 dark:border-stone-800",
-    yellow:
-      "bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-400 dark:border-amber-900/30",
-    indigo:
-      "bg-indigo-50 text-indigo-700 border-indigo-200 dark:bg-indigo-950/20 dark:text-indigo-400 dark:border-indigo-900/30",
-    emerald:
-      "bg-emerald-50 text-emerald-700 border-emerald-200 dark:bg-emerald-950/20 dark:text-emerald-400 dark:border-emerald-900/30",
-    teal: "bg-teal-50 text-teal-700 border-teal-200 dark:bg-teal-950/20 dark:text-teal-400 dark:border-teal-900/30",
-    red: "bg-red-50 text-red-700 border-red-200 dark:bg-red-950/20 dark:text-red-400 dark:border-red-900/30",
-    purple:
-      "bg-purple-50 text-purple-700 border-purple-200 dark:bg-purple-950/20 dark:text-purple-400 dark:border-purple-900/30",
-    pink: "bg-pink-50 text-pink-700 border-pink-200 dark:bg-pink-950/20 dark:text-pink-400 dark:border-pink-900/30",
-    orange:
-      "bg-orange-50 text-orange-750 border-orange-200 dark:bg-orange-950/20 dark:text-orange-400 dark:border-orange-900/30",
+  const tagBarColors: Record<string, string> = {
+    blue: "bg-blue-500",
+    gray: "bg-stone-400",
+    yellow: "bg-amber-500",
+    indigo: "bg-indigo-500",
+    emerald: "bg-emerald-500",
+    teal: "bg-teal-500",
+    red: "bg-red-500",
+    purple: "bg-purple-500",
+    pink: "bg-pink-500",
+    orange: "bg-orange-500",
+    sky: "bg-sky-500",
+    lime: "bg-lime-500",
+    rose: "bg-rose-500",
   };
 
   return (
@@ -4215,21 +4089,19 @@ function LeadCard({
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", lead.id);
       }}
-      className="group relative rounded-lg border border-stone-200 bg-white p-2.5 shadow-sm transition hover:border-teal-350 hover:shadow-md flex flex-col justify-between min-h-[90px] cursor-grab active:cursor-grabbing"
+      className="group relative min-h-[72px] cursor-grab rounded-md border border-stone-200 bg-white p-2 shadow-sm transition hover:border-teal-300 hover:shadow-md active:cursor-grabbing dark:border-stone-800 dark:bg-stone-950"
     >
-      {/* Top action icons positioned top-right on hover (vertical layout with colors) */}
-      <div className="absolute top-2 right-2 flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/95 backdrop-blur-sm border border-stone-200 shadow-sm rounded-md p-1 z-10">
+      <div className="absolute right-1.5 top-1.5 z-10 flex gap-0.5 rounded-md border border-stone-200 bg-white/95 p-0.5 opacity-0 shadow-sm backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100 dark:border-stone-800 dark:bg-stone-950/95">
         {nextStatus && (
           <button
             type="button"
             title="Avancer"
             onClick={() => onMove(lead, nextStatus)}
-            className="flex h-6 w-6 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 transition-colors"
+            className="flex h-5 w-5 items-center justify-center rounded text-emerald-600 transition-colors hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/40"
           >
-            <MoveRight className="h-3.5 w-3.5" />
+            <MoveRight className="h-3 w-3" />
           </button>
         )}
-        {/* Drive folder button — green if folder exists, grey if not */}
         <button
           type="button"
           title={
@@ -4241,119 +4113,91 @@ function LeadCard({
             e.stopPropagation();
             onDriveClick(lead);
           }}
-          className={`flex h-6 w-6 items-center justify-center rounded transition-colors ${
+          className={`flex h-5 w-5 items-center justify-center rounded transition-colors ${
             lead.driveFolderUrl
-              ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700"
-              : "text-stone-400 hover:bg-stone-50 hover:text-stone-600"
+              ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/40"
+              : "text-stone-400 hover:bg-stone-50 hover:text-stone-600 dark:hover:bg-stone-900"
           }`}
         >
-          <FolderOpen className="h-3.5 w-3.5" />
+          <FolderOpen className="h-3 w-3" />
         </button>
         <button
           type="button"
           title="Relance IA"
           onClick={() => onGenerateDraft(lead)}
-          className="flex h-6 w-6 items-center justify-center rounded text-blue-600 hover:bg-blue-50 hover:text-blue-700 transition-colors"
+          className="flex h-5 w-5 items-center justify-center rounded text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-950/40"
         >
-          <Bot className="h-3.5 w-3.5" />
+          <Bot className="h-3 w-3" />
         </button>
         <button
           type="button"
           title="Supprimer"
           onClick={() => onDelete(lead.id)}
-          className="flex h-6 w-6 items-center justify-center rounded text-red-650 hover:bg-red-50 hover:text-red-700 transition-colors"
+          className="flex h-5 w-5 items-center justify-center rounded text-red-650 transition-colors hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/40"
         >
-          <Trash2 className="h-3.5 w-3.5" />
+          <Trash2 className="h-3 w-3" />
         </button>
       </div>
 
       <button
         type="button"
-        className="w-full text-left flex flex-col justify-between h-full"
+        className="flex h-full w-full flex-col justify-between text-left"
         onClick={onSelect}
       >
-        <div className="space-y-1">
-          {/* Topic / Project - with padding-right to avoid overlap with top-right vertical action box */}
-          <p className="text-[13px] font-bold leading-snug text-stone-950 line-clamp-2 pr-8 group-hover:text-teal-850 transition-colors">
-            {lead.topic}
-          </p>
-
-          {/* Tags */}
-          {lead.tags && lead.tags.length > 0 && (
-            <div className="flex flex-wrap gap-1 py-0.5">
-              {lead.tags.map((t) => (
+        <div className="min-w-0">
+          {lead.tags && lead.tags.length > 0 ? (
+            <div className="mb-1 flex gap-1 pr-12">
+              {lead.tags.slice(0, 3).map((tag) => (
                 <span
-                  key={t.id}
-                  className={`inline-flex items-center rounded-full border px-1.5 py-0.2 text-[9px] font-bold ${
-                    tagColors[t.color] ||
-                    "bg-stone-50 text-stone-650 border-stone-200"
+                  aria-label={tag.name}
+                  className={`h-1.5 min-w-8 flex-1 rounded-full ${
+                    tagBarColors[tag.color] ?? "bg-stone-400"
                   }`}
-                >
-                  {t.name}
-                </span>
+                  key={tag.id}
+                />
               ))}
             </div>
-          )}
+          ) : null}
 
-          {/* Company */}
-          {companyLine && (
-            <p className="flex items-center gap-1 text-[11px] text-stone-600 font-semibold truncate pr-2">
-              <Building2 className="h-3 w-3 text-stone-400 flex-shrink-0" />
-              <span className="truncate">{companyLine}</span>
-            </p>
-          )}
+          <p className="truncate pr-10 text-[12px] font-semibold leading-tight text-stone-950 transition-colors group-hover:text-teal-800 dark:text-stone-50 dark:group-hover:text-teal-300">
+            {companyName}
+          </p>
 
-          {/* Contact */}
-          {contactLine && (
-            <p className="flex items-center gap-1 text-[11px] text-stone-500 font-medium truncate pr-2">
-              <User className="h-3 w-3 text-stone-400 flex-shrink-0" />
-              <span className="truncate">{contactLine}</span>
+          <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] font-medium text-stone-600 dark:text-stone-300">
+            <User className="h-3 w-3 shrink-0 text-stone-400" />
+            <span className="truncate">{contactName}</span>
+          </p>
+
+          {showProject ? (
+            <p className="mt-0.5 truncate text-[10px] leading-tight text-stone-500 dark:text-stone-400">
+              {lead.topic}
             </p>
-          )}
+          ) : null}
         </div>
 
-        {/* Footer info: Date limit and Status Dot - aligned in the same position on every card */}
-        <div className="mt-2 flex flex-col gap-1.5 border-t border-stone-50 pt-1.5 w-full">
-          <div className="flex items-center justify-between">
-            {lead.assignedToName ? (
-              <span className="inline-flex items-center gap-1 rounded bg-stone-50 dark:bg-stone-900 px-1 py-0.5 text-[9px] font-bold text-stone-650 dark:text-stone-300 border border-stone-200 dark:border-stone-850">
-                <span className="flex h-3 w-3 items-center justify-center rounded-full bg-teal-600 text-[8px] font-bold text-white">
-                  {lead.assignedToName.charAt(0).toUpperCase()}
-                </span>
-                {lead.assignedToName}
-              </span>
-            ) : (
-              <span className="text-[9px] text-stone-400 italic">
-                Non assigné
-              </span>
-            )}
-
-            {/* Visual Status Dot */}
-            <div className="flex items-center gap-1 shrink-0">
-              <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
-              <span className="text-[9px] text-stone-650 uppercase font-bold tracking-tight">
-                {statusLabels[lead.status] || lead.status}
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center justify-between">
-            {lead.leadDate ? (
-              <span
-                className={`inline-flex items-center gap-1 text-[9px] font-semibold px-1.5 py-0.3 rounded border ${
-                  isOverdue
-                    ? "text-red-700 bg-red-50 border-red-200/50 animate-pulse"
-                    : "text-amber-700 bg-amber-50 border-amber-200/40"
-                }`}
-              >
-                <Calendar className="h-2.5 w-2.5" />
+        <div className="mt-1.5 flex items-center justify-between gap-1 border-t border-stone-100 pt-1 dark:border-stone-900">
+          {lead.leadDate ? (
+            <span
+              className={`inline-flex min-w-0 items-center gap-1 truncate rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
+                isOverdue
+                  ? "border-red-200/70 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300"
+                  : "border-amber-200/60 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/25 dark:text-amber-300"
+              }`}
+            >
+              <Calendar className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">
                 {formatLeadDateForDisplay(lead.leadDate)}
               </span>
-            ) : (
-              <span className="text-[9px] text-stone-400 italic">
-                Pas de date
-              </span>
-            )}
+            </span>
+          ) : (
+            <span />
+          )}
+
+          <div className="flex shrink-0 items-center gap-1">
+            <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
+            <span className="text-[9px] font-bold uppercase tracking-tight text-stone-600 dark:text-stone-400">
+              {statusLabels[lead.status] || lead.status}
+            </span>
           </div>
         </div>
       </button>
