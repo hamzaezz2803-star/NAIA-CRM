@@ -12,6 +12,7 @@ import {
   type CrmLeadStatus,
 } from "@/features/crm/contracts";
 import {
+  inferCrmStatus,
   orchestrateNaiaCommand,
   type NaiaOrchestrationResult,
   type NaiaActionDraft,
@@ -280,7 +281,7 @@ async function executeAction({
       action,
       execution: response.success ? "applied" : "failed",
       message: response.success
-        ? "Statut CRM applique sans action provider externe."
+        ? "Statut CRM appliqué sans action provider externe."
         : (response.error ?? "Action CRM impossible."),
       success: response.success,
     });
@@ -327,9 +328,9 @@ async function executeAction({
     if (response.success && leadDraft.leadDate) {
       calendarMessage = response.calendarSynced
         ? response.calendarLink
-          ? ` Adam a verifie Google Calendar et cree l'evenement: ${response.calendarLink}`
-          : " Adam a verifie Google Calendar."
-        : ` Adam n'a pas pu creer l'evenement Calendar: ${response.calendarError ?? "connexion Google a verifier"}`;
+          ? ` Adam a vérifié Google Calendar et créé l'événement: ${response.calendarLink}`
+          : " Adam a vérifié Google Calendar."
+        : ` Adam n'a pas pu créer l'événement Calendar: ${response.calendarError ?? "connexion Google à vérifier"}`;
     }
 
     return Response.json({
@@ -338,8 +339,8 @@ async function executeAction({
       execution: response.success ? "applied" : "failed",
       lead: response.lead,
       message: response.success
-        ? `Lead CRM cree.${calendarMessage}`
-        : (response.error ?? "Creation du lead impossible."),
+        ? `Lead CRM créé.${calendarMessage}`
+        : (response.error ?? "Création du lead impossible."),
       success: response.success,
     });
   }
@@ -349,7 +350,7 @@ async function executeAction({
       action,
       execution: "prepared",
       message:
-        "Adam passera par le lead CRM valide pour verifier les disponibilites Google Calendar et creer l'evenement. Valide d'abord l'action Salma si le lead n'existe pas encore.",
+        "Adam passera par le lead CRM validé pour vérifier les disponibilités Google Calendar et créer l'événement. Valide d'abord l'action Salma si le lead n'existe pas encore.",
       success: true,
     });
   }
@@ -359,7 +360,7 @@ async function executeAction({
       action,
       execution: "prepared",
       message:
-        "Mission dev preparee. L'etape suivante doit creer une branche, une specification et une revue avant implementation.",
+        "Mission dev préparée. L'étape suivante doit créer une branche, une spécification et une revue avant implémentation.",
       success: true,
     });
   }
@@ -424,6 +425,7 @@ async function hydrateCrmLeadDrafts({
   }
 
   const extracted = await extractLeadDraft(command);
+  const inferredStatus = inferCrmStatus(command);
 
   const hasCalendarAction = result.actions.some(
     (action) => action.kind === "calendar.scheduleMeeting",
@@ -451,10 +453,11 @@ async function hydrateCrmLeadDrafts({
       return {
         ...action,
         description:
-          "Selma a pre-rempli le formulaire CRM depuis la meme extraction IA que le module Leads.",
+          "Salma a pré-rempli le formulaire CRM depuis la même extraction IA que le module Leads.",
         payload: sanitizeLeadDraft({
           ...action.payload,
           ...extracted,
+          status: inferredStatus ?? extracted.status ?? action.payload.status,
           notes: extracted.notes
             ? [extracted.notes, `Commande NAIA: ${command}`].join("\n")
             : action.payload.notes,
@@ -462,8 +465,8 @@ async function hydrateCrmLeadDrafts({
       };
     }),
     response: hasCalendarAction
-      ? "Salma prend le relais CRM et Adam prepare le calendrier. J'ai pre-rempli le lead; valide-le pour l'ecrire en meeting booked dans le pipeline et laisser Adam verifier Google Calendar avant de creer l'evenement."
-      : "Salma prend le relais CRM. J'ai pre-rempli le formulaire du lead avec l'extraction IA. Verifie les champs, puis clique sur \"Valider et creer le lead\" pour l'ecrire dans le pipeline.",
+      ? "Salma prend le relais CRM et Adam prépare le calendrier. J'ai pré-rempli le lead; valide-le pour l'écrire en meeting booked dans le pipeline et laisser Adam vérifier Google Calendar avant de créer l'événement."
+      : "Salma prend le relais CRM. J'ai pré-rempli le formulaire du lead avec l'extraction IA. Vérifie les champs, puis clique sur \"Valider et créer le lead\" pour l'écrire dans le pipeline.",
   };
 }
 

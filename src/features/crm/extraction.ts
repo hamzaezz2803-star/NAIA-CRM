@@ -81,7 +81,6 @@ export function inferLeadStatusFromNaturalText(input: {
   status?: unknown;
 }): CrmLeadStatus | undefined {
   const explicitStatus = normalizeCrmLeadStatus(input.status);
-  if (explicitStatus) return explicitStatus;
 
   const content = normalizeText(
     [
@@ -95,7 +94,11 @@ export function inferLeadStatusFromNaturalText(input: {
       .join(" "),
   );
 
-  if (!content) return undefined;
+  if (!content) return explicitStatus;
+
+  if (explicitStatus && explicitStatus !== "lead-to-contact") {
+    return explicitStatus;
+  }
 
   if (
     /\b(meeting|rdv|rendez vous|rendez-vous|demo|démo|call|appel|visio|reunion|réunion)\b/.test(

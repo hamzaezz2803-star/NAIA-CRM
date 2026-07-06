@@ -207,6 +207,10 @@ describe("NAIA orchestrator", () => {
   it("infers CRM pipeline statuses from French commands", () => {
     expect(inferCrmStatus("mets Atlas en propale")).toBe("proposal-sent");
     expect(inferCrmStatus("relance Medina demain")).toBe("to-follow-up");
+    expect(inferCrmStatus("j'ai parlé à Nadia de Banque Centrale")).toBe(
+      "contacted",
+    );
+    expect(inferCrmStatus("j'ai contacté Abdeslam de HPS")).toBe("contacted");
     expect(inferCrmStatus("client signe")).toBe("won");
   });
 });

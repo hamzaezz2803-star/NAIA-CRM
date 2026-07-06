@@ -93,13 +93,13 @@ export type NaiaOrchestrationResult = {
 };
 
 const crmStatusLabels: Record<CrmLeadStatus, string> = {
-  contacted: "Contacte",
+  contacted: "Contacté",
   "dead-end": "Dead end",
-  "lead-to-contact": "A contacter",
-  "meeting-booked": "Meeting fixe",
-  "proposal-sent": "Proposition envoyee",
-  "to-follow-up": "A relancer",
-  won: "Gagne",
+  "lead-to-contact": "À contacter",
+  "meeting-booked": "Meeting fixé",
+  "proposal-sent": "Proposition envoyée",
+  "to-follow-up": "À relancer",
+  won: "Gagné",
 };
 
 export function orchestrateNaiaCommand({
@@ -292,7 +292,24 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
     return "to-follow-up";
   }
 
-  if (includesAny(normalized, ["contacte", "appele", "joint"])) {
+  if (
+    includesAny(normalized, [
+      "contacte",
+      "appele",
+      "joint",
+      "parle",
+      "discute",
+      "echange",
+      "rencontre",
+      "talked",
+      "spoke",
+      "contacted",
+      "called",
+      "discussed",
+      "exchanged",
+      "met with",
+    ])
+  ) {
     return "contacted";
   }
 

@@ -28,4 +28,13 @@ describe("CRM natural language status inference", () => {
       }),
     ).toBe("contacted");
   });
+
+  it("overrides a generic model status when the text says the prospect was contacted", () => {
+    expect(
+      inferLeadStatusFromNaturalText({
+        status: "lead-to-contact",
+        text: "J'ai contacté Abdeslam de HPS au sujet du LLM de Mistral.",
+      }),
+    ).toBe("contacted");
+  });
 });
