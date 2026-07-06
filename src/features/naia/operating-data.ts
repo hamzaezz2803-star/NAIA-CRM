@@ -209,6 +209,145 @@ export const cashMonths = [
     balance: 675000,
     risk: "medium" as RiskLevel,
   },
+  {
+    month: "Dec.",
+    inflow: 360000,
+    outflow: 520000,
+    balance: 515000,
+    risk: "medium" as RiskLevel,
+  },
+  {
+    month: "Jan.",
+    inflow: 780000,
+    outflow: 480000,
+    balance: 815000,
+    risk: "low" as RiskLevel,
+  },
+  {
+    month: "Fev.",
+    inflow: 330000,
+    outflow: 500000,
+    balance: 645000,
+    risk: "medium" as RiskLevel,
+  },
+  {
+    month: "Mar.",
+    inflow: 690000,
+    outflow: 535000,
+    balance: 800000,
+    risk: "low" as RiskLevel,
+  },
+  {
+    month: "Avr.",
+    inflow: 420000,
+    outflow: 570000,
+    balance: 650000,
+    risk: "medium" as RiskLevel,
+  },
+  {
+    month: "Mai",
+    inflow: 820000,
+    outflow: 610000,
+    balance: 860000,
+    risk: "low" as RiskLevel,
+  },
+  {
+    month: "Juin",
+    inflow: 480000,
+    outflow: 590000,
+    balance: 750000,
+    risk: "medium" as RiskLevel,
+  },
+];
+
+export const clientCashRows = [
+  {
+    client: "Atlas Process",
+    owner: "Ali",
+    status: "on-track",
+    monthlyCash: [126000, 0, 168000, 0, 126000, 0, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    client: "Medina Health",
+    owner: "Nabil",
+    status: "late",
+    monthlyCash: [0, 78000, 0, 78000, 0, 104000, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    client: "Sahara Logistics",
+    owner: "Ali",
+    status: "at-risk",
+    monthlyCash: [153000, 0, 204000, 0, 0, 153000, 0, 0, 0, 0, 0, 0],
+  },
+  {
+    client: "Argan Retail",
+    owner: "Nabil",
+    status: "forecast",
+    monthlyCash: [0, 0, 93000, 124000, 0, 93000, 0, 0, 0, 0, 0, 0],
+  },
+];
+
+export const opexRows = [
+  {
+    label: "Salaires delivery",
+    monthlyCash: [
+      185000, 205000, 230000, 250000, 250000, 270000, 285000, 285000, 305000,
+      305000, 325000, 325000,
+    ],
+  },
+  {
+    label: "Abonnements IA",
+    monthlyCash: [
+      42000, 44000, 48000, 51000, 53000, 56000, 58000, 60000, 62000, 64000,
+      66000, 68000,
+    ],
+  },
+  {
+    label: "Loyers & bureaux",
+    monthlyCash: [
+      58000, 58000, 58000, 58000, 58000, 58000, 58000, 58000, 58000, 58000,
+      58000, 58000,
+    ],
+  },
+  {
+    label: "Cloud & infra",
+    monthlyCash: [
+      31000, 36000, 42000, 46000, 49000, 53000, 55000, 58000, 62000, 64000,
+      68000, 70000,
+    ],
+  },
+];
+
+export const capexRows = [
+  {
+    label: "Postes & devices",
+    monthlyCash: [0, 42000, 0, 0, 56000, 0, 0, 0, 62000, 0, 0, 0],
+  },
+  {
+    label: "Setups client / lab IA",
+    monthlyCash: [0, 0, 68000, 0, 0, 72000, 0, 0, 0, 80000, 0, 0],
+  },
+];
+
+export const clientRelances = [
+  {
+    client: "Medina Health",
+    amount: 78000,
+    dueDate: "08/07",
+    reason: "Jalon 30% non regle apres atelier RH.",
+  },
+  {
+    client: "Sahara Logistics",
+    amount: 153000,
+    dueDate: "22/07",
+    reason: "Validation data warehouse a confirmer avant facturation.",
+  },
+  {
+    client: "Argan Retail",
+    amount: 93000,
+    dueDate: "10/09",
+    reason: "Meeting booke, acompte a declencher si scope confirme.",
+  },
 ];
 
 export const costs = [
@@ -290,45 +429,181 @@ export const projects = [
     project: "Finance OS",
     start: 0,
     duration: 3,
+    startDate: "01/07/2026",
+    endDate: "30/09/2026",
     progress: 68,
     risk: "medium" as RiskLevel,
     blocker: "Validation facture et integration ERP",
     month: "Aout",
     useCases: ["Cash forecast", "Relances", "Dashboard CFO"],
+    useCaseDetails: [
+      {
+        name: "Cash forecast",
+        startDate: "01/07/2026",
+        endDate: "31/07/2026",
+        progress: 85,
+      },
+      {
+        name: "Relances",
+        startDate: "15/07/2026",
+        endDate: "31/08/2026",
+        progress: 62,
+      },
+      {
+        name: "Dashboard CFO",
+        startDate: "01/08/2026",
+        endDate: "30/09/2026",
+        progress: 44,
+      },
+    ],
   },
   {
     client: "Medina Health",
     project: "RH copilot",
     start: 1,
     duration: 4,
+    startDate: "01/08/2026",
+    endDate: "30/11/2026",
     progress: 41,
     risk: "high" as RiskLevel,
     blocker: "Sponsor metier peu disponible",
     month: "Sept.",
     useCases: ["Job matching", "Tests", "Entretiens"],
+    useCaseDetails: [
+      {
+        name: "Job matching",
+        startDate: "01/08/2026",
+        endDate: "31/08/2026",
+        progress: 55,
+      },
+      {
+        name: "Tests techniques",
+        startDate: "01/09/2026",
+        endDate: "15/10/2026",
+        progress: 35,
+      },
+      {
+        name: "Entretiens",
+        startDate: "15/10/2026",
+        endDate: "30/11/2026",
+        progress: 18,
+      },
+    ],
   },
   {
     client: "Sahara Logistics",
     project: "Delivery cockpit",
     start: 0,
     duration: 5,
+    startDate: "01/07/2026",
+    endDate: "30/11/2026",
     progress: 52,
     risk: "high" as RiskLevel,
     blocker: "Dependance data warehouse",
     month: "Oct.",
     useCases: ["Gantt", "Retards", "Capacite"],
+    useCaseDetails: [
+      {
+        name: "Gantt delivery",
+        startDate: "01/07/2026",
+        endDate: "31/08/2026",
+        progress: 76,
+      },
+      {
+        name: "Retards",
+        startDate: "01/08/2026",
+        endDate: "31/10/2026",
+        progress: 48,
+      },
+      {
+        name: "Capacite",
+        startDate: "01/09/2026",
+        endDate: "30/11/2026",
+        progress: 24,
+      },
+    ],
   },
   {
     client: "Argan Retail",
     project: "CRM automation",
     start: 2,
     duration: 3,
+    startDate: "01/09/2026",
+    endDate: "30/11/2026",
     progress: 24,
     risk: "medium" as RiskLevel,
     blocker: "Segmentation client a confirmer",
     month: "Sept.",
     useCases: ["Lead scoring", "Propales", "Follow-up"],
+    useCaseDetails: [
+      {
+        name: "Lead scoring",
+        startDate: "01/09/2026",
+        endDate: "30/09/2026",
+        progress: 31,
+      },
+      {
+        name: "Propales",
+        startDate: "15/09/2026",
+        endDate: "31/10/2026",
+        progress: 18,
+      },
+      {
+        name: "Follow-up",
+        startDate: "01/10/2026",
+        endDate: "30/11/2026",
+        progress: 9,
+      },
+    ],
   },
+  {
+    client: "HPS",
+    project: "Local LLM use cases",
+    start: 4,
+    duration: 4,
+    startDate: "01/11/2026",
+    endDate: "28/02/2027",
+    progress: 0,
+    risk: "medium" as RiskLevel,
+    blocker: "A confirmer apres pitch et cadrage avec Mistral",
+    month: "Dec.",
+    useCases: ["Use case discovery", "RAG interne", "Copilot support"],
+    useCaseDetails: [
+      {
+        name: "Use case discovery",
+        startDate: "01/11/2026",
+        endDate: "30/11/2026",
+        progress: 0,
+      },
+      {
+        name: "RAG interne",
+        startDate: "01/12/2026",
+        endDate: "31/01/2027",
+        progress: 0,
+      },
+      {
+        name: "Copilot support",
+        startDate: "15/01/2027",
+        endDate: "28/02/2027",
+        progress: 0,
+      },
+    ],
+  },
+];
+
+export const projectTimelineMonths = [
+  "Juil.",
+  "Aout",
+  "Sept.",
+  "Oct.",
+  "Nov.",
+  "Dec.",
+  "Jan.",
+  "Fev.",
+  "Mar.",
+  "Avr.",
+  "Mai",
+  "Juin",
 ];
 
 export const hiringNeeds = [
@@ -352,6 +627,52 @@ export const hiringNeeds = [
     load: "0.5 ETP",
     reason: "Stabiliser workflows vocaux, emails et integrations CRM.",
     status: "Annonce draft",
+  },
+];
+
+export const staffingPlan = [
+  {
+    project: "Finance OS",
+    person: "Hamza",
+    role: "Full-stack",
+    start: 0,
+    duration: 3,
+    needsRecruitment: false,
+  },
+  {
+    project: "RH copilot",
+    person: "Wissal",
+    role: "Automation",
+    start: 1,
+    duration: 4,
+    needsRecruitment: true,
+    linkedNeed: "Automation QA",
+  },
+  {
+    project: "Delivery cockpit",
+    person: "Ali",
+    role: "AI Delivery Lead",
+    start: 0,
+    duration: 5,
+    needsRecruitment: true,
+    linkedNeed: "AI Delivery Lead",
+  },
+  {
+    project: "CRM automation",
+    person: "Nabil",
+    role: "Product / Sales",
+    start: 2,
+    duration: 3,
+    needsRecruitment: false,
+  },
+  {
+    project: "Local LLM use cases",
+    person: "A recruter",
+    role: "Full-stack Next.js",
+    start: 4,
+    duration: 4,
+    needsRecruitment: true,
+    linkedNeed: "Full-stack Next.js",
   },
 ];
 
@@ -446,6 +767,11 @@ export function buildNaiaContext(sectionId: NaiaSectionId) {
     paymentPlans,
     pipeline,
     projects,
+    clientCashRows,
+    clientRelances,
+    opexRows,
+    capexRows,
     hiringNeeds,
+    staffingPlan,
   };
 }

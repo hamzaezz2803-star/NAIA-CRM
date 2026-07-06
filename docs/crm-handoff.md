@@ -172,6 +172,9 @@ Safe defaults:
 - Treat prospect/client meetings as CRM-first. A command like "j'ai parlé à X de Y, meeting vendredi" should create or update the CRM lead in `meeting-booked`; Adam/Meetings then checks Google Calendar from that validated lead context.
 - For leads with a planned meeting date, Calendar sync must check Google FreeBusy before event creation and return a suggested alternative if the requested slot is busy.
 - Trigger Google Calendar only after an explicit UI validation step, either through `syncLeadToGoogleCalendarAction()` or the validated NAIA lead creation flow.
+- Create Drive client folders under the private Ali/Nabil `Client development > Pitch`
+  parent (`GOOGLE_DRIVE_CLIENT_FOLDER_PARENT_ID`), not the earlier shared
+  Hamza folder. Keep pitch and proposal IP scoped to co-founder access.
 - Keep provider actions such as email, WhatsApp, Google Drive, Calendar sync,
   and delete flows behind a human approval foundation.
 - Treat `viewer` as read-only. CRM insert/update policies use
@@ -179,9 +182,9 @@ Safe defaults:
   write records.
 
 When a lead moves to `meeting-booked`, NAIA prepares a decision-maker pitch
-next action. When a lead moves to `proposal-sent`, NAIA prepares the proposal
-next action. The CRM action itself remains organization-scoped through the
-existing CRM server actions.
+through Maya / Docs Generator. When a lead moves to `proposal-sent`, Maya
+prepares the proposal next action. The CRM action itself remains
+organization-scoped through the existing CRM server actions.
 
 NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
 client sends only the original command, action id, and approval token. Do not

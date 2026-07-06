@@ -1,5 +1,5 @@
 import { NaiaExperience } from "@/features/naia/naia-experience";
 
 export default function ProjectsPage() {
-  return <NaiaExperience sectionId="projects" />;
+  return <NaiaExperience focusMode sectionId="projects" />;
 }

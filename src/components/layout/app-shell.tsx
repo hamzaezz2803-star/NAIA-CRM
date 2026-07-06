@@ -41,6 +41,7 @@ import React, {
 
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { NaiaFloatingAssistant } from "@/features/naia/naia-floating-assistant";
 import { cn } from "@/lib/cn";
 import type { AppSession } from "@/platform/auth/session";
 import type { PlatformModule, PlatformModuleId } from "@/platform/core/modules";
@@ -75,10 +76,14 @@ export function AppShell({
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const isCrmPipelinePage =
+  const isNaiaHomePage = pathname === "/naia" || pathname === "/dashboard/naia";
+  const isFullBleedPage =
     pathname === "/dashboard/leads" ||
     pathname === "/crm" ||
-    pathname === "/naia/crm";
+    pathname === "/naia/crm" ||
+    pathname === "/finance" ||
+    pathname === "/projects" ||
+    pathname === "/hr";
 
   // Profile Popover state
   const [isProfileOpen, setIsProfileOpen] = useState(false);
@@ -113,165 +118,176 @@ export function AppShell({
 
   return (
     <div className="min-h-screen bg-stone-50 text-stone-950 transition-colors duration-200">
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-30 hidden border-r border-stone-200 bg-white lg:flex lg:flex-col transition-all duration-300",
-          isCollapsed ? "w-20" : "w-72",
-        )}
-      >
-        <ShellSidebar
-          modules={modules}
-          pathname={pathname}
-          isCollapsed={isCollapsed}
-          onToggleCollapse={() => setIsCollapsed(!isCollapsed)}
-        />
-      </aside>
+      {isNaiaHomePage ? null : (
+        <aside
+          className={cn(
+            "fixed inset-y-0 left-0 z-30 hidden border-r border-stone-200 bg-white lg:flex lg:flex-col transition-all duration-300",
+            isCollapsed ? "w-20" : "w-72",
+          )}
+        >
+          <ShellSidebar
+            modules={modules}
+            pathname={pathname}
+            isCollapsed={isCollapsed}
+            onToggleCollapse={() => setIsCollapsed(!isCollapsed)}
+          />
+        </aside>
+      )}
 
-      <div
-        className={cn(
-          "fixed inset-0 z-40 bg-stone-950/30 transition lg:hidden",
-          isMobileOpen ? "block" : "hidden",
-        )}
-        onClick={() => setIsMobileOpen(false)}
-      />
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 w-80 max-w-[88vw] border-r border-stone-200 bg-white transition-transform lg:hidden",
-          isMobileOpen ? "translate-x-0" : "-translate-x-full",
-        )}
-      >
-        <div className="flex h-16 items-center justify-between border-b border-stone-200 px-4">
-          <Brand isCollapsed={false} />
-          <Button
-            aria-label="Close navigation"
-            className="h-9 w-9 px-0"
+      {isNaiaHomePage ? null : (
+        <>
+          <div
+            className={cn(
+              "fixed inset-0 z-40 bg-stone-950/30 transition lg:hidden",
+              isMobileOpen ? "block" : "hidden",
+            )}
             onClick={() => setIsMobileOpen(false)}
-            variant="ghost"
+          />
+          <aside
+            className={cn(
+              "fixed inset-y-0 left-0 z-50 w-80 max-w-[88vw] border-r border-stone-200 bg-white transition-transform lg:hidden",
+              isMobileOpen ? "translate-x-0" : "-translate-x-full",
+            )}
           >
-            <X className="h-5 w-5" />
-          </Button>
-        </div>
-        <ShellSidebar
-          modules={modules}
-          onNavigate={() => setIsMobileOpen(false)}
-          pathname={pathname}
-          showBrand={false}
-          isCollapsed={false}
-        />
-      </aside>
+            <div className="flex h-16 items-center justify-between border-b border-stone-200 px-4">
+              <Brand isCollapsed={false} />
+              <Button
+                aria-label="Close navigation"
+                className="h-9 w-9 px-0"
+                onClick={() => setIsMobileOpen(false)}
+                variant="ghost"
+              >
+                <X className="h-5 w-5" />
+              </Button>
+            </div>
+            <ShellSidebar
+              modules={modules}
+              onNavigate={() => setIsMobileOpen(false)}
+              pathname={pathname}
+              showBrand={false}
+              isCollapsed={false}
+            />
+          </aside>
+        </>
+      )}
 
       <div
         className={cn(
           "transition-all duration-300",
-          isCollapsed ? "lg:pl-20" : "lg:pl-72",
+          !isNaiaHomePage && (isCollapsed ? "lg:pl-20" : "lg:pl-72"),
         )}
       >
-        <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-stone-200 bg-white/92 px-4 backdrop-blur md:px-6">
-          <div className="flex items-center gap-3">
-            <Button
-              aria-label="Open navigation"
-              className="h-9 w-9 px-0 lg:hidden"
-              onClick={() => setIsMobileOpen(true)}
-              variant="ghost"
-            >
-              <Menu className="h-5 w-5" />
-            </Button>
-            <div>
-              <p className="text-sm font-semibold text-stone-950">
-                {session.organization.name}
-              </p>
-              <p className="hidden text-xs text-stone-500 sm:block">
-                Signed in with Supabase
-              </p>
-            </div>
-          </div>
-          <div className="flex items-center gap-2">
-            <NotificationBell />
-            <Button
-              aria-label="Toggle theme"
-              className="h-9 w-9 px-0"
-              onClick={toggleTheme}
-              variant="ghost"
-            >
-              {theme === "dark" ? (
-                <Sun className="h-4.5 w-4.5" />
-              ) : (
-                <Moon className="h-4.5 w-4.5" />
-              )}
-            </Button>
-
-            {/* Profile Dropdown */}
-            <div className="relative ml-2" ref={profileRef}>
-              <button
-                onClick={() => setIsProfileOpen(!isProfileOpen)}
-                className="flex h-10 items-center gap-2 rounded-md px-2 text-left transition hover:bg-stone-100 dark:hover:bg-stone-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+        {isNaiaHomePage ? null : (
+          <header className="sticky top-0 z-20 flex h-16 items-center justify-between border-b border-stone-200 bg-white/92 px-4 backdrop-blur md:px-6">
+            <div className="flex items-center gap-3">
+              <Button
+                aria-label="Open navigation"
+                className="h-9 w-9 px-0 lg:hidden"
+                onClick={() => setIsMobileOpen(true)}
+                variant="ghost"
               >
-                <span className="flex h-8 w-8 items-center justify-center rounded-md bg-stone-950 dark:bg-stone-200 text-xs font-semibold text-white dark:text-stone-950">
-                  {session.user.name.charAt(0).toUpperCase()}
-                </span>
-                <span className="hidden sm:block">
-                  <span className="block text-sm font-medium text-stone-950">
-                    {session.user.name}
-                  </span>
-                  <span className="block text-xs capitalize text-stone-500">
-                    {session.user.role}
-                  </span>
-                </span>
-                <ChevronDown className="hidden h-4 w-4 text-stone-500 sm:block" />
-              </button>
+                <Menu className="h-5 w-5" />
+              </Button>
+              <div>
+                <p className="text-sm font-semibold text-stone-950">
+                  {session.organization.name}
+                </p>
+                <p className="hidden text-xs text-stone-500 sm:block">
+                  Signed in with Supabase
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <NotificationBell />
+              <Button
+                aria-label="Toggle theme"
+                className="h-9 w-9 px-0"
+                onClick={toggleTheme}
+                variant="ghost"
+              >
+                {theme === "dark" ? (
+                  <Sun className="h-4.5 w-4.5" />
+                ) : (
+                  <Moon className="h-4.5 w-4.5" />
+                )}
+              </Button>
 
-              {isProfileOpen && (
-                <div className="absolute right-0 mt-2 w-64 origin-top-right rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950 p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-200 z-50">
-                  <div className="mb-2 flex items-center gap-3 border-b border-stone-100 dark:border-stone-800 p-3">
-                    <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal-100 dark:bg-teal-900/50 text-sm font-bold text-teal-800 dark:text-teal-400">
-                      {session.user.name.charAt(0).toUpperCase()}
+              {/* Profile Dropdown */}
+              <div className="relative ml-2" ref={profileRef}>
+                <button
+                  onClick={() => setIsProfileOpen(!isProfileOpen)}
+                  className="flex h-10 items-center gap-2 rounded-md px-2 text-left transition hover:bg-stone-100 dark:hover:bg-stone-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                >
+                  <span className="flex h-8 w-8 items-center justify-center rounded-md bg-stone-950 dark:bg-stone-200 text-xs font-semibold text-white dark:text-stone-950">
+                    {session.user.name.charAt(0).toUpperCase()}
+                  </span>
+                  <span className="hidden sm:block">
+                    <span className="block text-sm font-medium text-stone-950">
+                      {session.user.name}
                     </span>
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
-                        {session.user.name}
-                      </p>
-                      <p className="truncate text-xs text-stone-500">
-                        {session.user.email}
-                      </p>
+                    <span className="block text-xs capitalize text-stone-500">
+                      {session.user.role}
+                    </span>
+                  </span>
+                  <ChevronDown className="hidden h-4 w-4 text-stone-500 sm:block" />
+                </button>
+
+                {isProfileOpen && (
+                  <div className="absolute right-0 mt-2 w-64 origin-top-right rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950 p-2 shadow-xl ring-1 ring-black/5 animate-in fade-in zoom-in-95 duration-200 z-50">
+                    <div className="mb-2 flex items-center gap-3 border-b border-stone-100 dark:border-stone-800 p-3">
+                      <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-teal-100 dark:bg-teal-900/50 text-sm font-bold text-teal-800 dark:text-teal-400">
+                        {session.user.name.charAt(0).toUpperCase()}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm font-semibold text-stone-900 dark:text-stone-100">
+                          {session.user.name}
+                        </p>
+                        <p className="truncate text-xs text-stone-500">
+                          {session.user.email}
+                        </p>
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Link
+                        href="/dashboard/settings"
+                        onClick={() => setIsProfileOpen(false)}
+                        className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-900 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
+                      >
+                        <UserIcon className="h-4 w-4 text-stone-500 dark:text-stone-400" />
+                        Profil & Paramètres
+                      </Link>
+                    </div>
+                    <div className="mt-2 border-t border-stone-100 dark:border-stone-800 pt-2">
+                      <form action="/auth/sign-out" method="post">
+                        <button
+                          type="submit"
+                          className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 hover:text-red-700 dark:hover:text-red-300 transition-colors font-medium"
+                        >
+                          <LogOut className="h-4 w-4" />
+                          Déconnexion
+                        </button>
+                      </form>
                     </div>
                   </div>
-                  <div className="space-y-1">
-                    <Link
-                      href="/dashboard/settings"
-                      onClick={() => setIsProfileOpen(false)}
-                      className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-900 hover:text-stone-900 dark:hover:text-stone-100 transition-colors"
-                    >
-                      <UserIcon className="h-4 w-4 text-stone-500 dark:text-stone-400" />
-                      Profil & Paramètres
-                    </Link>
-                  </div>
-                  <div className="mt-2 border-t border-stone-100 dark:border-stone-800 pt-2">
-                    <form action="/auth/sign-out" method="post">
-                      <button
-                        type="submit"
-                        className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/50 hover:text-red-700 dark:hover:text-red-300 transition-colors font-medium"
-                      >
-                        <LogOut className="h-4 w-4" />
-                        Déconnexion
-                      </button>
-                    </form>
-                  </div>
-                </div>
-              )}
+                )}
+              </div>
             </div>
-          </div>
-        </header>
+          </header>
+        )}
         <main
           className={cn(
             "mx-auto w-full",
-            isCrmPipelinePage
-              ? "max-w-none px-2 py-3 md:px-3 lg:px-4"
-              : "max-w-7xl px-4 py-8 md:px-6 lg:px-8",
+            isNaiaHomePage
+              ? "max-w-none p-0"
+              : isFullBleedPage
+                ? "max-w-none px-2 py-3 md:px-3 lg:px-4"
+                : "max-w-7xl px-4 py-8 md:px-6 lg:px-8",
           )}
         >
           {children}
         </main>
       </div>
+      <NaiaFloatingAssistant />
     </div>
   );
 }

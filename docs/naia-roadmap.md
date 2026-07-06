@@ -5,13 +5,15 @@ operational drag while keeping external actions behind a visible human gate.
 
 ## Now
 
-- Keep the `/naia` home as the voice cockpit with the sphere, agent orbit, CRM
-  snapshot, console, and approval cards.
+- Keep the `/naia` home as an immersive voice cockpit with the sphere, value-chain
+  agent orbit, floating chatbot, CRM snapshot, console, and approval cards.
 - Use Salma CRM as the proof point: natural-language lead commands, lead
   creation, status movement, pitch/proposal next actions, and server-signed
   approvals.
 - Route all prospect/client meetings through CRM first, then let Adam verify
   Google Calendar availability and create the event after validation.
+- Route pitch and proposal work through Maya / Docs Generator using the private
+  Ali/Nabil `Client development > Pitch` Drive tree as the IP source.
 - Keep Nora, Ilyas, Yasmine, Idriss, Lina, Omar, and Rayan visible as agents
   with clear live or guarded status.
 - Show approval and integration health signals even before provider sends are

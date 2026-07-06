@@ -52,16 +52,17 @@ async function createVoiceResponse({
   const text = rawText?.trim().slice(0, MAX_VOICE_TEXT_LENGTH);
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const requestedCleanVoiceId = sanitizeVoiceId(requestedVoiceId);
-  const voiceId = requestedCleanVoiceId ?? process.env.ELEVENLABS_VOICE_ID;
   const fallbackVoiceId =
     sanitizeVoiceId(process.env.ELEVENLABS_FALLBACK_VOICE_ID) ??
     DEFAULT_FREE_ELEVENLABS_VOICE_ID;
+  const configuredVoiceId = sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID);
+  const voiceId = requestedCleanVoiceId ?? configuredVoiceId ?? fallbackVoiceId;
 
   if (!text) {
     return browserVoiceFallback("missing-text", { status: 400 });
   }
 
-  if (!apiKey || !voiceId) {
+  if (!apiKey) {
     return browserVoiceFallback("missing-elevenlabs-config", {
       status: 503,
     });
@@ -178,10 +179,23 @@ function createAudioResponse({
 }
 
 function shouldTryFallbackVoice(error: ElevenLabsError, status: number) {
+  const detailText = [
+    error.detail?.code,
+    error.detail?.message,
+    error.detail?.status,
+    error.detail?.type,
+  ]
+    .filter(Boolean)
+    .join(" ")
+    .toLocaleLowerCase("en-US");
+
   return (
     status === 402 ||
     error.detail?.code === "paid_plan_required" ||
-    error.detail?.status === "voice_not_found"
+    error.detail?.status === "voice_not_found" ||
+    detailText.includes("free users cannot use library voices") ||
+    (detailText.includes("library voices") &&
+      detailText.includes("subscription"))
   );
 }
 

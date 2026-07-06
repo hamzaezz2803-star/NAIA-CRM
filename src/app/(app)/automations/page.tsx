@@ -1,17 +1,10 @@
-import { fetchLeadsAction } from "@/features/crm/actions";
-import { NaiaCommandCenter } from "@/features/naia/naia-command-center";
+import { ModulePlaceholderPage } from "@/components/layout/module-placeholder-page";
 
-export default async function AutomationsPage() {
-  const leads = await fetchLeadsAction();
-
+export default function AutomationsPage() {
   return (
-    <NaiaCommandCenter
-      initialCrmStats={{
-        leadCount: leads.length,
-        openLeadCount: leads.filter(
-          (lead) => lead.status !== "won" && lead.status !== "dead-end",
-        ).length,
-      }}
+    <ModulePlaceholderPage
+      detail="Les workflows et agents Dev Ops restent gardes tant que les actions externes n'ont pas de file d'approbation complete."
+      moduleId="automations"
     />
   );
 }

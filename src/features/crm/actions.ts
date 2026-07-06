@@ -830,9 +830,14 @@ export async function updateLeadStatusAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
+  const nextAction = getStatusDrivenNextAction(status);
   const { error } = await supabase
     .from("crm_leads")
-    .update({ status, updated_at: new Date().toISOString() })
+    .update({
+      ...(nextAction ? { next_action: nextAction } : {}),
+      status,
+      updated_at: new Date().toISOString(),
+    })
     .eq("id", leadId)
     .eq("organization_id", orgId);
 
@@ -841,6 +846,18 @@ export async function updateLeadStatusAction(
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
   return { success: true };
+}
+
+function getStatusDrivenNextAction(status: CrmLeadStatus) {
+  if (status === "meeting-booked") {
+    return "Maya: preparer le pitch tailor-made avec notes CRM, base Qarizmi et cas d'usage client.";
+  }
+
+  if (status === "proposal-sent") {
+    return "Maya: preparer la propale depuis le compte rendu meeting, le scope, le planning et le payment plan.";
+  }
+
+  return undefined;
 }
 
 export async function updateLeadAction(
@@ -1707,7 +1724,7 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "notes": "notes complémentaires",
   "nextAction": "prochaine action commerciale concise à afficher dans les tâches (ex: relancer lundi, envoyer la proposition, préparer le meeting). Si aucune action claire n'est mentionnée, mets null.",
   "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null.",
-  "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Mapping obligatoire: lead-to-contact = prospect identifié mais pas encore contacté; contacted = Ali/l'équipe vient de parler, contacter, appeler, échanger, discuter ou rencontrer le prospect, avec discussion entamée mais sans rendez-vous encore fixé; to-follow-up = il faut relancer, rappeler ou faire un follow-up; meeting-booked = un meeting, rdv, call, démo ou visio est booké, fixé, prévu, calé, planifié ou confirmé; proposal-sent = une propale, proposition, offre ou devis est envoyé, à envoyer ou à préparer; won = projet signé, gagné, validé ou accepté; dead-end = perdu, refusé, stop ou pas intéressé. Si le texte dit 'j'ai parlé/contacté/échangé avec X', ne mets jamais lead-to-contact: utilise contacted, sauf si un rendez-vous est explicitement fixé, alors utilise meeting-booked."
+  "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Si le texte dit qu'un meeting/rdv/call/démo est booké, fixé, prévu, calé ou confirmé, utilise meeting-booked. Si le texte dit seulement de relancer/rappeler, utilise to-follow-up. Si le texte dit seulement qu'on a parlé/contacté sans action planifiée, utilise contacted. Si aucune information claire, utilise lead-to-contact."
 }`,
         },
         {

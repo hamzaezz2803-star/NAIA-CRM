@@ -71,8 +71,7 @@ export async function GET() {
       voices.find(
         (voice) => voice.voiceId === DEFAULT_FREE_ELEVENLABS_VOICE_ID,
       ) ??
-      voices.find((voice) => voice.category === "premade") ??
-      voices[0];
+      voices.find((voice) => voice.category === "premade");
 
     return Response.json({
       activeVoice,

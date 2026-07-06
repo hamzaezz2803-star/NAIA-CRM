@@ -17,9 +17,21 @@ type VoiceSilenceDetector = {
 
 declare global {
   interface Window {
-    __naiaCurrentAudio?: HTMLAudioElement;
+    __naiaCurrentAudio?: VoicePlaybackHandle;
   }
 }
+
+type BrowserVoicePayload = {
+  code?: string;
+  message?: string;
+  mode?: string;
+  reason?: string;
+  upstreamStatus?: number;
+};
+
+export type VoicePlaybackHandle = {
+  pause: () => void;
+};
 
 export function createVoiceSilenceDetector({
   onSilence,
@@ -130,35 +142,163 @@ export function playElevenLabsVoice({
   text: string;
   voiceId?: string;
 }) {
-  const audio = new Audio(buildNaiaVoiceUrl(text, voiceId));
-  audio.preload = "auto";
-  window.__naiaCurrentAudio = audio;
-  audio.onended = () => {
-    if (window.__naiaCurrentAudio === audio) {
-      window.__naiaCurrentAudio = undefined;
+  let audio: HTMLAudioElement | null = null;
+  let objectUrl = "";
+  let isCancelled = false;
+  let hasEnded = false;
+  let hasStarted = false;
+
+  const cleanup = () => {
+    if (objectUrl) {
+      URL.revokeObjectURL(objectUrl);
+      objectUrl = "";
     }
-    onEnded();
-  };
-  audio.onerror = () => {
-    if (window.__naiaCurrentAudio === audio) {
-      window.__naiaCurrentAudio = undefined;
-    }
-    onEnded();
-    onBlocked(
-      "ElevenLabs n'a pas pu lire l'audio. Verifie la voix configuree et les credits.",
-    );
   };
 
-  onStarted();
-  const playPromise = audio.play();
-  if (playPromise) {
-    playPromise.catch(() => {
+  const handle: VoicePlaybackHandle = {
+    pause: () => {
+      if (hasEnded) return;
+      isCancelled = true;
+      audio?.pause();
+      if ("speechSynthesis" in window) {
+        window.speechSynthesis.cancel();
+      }
+      cleanup();
+      window.__naiaCurrentAudio = undefined;
       onEnded();
+    },
+  };
+
+  const finish = () => {
+    if (hasEnded) return;
+
+    hasEnded = true;
+    cleanup();
+    if (window.__naiaCurrentAudio === handle) {
+      window.__naiaCurrentAudio = undefined;
+    }
+    onEnded();
+  };
+
+  const start = () => {
+    if (hasStarted) return;
+
+    hasStarted = true;
+    onStarted();
+  };
+
+  const fallbackToBrowserVoice = (message: string) => {
+    if (isCancelled) return;
+
+    if (!("speechSynthesis" in window)) {
+      onBlocked(message);
+      finish();
+      return;
+    }
+
+    onBlocked(`${message} Lecture via la voix du navigateur.`);
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = "fr-FR";
+    utterance.rate = 0.98;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+    utterance.onstart = start;
+    utterance.onend = finish;
+    utterance.onerror = () => {
       onBlocked(
-        "Safari a bloque la lecture audio. Clique une fois dans la page puis relance Audio.",
+        `${getBrowserName()} a bloque la lecture audio. Clique sur Audio ou Parler pour relancer.`,
+      );
+      finish();
+    };
+    window.speechSynthesis.speak(utterance);
+  };
+
+  const playAudioBlob = async (blob: Blob) => {
+    if (isCancelled) return;
+
+    objectUrl = URL.createObjectURL(blob);
+    audio = new Audio(objectUrl);
+    audio.preload = "auto";
+    audio.onended = finish;
+    audio.onerror = () => {
+      fallbackToBrowserVoice(
+        "ElevenLabs a renvoye un audio illisible pour ce navigateur.",
+      );
+    };
+
+    try {
+      await audio.play();
+      start();
+    } catch {
+      fallbackToBrowserVoice(
+        `${getBrowserName()} a bloque la lecture ElevenLabs.`,
+      );
+    }
+  };
+
+  window.__naiaCurrentAudio?.pause();
+  window.__naiaCurrentAudio = handle;
+
+  void fetch(buildNaiaVoiceUrl(text, voiceId), { cache: "no-store" })
+    .then(async (response) => {
+      if (isCancelled) return;
+
+      const contentType = response.headers.get("content-type") ?? "";
+      if (response.ok && contentType.startsWith("audio/")) {
+        await playAudioBlob(await response.blob());
+        return;
+      }
+
+      let payload: BrowserVoicePayload = {};
+      if (contentType.includes("application/json")) {
+        payload = (await response
+          .json()
+          .catch(() => ({}))) as BrowserVoicePayload;
+      }
+
+      fallbackToBrowserVoice(getVoiceFallbackMessage(payload, response.status));
+    })
+    .catch(() => {
+      fallbackToBrowserVoice(
+        "ElevenLabs est indisponible ou non configure sur cet environnement.",
       );
     });
+
+  return handle;
+}
+
+function getVoiceFallbackMessage(payload: BrowserVoicePayload, status: number) {
+  if (payload.reason === "missing-elevenlabs-config") {
+    return "ElevenLabs n'est pas configure sur cet environnement.";
   }
 
-  return audio;
+  if (payload.reason === "elevenlabs-error") {
+    return payload.message
+      ? `ElevenLabs a refuse la synthese (${payload.message}).`
+      : `ElevenLabs a refuse la synthese (${payload.code ?? status}).`;
+  }
+
+  if (payload.reason === "elevenlabs-network-error") {
+    return "ElevenLabs ne repond pas pour le moment.";
+  }
+
+  if (payload.reason === "elevenlabs-non-audio-response") {
+    return "ElevenLabs n'a pas renvoye de fichier audio.";
+  }
+
+  return "Lecture ElevenLabs indisponible.";
+}
+
+function getBrowserName() {
+  const userAgent = navigator.userAgent;
+
+  if (userAgent.includes("Edg/")) return "Edge";
+  if (userAgent.includes("Chrome/") || userAgent.includes("CriOS/")) {
+    return "Chrome";
+  }
+  if (userAgent.includes("Firefox/")) return "Firefox";
+  if (userAgent.includes("Safari/")) return "Safari";
+
+  return "Le navigateur";
 }

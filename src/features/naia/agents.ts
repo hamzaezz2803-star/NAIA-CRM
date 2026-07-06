@@ -74,10 +74,10 @@ export const naiaAgents: NaiaAgent[] = [
     mission:
       "Scanne les ICP, signaux de marche, key people et chemins d'introduction.",
     orbit: {
-      desktop: { x: 23, y: 31 },
-      tablet: { x: 23, y: 32 },
+      desktop: { x: 20, y: 28 },
+      tablet: { x: 22, y: 28 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "crm",
@@ -90,8 +90,8 @@ export const naiaAgents: NaiaAgent[] = [
     mission:
       "Met a jour le pipeline, prepare pitchs, propositions et prochaines actions.",
     orbit: {
-      desktop: { x: 73, y: 67 },
-      tablet: { x: 76, y: 68 },
+      desktop: { x: 16, y: 43 },
+      tablet: { x: 18, y: 43 },
     },
     status: "live",
   },
@@ -100,48 +100,48 @@ export const naiaAgents: NaiaAgent[] = [
     name: "Nora",
     role: "Finance",
     label: "Finance",
-    route: "/naia/cash-flow",
+    route: "/finance",
     accent: "emerald",
     icon: CircleDollarSign,
     mission:
       "Prevoit le cash, repere les retards et priorise les relances a valider.",
     orbit: {
-      desktop: { x: 78, y: 29 },
-      tablet: { x: 75, y: 30 },
+      desktop: { x: 84, y: 43 },
+      tablet: { x: 82, y: 43 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "projects",
     name: "Ilyas",
     role: "Delivery",
     label: "Projects",
-    route: "/naia/projects",
+    route: "/projects",
     accent: "violet",
     icon: BriefcaseBusiness,
     mission:
       "Suit le portefeuille, les use cases, le Gantt et les risques de delivery.",
     orbit: {
-      desktop: { x: 36, y: 73 },
-      tablet: { x: 33, y: 71 },
+      desktop: { x: 50, y: 80 },
+      tablet: { x: 50, y: 78 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "hr",
     name: "Yasmine",
     role: "People",
     label: "HR",
-    route: "/naia/hr",
+    route: "/hr",
     accent: "rose",
     icon: Users,
     mission:
       "Convertit projets signes et capacite en recrutements, tests et entretiens.",
     orbit: {
-      desktop: { x: 63, y: 77 },
-      tablet: { x: 64, y: 75 },
+      desktop: { x: 80, y: 28 },
+      tablet: { x: 78, y: 28 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "meetings",
@@ -154,26 +154,26 @@ export const naiaAgents: NaiaAgent[] = [
     mission:
       "Transforme appels et rendez-vous en syntheses, decisions et suivis CRM.",
     orbit: {
-      desktop: { x: 20, y: 55 },
-      tablet: { x: 24, y: 55 },
+      desktop: { x: 33, y: 74 },
+      tablet: { x: 34, y: 72 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "proposals",
     name: "Maya",
-    role: "Proposals",
-    label: "Proposals",
+    role: "Docs Generator",
+    label: "Docs",
     route: "/proposals",
     accent: "blue",
     icon: FileText,
     mission:
-      "Assemble pitch, scope, planning, prix et jalons depuis le contexte valide.",
+      "Genere pitchs, propales et documents depuis le CRM et le Drive IP valide.",
     orbit: {
-      desktop: { x: 84, y: 52 },
-      tablet: { x: 79, y: 52 },
+      desktop: { x: 21, y: 59 },
+      tablet: { x: 22, y: 58 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "automations",
@@ -186,10 +186,10 @@ export const naiaAgents: NaiaAgent[] = [
     mission:
       "Observe les workflows, files d'attente, approbations et actions sensibles.",
     orbit: {
-      desktop: { x: 34, y: 42 },
-      tablet: { x: 36, y: 42 },
+      desktop: { x: 67, y: 74 },
+      tablet: { x: 66, y: 72 },
     },
-    status: "live",
+    status: "guarded",
   },
   {
     id: "integrations",
@@ -202,8 +202,8 @@ export const naiaAgents: NaiaAgent[] = [
     mission:
       "Controle les providers disponibles, les tokens et les statuts avant toute action externe.",
     orbit: {
-      desktop: { x: 82, y: 42 },
-      tablet: { x: 76, y: 43 },
+      desktop: { x: 64, y: 18 },
+      tablet: { x: 63, y: 21 },
     },
     status: "guarded",
   },
@@ -217,8 +217,8 @@ export const naiaAgents: NaiaAgent[] = [
     icon: Settings,
     mission: "Gere roles, permissions, audit et politiques d'approbation.",
     orbit: {
-      desktop: { x: 51, y: 25 },
-      tablet: { x: 50, y: 26 },
+      desktop: { x: 36, y: 18 },
+      tablet: { x: 37, y: 21 },
     },
     status: "live",
   },
@@ -226,15 +226,15 @@ export const naiaAgents: NaiaAgent[] = [
     id: "developer",
     name: "Rayan",
     role: "Dev agent",
-    label: "Developer",
+    label: "Dev",
     route: "/automations",
     accent: "rose",
     icon: Code2,
     mission:
       "Transforme une demande produit en specification, branche et revue humaine.",
     orbit: {
-      desktop: { x: 15, y: 76 },
-      tablet: { x: 20, y: 78 },
+      desktop: { x: 80, y: 59 },
+      tablet: { x: 78, y: 58 },
     },
     status: "guarded",
   },

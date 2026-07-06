@@ -8,11 +8,9 @@ import {
   ArrowRight,
   CheckCircle2,
   ChevronRight,
-  CircleDollarSign,
   FileText,
   Headphones,
   Loader2,
-  MailCheck,
   Mic,
   Play,
   RefreshCw,
@@ -28,30 +26,35 @@ import {
 import {
   buildNaiaContext,
   cashMonths,
-  costs,
+  capexRows,
+  clientCashRows,
+  clientRelances,
   executiveActions,
   formatMad,
   generatedAssets,
   getNaiaSection,
   hiringNeeds,
+  opexRows,
   approvalQueue,
   integrationHealth,
   leadCompanies,
   naiaSections,
-  paymentPlans,
   pipeline,
+  projectTimelineMonths,
   projects,
+  staffingPlan,
   type NaiaSectionId,
   type RiskLevel,
 } from "./operating-data";
 import {
-  buildNaiaVoiceUrl,
   createVoiceSilenceDetector,
   playElevenLabsVoice,
+  type VoicePlaybackHandle,
   VOICE_RECORDING_MAX_MS,
 } from "./voice-client";
 
 type NaiaExperienceProps = {
+  focusMode?: boolean;
   sectionId: NaiaSectionId;
 };
 
@@ -120,7 +123,21 @@ const stages = [
   "Negociation",
 ];
 
-export function NaiaExperience({ sectionId }: NaiaExperienceProps) {
+const formatShortMad = (value: number) =>
+  new Intl.NumberFormat("fr-MA", {
+    maximumFractionDigits: 0,
+    notation: "compact",
+  }).format(value);
+
+const sumMonthlyCash = (rows: { monthlyCash: number[] }[]) =>
+  cashMonths.map((_, index) =>
+    rows.reduce((total, row) => total + (row.monthlyCash[index] ?? 0), 0),
+  );
+
+export function NaiaExperience({
+  focusMode = false,
+  sectionId,
+}: NaiaExperienceProps) {
   const router = useRouter();
   const [activeSection, setActiveSection] = useState<NaiaSectionId>(sectionId);
   const [assistantOutput, setAssistantOutput] = useState(
@@ -131,11 +148,10 @@ export function NaiaExperience({ sectionId }: NaiaExperienceProps) {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceNotice, setVoiceNotice] = useState("");
-  const [manualAudioUrl, setManualAudioUrl] = useState("");
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const speechAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speechAudioRef = useRef<VoicePlaybackHandle | null>(null);
   const browserFinalTranscriptRef = useRef("");
   const silenceDetectorRef = useRef<{ stop: () => void } | null>(null);
   const recordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -181,9 +197,26 @@ export function NaiaExperience({ sectionId }: NaiaExperienceProps) {
     router.push(nextSection.href);
   };
 
+  const speakText = (rawText: string) => {
+    const text = rawText.replace(/\s+/g, " ").slice(0, 900);
+    speechAudioRef.current?.pause();
+    speechAudioRef.current = playElevenLabsVoice({
+      onBlocked: (message) => {
+        setVoiceNotice(message);
+      },
+      onEnded: () => setIsSpeaking(false),
+      onStarted: () => {
+        setVoiceNotice("");
+        setIsSpeaking(true);
+      },
+      text,
+    });
+  };
+
   const generate = async (
     nextSectionId = activeSection,
     promptOverride?: string,
+    options: { speak?: boolean } = {},
   ) => {
     const nextSection = getNaiaSection(nextSectionId);
     const prompt = promptOverride ?? nextSection.prompt;
@@ -212,13 +245,20 @@ export function NaiaExperience({ sectionId }: NaiaExperienceProps) {
       }
 
       setAssistantOutput(payload.output);
+      if (options.speak) {
+        speakText(payload.output);
+      }
       if (payload.mode === "local") {
         setVoiceNotice(
           "Mode local: Groq n'a pas repondu, raisonnement embarque active.",
         );
       }
     } catch {
-      setAssistantOutput(getLocalAnswer(nextSection.id));
+      const fallbackOutput = getLocalAnswer(nextSection.id);
+      setAssistantOutput(fallbackOutput);
+      if (options.speak) {
+        speakText(fallbackOutput);
+      }
       setVoiceNotice("Mode local: impossible de joindre l'API IA.");
     } finally {
       setIsGenerating(false);
@@ -469,119 +509,108 @@ export function NaiaExperience({ sectionId }: NaiaExperienceProps) {
     const nextSection = getNaiaSection(target);
     setVoiceTranscript(command);
     router.push(nextSection.href);
-    await generate(nextSection.id, command);
+    await generate(nextSection.id, command, { speak: true });
   };
 
   const speakCurrentAnswer = async () => {
-    const text = assistantOutput.replace(/\s+/g, " ").slice(0, 900);
-    speechAudioRef.current?.pause();
-    setManualAudioUrl("");
-    speechAudioRef.current = playElevenLabsVoice({
-      onBlocked: (message) => {
-        setVoiceNotice(message);
-        setManualAudioUrl(buildNaiaVoiceUrl(text));
-      },
-      onEnded: () => setIsSpeaking(false),
-      onStarted: () => {
-        setVoiceNotice("");
-        setIsSpeaking(true);
-      },
-      text,
-    });
+    speakText(assistantOutput);
   };
 
   return (
-    <div className="space-y-6">
-      <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-white">
-        <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
-          <div className="max-w-3xl">
-            <div className="mb-3 flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold uppercase text-teal-800 dark:border-teal-900 dark:bg-teal-950/40 dark:text-teal-300">
-                <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-                NAIA live
-              </span>
-              <span
-                className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${toneClasses[section.tone]}`}
-              >
-                {section.eyebrow}
-              </span>
-            </div>
-            <h1 className="text-3xl font-semibold leading-tight text-stone-950 md:text-4xl">
-              {section.title}
-            </h1>
-            <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">
-              {section.summary}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap gap-2">
-            <ActionButton
-              disabled={isListening}
-              icon={isListening ? Loader2 : Mic}
-              label={isListening ? "J'ecoute..." : "Parler"}
-              loading={isListening}
-              onClick={startVoiceControl}
-              variant="secondary"
-            />
-            <ActionButton
-              disabled={isGenerating}
-              icon={isGenerating ? RefreshCw : WandSparkles}
-              label={isGenerating ? "Generation" : "Lancer NAIA"}
-              onClick={() => void generate(activeSection)}
-              variant="primary"
-            />
-            <ActionButton
-              disabled={isSpeaking}
-              icon={Volume2}
-              label={isSpeaking ? "Lecture" : "Audio"}
-              onClick={() => void speakCurrentAnswer()}
-              variant="secondary"
-            />
-          </div>
-        </div>
-
-        {manualAudioUrl ? (
-          <audio
-            className="mt-4 w-full"
-            controls
-            preload="none"
-            src={manualAudioUrl}
-          >
-            <track kind="captions" />
-          </audio>
-        ) : null}
-
-        <nav
-          className="mt-6 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
-          aria-label="Navigation NAIA"
-        >
-          {naiaSections.map((item) => {
-            const Icon = item.icon;
-            const isActive = item.id === activeSection;
-
-            return (
-              <Link
-                className={`flex min-h-14 items-center justify-between rounded-md border px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
-                  isActive
-                    ? "border-teal-700 bg-teal-700 text-white"
-                    : "border-stone-200 bg-white text-stone-700 hover:bg-stone-50 dark:border-stone-800 dark:bg-white dark:hover:bg-stone-100"
-                }`}
-                href={item.href}
-                key={item.id}
-                onClick={() => setActiveSection(item.id)}
-              >
-                <span className="flex items-center gap-2">
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                  {item.label}
+    <div className={focusMode ? "space-y-3" : "space-y-6"}>
+      {focusMode ? null : (
+        <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-white">
+          <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+            <div className="max-w-3xl">
+              <div className="mb-3 flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center gap-2 rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-semibold uppercase text-teal-800 dark:border-teal-900 dark:bg-teal-950/40 dark:text-teal-300">
+                  <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
+                  NAIA live
                 </span>
-                <ChevronRight className="h-4 w-4" aria-hidden="true" />
-              </Link>
-            );
-          })}
-        </nav>
-      </section>
+                <span
+                  className={`inline-flex items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold ${toneClasses[section.tone]}`}
+                >
+                  {section.eyebrow}
+                </span>
+              </div>
+              <h1 className="text-3xl font-semibold leading-tight text-stone-950 md:text-4xl">
+                {section.title}
+              </h1>
+              <p className="mt-3 max-w-2xl text-base leading-7 text-stone-600">
+                {section.summary}
+              </p>
+            </div>
 
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
+            <div className="flex flex-wrap gap-2">
+              <ActionButton
+                disabled={isListening}
+                icon={isListening ? Loader2 : Mic}
+                label={isListening ? "J'ecoute..." : "Parler"}
+                loading={isListening}
+                onClick={startVoiceControl}
+                variant="secondary"
+              />
+              <ActionButton
+                disabled={isGenerating}
+                icon={isGenerating ? RefreshCw : WandSparkles}
+                label={isGenerating ? "Generation" : "Lancer NAIA"}
+                onClick={() => void generate(activeSection)}
+                variant="primary"
+              />
+              <ActionButton
+                disabled={isSpeaking}
+                icon={Volume2}
+                label={isSpeaking ? "Lecture" : "Audio"}
+                onClick={() => void speakCurrentAnswer()}
+                variant="secondary"
+              />
+            </div>
+          </div>
+
+          <VoiceActivity
+            isListening={isListening}
+            isProcessing={isGenerating}
+            isSpeaking={isSpeaking}
+          />
+
+          <nav
+            className="mt-6 grid gap-2 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6"
+            aria-label="Navigation NAIA"
+          >
+            {naiaSections.map((item) => {
+              const Icon = item.icon;
+              const isActive = item.id === activeSection;
+
+              return (
+                <Link
+                  className={`flex min-h-14 items-center justify-between rounded-md border px-3 py-2 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 ${
+                    isActive
+                      ? "border-teal-700 bg-teal-700 text-white"
+                      : "border-stone-200 bg-white text-stone-700 hover:bg-stone-50 dark:border-stone-800 dark:bg-white dark:hover:bg-stone-100"
+                  }`}
+                  href={item.href}
+                  key={item.id}
+                  onClick={() => setActiveSection(item.id)}
+                >
+                  <span className="flex items-center gap-2">
+                    <Icon className="h-4 w-4" aria-hidden="true" />
+                    {item.label}
+                  </span>
+                  <ChevronRight className="h-4 w-4" aria-hidden="true" />
+                </Link>
+              );
+            })}
+          </nav>
+        </section>
+      )}
+
+      <div
+        className={
+          focusMode
+            ? "grid gap-3"
+            : "grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]"
+        }
+      >
         <section className="min-w-0">
           {activeSection === "overview" ? (
             <OverviewPanel onNavigate={navigateTo} />
@@ -610,70 +639,72 @@ export function NaiaExperience({ sectionId }: NaiaExperienceProps) {
           ) : null}
         </section>
 
-        <aside
-          className="min-w-0 space-y-4 xl:sticky xl:top-24 xl:self-start"
-          aria-label="Assistant NAIA"
-        >
-          <Panel>
-            <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
-              <Headphones
-                className="h-4 w-4 text-stone-500"
-                aria-hidden="true"
-              />
-              Console vocale
-            </div>
-            <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-100">
-              <p className="text-xs font-semibold uppercase text-stone-500">
-                Transcription
-              </p>
-              <p className="mt-2 min-h-10 text-sm leading-6 text-stone-700">
-                {voiceTranscript || "En attente d'une commande NAIA."}
-              </p>
-            </div>
-            {voiceNotice ? (
-              <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
-                {voiceNotice}
-              </p>
-            ) : null}
-            <div className="mt-3 grid gap-2">
-              {commandExamples.map((command) => (
-                <button
-                  className="flex min-h-11 items-start gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-left text-sm leading-5 text-stone-700 transition hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:border-stone-800"
-                  key={command}
-                  onClick={() => void handleVoiceCommand(command)}
-                  type="button"
-                >
-                  <Play
-                    className="mt-0.5 h-4 w-4 shrink-0 text-stone-500"
+        {focusMode ? null : (
+          <aside
+            className="min-w-0 space-y-4 xl:sticky xl:top-24 xl:self-start"
+            aria-label="Assistant NAIA"
+          >
+            <Panel>
+              <div className="flex items-center gap-2 text-sm font-semibold text-stone-950">
+                <Headphones
+                  className="h-4 w-4 text-stone-500"
+                  aria-hidden="true"
+                />
+                Console vocale
+              </div>
+              <div className="mt-3 rounded-lg border border-stone-200 bg-stone-50 p-3 dark:border-stone-800 dark:bg-stone-100">
+                <p className="text-xs font-semibold uppercase text-stone-500">
+                  Transcription
+                </p>
+                <p className="mt-2 min-h-10 text-sm leading-6 text-stone-700">
+                  {voiceTranscript || "En attente d'une commande NAIA."}
+                </p>
+              </div>
+              {voiceNotice ? (
+                <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-800">
+                  {voiceNotice}
+                </p>
+              ) : null}
+              <div className="mt-3 grid gap-2">
+                {commandExamples.map((command) => (
+                  <button
+                    className="flex min-h-11 items-start gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-left text-sm leading-5 text-stone-700 transition hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:border-stone-800"
+                    key={command}
+                    onClick={() => void handleVoiceCommand(command)}
+                    type="button"
+                  >
+                    <Play
+                      className="mt-0.5 h-4 w-4 shrink-0 text-stone-500"
+                      aria-hidden="true"
+                    />
+                    <span>{command}</span>
+                  </button>
+                ))}
+              </div>
+            </Panel>
+
+            <section className="rounded-lg border border-stone-900 bg-stone-950 p-4 text-white shadow-sm">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  <Sparkles
+                    className="h-4 w-4 text-teal-300"
                     aria-hidden="true"
                   />
-                  <span>{command}</span>
-                </button>
-              ))}
-            </div>
-          </Panel>
-
-          <section className="rounded-lg border border-stone-900 bg-stone-950 p-4 text-white shadow-sm">
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-sm font-semibold">
-                <Sparkles
-                  className="h-4 w-4 text-teal-300"
-                  aria-hidden="true"
-                />
-                Reponse NAIA
+                  Reponse NAIA
+                </div>
+                {isGenerating ? (
+                  <RefreshCw
+                    className="h-4 w-4 animate-spin text-teal-200"
+                    aria-hidden="true"
+                  />
+                ) : null}
               </div>
-              {isGenerating ? (
-                <RefreshCw
-                  className="h-4 w-4 animate-spin text-teal-200"
-                  aria-hidden="true"
-                />
-              ) : null}
-            </div>
-            <p className="mt-4 whitespace-pre-line text-sm leading-6 text-stone-100">
-              {assistantOutput}
-            </p>
-          </section>
-        </aside>
+              <p className="mt-4 whitespace-pre-line text-sm leading-6 text-stone-100">
+                {assistantOutput}
+              </p>
+            </section>
+          </aside>
+        )}
       </div>
     </div>
   );
@@ -917,38 +948,21 @@ function CashPanel({
   maxBalance: number;
   onGenerate: (prompt: string) => void;
 }) {
-  return (
-    <div className="space-y-6">
-      <div className="grid gap-4 lg:grid-cols-3">
-        <KpiCard
-          detail="Fin novembre"
-          icon={CircleDollarSign}
-          label="Solde projete"
-          value={formatMad(cashMonths[cashMonths.length - 1]?.balance ?? 0)}
-        />
-        <KpiCard
-          detail="Medina + Sahara"
-          icon={MailCheck}
-          label="Relances"
-          value="2 urgentes"
-        />
-        <KpiCard
-          detail="Apres salaires"
-          icon={AlertTriangle}
-          label="Runway min."
-          value="4.1 mois"
-        />
-      </div>
+  const [delayedClients, setDelayedClients] = useState<Record<string, boolean>>(
+    {},
+  );
+  const clientTotals = sumMonthlyCash(clientCashRows);
+  const opexTotals = sumMonthlyCash(opexRows);
+  const capexTotals = sumMonthlyCash(capexRows);
 
+  return (
+    <div className="space-y-3">
       <Panel>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-stone-950">
-              Cash forecast
+              Cash forecast 12 mois
             </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              Entrees, sorties et solde previsionnel avec flags de risque.
-            </p>
           </div>
           <ActionButton
             icon={WandSparkles}
@@ -961,54 +975,204 @@ function CashPanel({
             variant="primary"
           />
         </div>
-        <div
-          className="mt-6 grid min-h-64 grid-cols-5 items-end gap-3"
-          role="img"
-          aria-label="Prevision de solde cash sur cinq mois"
-        >
-          {cashMonths.map((row) => (
-            <div
-              className="flex h-full min-w-0 flex-col justify-end gap-2"
-              key={row.month}
-            >
-              <div className="flex flex-1 items-end rounded-md bg-stone-100 p-2">
-                <div
-                  className={`w-full rounded-sm ${row.risk === "high" ? "bg-rose-500" : row.risk === "medium" ? "bg-amber-500" : "bg-emerald-500"}`}
-                  style={{
-                    height: `${Math.max(18, (row.balance / maxBalance) * 100)}%`,
-                  }}
-                />
+        <div className="mt-5 overflow-x-auto">
+          <div
+            className="grid min-h-64 min-w-[980px] grid-cols-12 items-end gap-2"
+            role="img"
+            aria-label="Prevision de solde cash sur douze mois"
+          >
+            {cashMonths.map((row) => (
+              <div
+                className="flex h-full min-w-0 flex-col justify-end gap-2"
+                key={row.month}
+              >
+                <div className="flex flex-1 items-end rounded-md bg-stone-100 p-2">
+                  <div
+                    className={`w-full rounded-sm ${row.risk === "high" ? "bg-rose-500" : row.risk === "medium" ? "bg-amber-500" : "bg-emerald-500"}`}
+                    style={{
+                      height: `${Math.max(18, (row.balance / maxBalance) * 100)}%`,
+                    }}
+                  />
+                </div>
+                <div className="text-center">
+                  <p className="text-xs font-semibold text-stone-950">
+                    {row.month}
+                  </p>
+                  <p className="mt-1 text-xs text-stone-500">
+                    {formatShortMad(row.balance)}
+                  </p>
+                </div>
               </div>
-              <div className="text-center">
-                <p className="text-xs font-semibold text-stone-950">
-                  {row.month}
-                </p>
-                <p className="mt-1 text-xs text-stone-500">
-                  {formatMad(row.balance)}
-                </p>
-              </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
       </Panel>
 
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ListPanel
-          title="Couts a venir"
-          items={costs.map(
-            (item) =>
-              `${item.date} · ${item.name} · ${formatMad(item.amount)} · ${item.type}`,
-          )}
-        />
-        <ListPanel
-          title="Plans de paiement"
-          items={paymentPlans.map(
-            (item) =>
-              `${item.client}: ${item.plan}, prochain ${formatMad(item.nextPayment)} le ${item.dueDate}`,
-          )}
-        />
+      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
+        <Panel>
+          <div className="overflow-x-auto">
+            <div className="min-w-[1180px]">
+              <div
+                className="grid items-center gap-2 border-b border-stone-200 pb-2 text-xs font-semibold uppercase text-stone-500"
+                style={{
+                  gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
+                }}
+              >
+                <div>Ligne</div>
+                {cashMonths.map((month) => (
+                  <div className="text-right" key={month.month}>
+                    {month.month}
+                  </div>
+                ))}
+              </div>
+              <div className="mt-2 space-y-2">
+                <CashGroup
+                  detailRows={clientCashRows.map((row) => ({
+                    label: row.client,
+                    monthlyCash: row.monthlyCash,
+                    note: delayedClients[row.client]
+                      ? "Encaissement decale"
+                      : `${row.owner} · ${row.status}`,
+                  }))}
+                  label="Clients (revenus)"
+                  monthlyCash={clientTotals}
+                  tone="revenue"
+                />
+                <CashGroup
+                  detailRows={opexRows}
+                  label="OPEX"
+                  monthlyCash={opexTotals}
+                  tone="cost"
+                />
+                <CashGroup
+                  detailRows={capexRows}
+                  label="CAPEX"
+                  monthlyCash={capexTotals}
+                  tone="cost"
+                />
+              </div>
+            </div>
+          </div>
+        </Panel>
+
+        <Panel>
+          <div className="flex items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold text-stone-950">
+              Clients a relancer
+            </h2>
+            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+              {clientRelances.length}
+            </span>
+          </div>
+          <div className="mt-4 grid gap-3">
+            {clientRelances.map((relance) => (
+              <article
+                className="rounded-md border border-stone-200 p-3"
+                key={relance.client}
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="font-semibold text-stone-950">
+                      {relance.client}
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-amber-700">
+                      {formatMad(relance.amount)} · {relance.dueDate}
+                    </p>
+                  </div>
+                  <button
+                    className="rounded-md border border-stone-200 px-2 py-1 text-xs font-semibold text-stone-700 transition hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                    onClick={() =>
+                      setDelayedClients((current) => ({
+                        ...current,
+                        [relance.client]: !current[relance.client],
+                      }))
+                    }
+                    type="button"
+                  >
+                    {delayedClients[relance.client] ? "Retabli" : "Decaler"}
+                  </button>
+                </div>
+                <p className="mt-2 text-sm leading-6 text-stone-600">
+                  {relance.reason}
+                </p>
+                <MiniButton
+                  onClick={() =>
+                    onGenerate(
+                      `Prepare une relance cash pour ${relance.client}, montant ${formatMad(relance.amount)}, echeance ${relance.dueDate}.`,
+                    )
+                  }
+                >
+                  Preparer relance
+                </MiniButton>
+              </article>
+            ))}
+          </div>
+        </Panel>
       </div>
     </div>
+  );
+}
+
+function CashGroup({
+  detailRows,
+  label,
+  monthlyCash,
+  tone,
+}: {
+  detailRows: { label: string; monthlyCash: number[]; note?: string }[];
+  label: string;
+  monthlyCash: number[];
+  tone: "cost" | "revenue";
+}) {
+  const signedValue = (value: number) => (tone === "cost" ? -value : value);
+
+  return (
+    <details
+      className="rounded-md border border-stone-200 bg-white open:bg-stone-50"
+      open
+    >
+      <summary
+        className="grid cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-semibold text-stone-950"
+        style={{ gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))" }}
+      >
+        <span>{label}</span>
+        {monthlyCash.map((value, index) => (
+          <span
+            className={
+              tone === "cost"
+                ? "text-right text-rose-700"
+                : "text-right text-emerald-700"
+            }
+            key={`${label}-${index}`}
+          >
+            {formatShortMad(signedValue(value))}
+          </span>
+        ))}
+      </summary>
+      <div className="border-t border-stone-200 px-3 py-2">
+        {detailRows.map((row) => (
+          <div
+            className="grid items-center gap-2 py-1 text-xs text-stone-600"
+            key={row.label}
+            style={{
+              gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
+            }}
+          >
+            <span className="min-w-0 truncate">
+              <span className="font-semibold text-stone-800">{row.label}</span>
+              {row.note ? (
+                <span className="ml-2 text-stone-500">{row.note}</span>
+              ) : null}
+            </span>
+            {row.monthlyCash.map((value, index) => (
+              <span className="text-right" key={`${row.label}-${index}`}>
+                {value ? formatShortMad(signedValue(value)) : "-"}
+              </span>
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
@@ -1091,19 +1255,14 @@ function ProjectsPanel({
 }: {
   onGenerate: (prompt: string) => void;
 }) {
-  const months = ["Juil.", "Aout", "Sept.", "Oct.", "Nov.", "Dec."];
-
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       <Panel>
         <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <div>
             <h2 className="text-xl font-semibold text-stone-950">
-              Gantt delivery
+              Gantt delivery 12 mois
             </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              Vue portefeuille, criticite et mois de derapage probable.
-            </p>
           </div>
           <ActionButton
             icon={AlertTriangle}
@@ -1116,21 +1275,29 @@ function ProjectsPanel({
             variant="primary"
           />
         </div>
-        <div className="mt-6 overflow-x-auto">
-          <div className="min-w-[720px]">
-            <div className="grid grid-cols-[190px_repeat(6,1fr)] gap-2 text-xs font-semibold uppercase text-stone-500">
+        <div className="mt-5 overflow-x-auto">
+          <div className="min-w-[1180px]">
+            <div
+              className="grid gap-2 border-b border-stone-200 pb-2 text-xs font-semibold uppercase text-stone-500"
+              style={{
+                gridTemplateColumns: `220px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+              }}
+            >
               <div>Projet</div>
-              {months.map((month) => (
+              {projectTimelineMonths.map((month) => (
                 <div className="text-center" key={month}>
                   {month}
                 </div>
               ))}
             </div>
-            <div className="mt-3 grid gap-3">
+            <div className="mt-3 grid gap-2">
               {projects.map((project) => (
                 <div
-                  className="grid grid-cols-[190px_repeat(6,1fr)] items-center gap-2"
+                  className="grid items-center gap-2"
                   key={project.project}
+                  style={{
+                    gridTemplateColumns: `220px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                  }}
                 >
                   <div className="min-w-0">
                     <p className="truncate font-semibold text-stone-950">
@@ -1139,10 +1306,19 @@ function ProjectsPanel({
                     <p className="truncate text-sm text-stone-500">
                       {project.project}
                     </p>
+                    <p className="truncate text-xs text-stone-500">
+                      {project.startDate} - {project.endDate}
+                    </p>
                   </div>
-                  <div className="col-span-6 grid grid-cols-6">
+                  <div
+                    className="grid"
+                    style={{
+                      gridColumn: `2 / span ${projectTimelineMonths.length}`,
+                      gridTemplateColumns: `repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                    }}
+                  >
                     <div
-                      className={`h-10 rounded-md border px-3 py-2 text-xs font-semibold ${riskClasses[project.risk]}`}
+                      className={`h-9 rounded-md border px-3 py-2 text-xs font-semibold ${riskClasses[project.risk]}`}
                       style={{
                         gridColumn: `${project.start + 1} / span ${project.duration}`,
                       }}
@@ -1157,7 +1333,7 @@ function ProjectsPanel({
         </div>
       </Panel>
 
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
         {projects.map((project) => (
           <Panel key={project.project}>
             <div className="flex items-start justify-between gap-3">
@@ -1168,6 +1344,9 @@ function ProjectsPanel({
                 <h3 className="mt-1 text-lg font-semibold text-stone-950">
                   {project.project}
                 </h3>
+                <p className="mt-1 text-xs font-semibold text-stone-500">
+                  {project.startDate} - {project.endDate} · {project.progress}%
+                </p>
               </div>
               <span
                 className={`rounded-full border px-3 py-1 text-xs font-semibold ${riskClasses[project.risk]}`}
@@ -1184,16 +1363,37 @@ function ProjectsPanel({
             <p className="mt-3 text-sm leading-6 text-stone-700">
               {project.blocker}
             </p>
-            <div className="mt-4 flex flex-wrap gap-2">
-              {project.useCases.map((useCase) => (
-                <span
-                  className="rounded-full border border-stone-200 bg-stone-50 px-3 py-1 text-xs font-semibold text-stone-700"
-                  key={useCase}
-                >
-                  {useCase}
-                </span>
-              ))}
-            </div>
+            <details className="mt-4 rounded-md border border-stone-200 bg-stone-50 p-3">
+              <summary className="cursor-pointer text-sm font-semibold text-stone-800">
+                Details par use case
+              </summary>
+              <div className="mt-3 grid gap-2">
+                {project.useCaseDetails.map((useCase) => (
+                  <div
+                    className="rounded-md border border-stone-200 bg-white p-2"
+                    key={useCase.name}
+                  >
+                    <div className="flex items-start justify-between gap-3 text-sm">
+                      <span className="font-semibold text-stone-950">
+                        {useCase.name}
+                      </span>
+                      <span className="text-xs font-semibold text-stone-500">
+                        {useCase.progress}%
+                      </span>
+                    </div>
+                    <p className="mt-1 text-xs text-stone-500">
+                      {useCase.startDate} - {useCase.endDate}
+                    </p>
+                    <div className="mt-2 h-1.5 rounded-full bg-stone-100">
+                      <div
+                        className="h-1.5 rounded-full bg-stone-950"
+                        style={{ width: `${useCase.progress}%` }}
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </details>
           </Panel>
         ))}
       </div>
@@ -1203,7 +1403,7 @@ function ProjectsPanel({
 
 function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
   return (
-    <div className="space-y-6">
+    <div className="space-y-3">
       <div className="grid gap-4 lg:grid-cols-3">
         <KpiCard
           detail="Aout-Septembre"
@@ -1272,6 +1472,110 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
           ))}
         </div>
       </Panel>
+
+      <Panel>
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div>
+            <h2 className="text-xl font-semibold text-stone-950">
+              Staffing projets
+            </h2>
+            <p className="mt-1 text-sm leading-6 text-stone-600">
+              Charge par projet, personnes staffees et alertes liees au plan de
+              recrutement.
+            </p>
+          </div>
+          <ActionButton
+            icon={Users}
+            label="Recalculer staffing"
+            onClick={() =>
+              onGenerate(
+                "Recalcule le staffing depuis les projets signes, les futurs deals CRM et les besoins de recrutement.",
+              )
+            }
+            variant="secondary"
+          />
+        </div>
+        <div className="mt-5 overflow-x-auto">
+          <div className="min-w-[1180px]">
+            <div
+              className="grid gap-2 border-b border-stone-200 pb-2 text-xs font-semibold uppercase text-stone-500"
+              style={{
+                gridTemplateColumns: `240px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+              }}
+            >
+              <div>Projet / staffing</div>
+              {projectTimelineMonths.map((month) => (
+                <div className="text-center" key={month}>
+                  {month}
+                </div>
+              ))}
+            </div>
+            <div className="mt-3 grid gap-2">
+              {staffingPlan.map((staffing) => (
+                <div
+                  className="grid items-center gap-2"
+                  key={`${staffing.project}-${staffing.person}`}
+                  style={{
+                    gridTemplateColumns: `240px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                  }}
+                >
+                  <div className="min-w-0">
+                    <p className="truncate font-semibold text-stone-950">
+                      {staffing.project}
+                    </p>
+                    <p className="truncate text-sm text-stone-500">
+                      {staffing.person} · {staffing.role}
+                    </p>
+                  </div>
+                  <div
+                    className="grid"
+                    style={{
+                      gridColumn: `2 / span ${projectTimelineMonths.length}`,
+                      gridTemplateColumns: `repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                    }}
+                  >
+                    <div
+                      className={`flex h-9 items-center justify-between rounded-md border px-3 text-xs font-semibold ${
+                        staffing.needsRecruitment
+                          ? "border-rose-200 bg-rose-50 text-rose-800"
+                          : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                      }`}
+                      style={{
+                        gridColumn: `${staffing.start + 1} / span ${staffing.duration}`,
+                      }}
+                    >
+                      <span className="truncate">{staffing.person}</span>
+                      {staffing.needsRecruitment ? (
+                        <span
+                          className="ml-2 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[11px] font-bold text-white"
+                          title={staffing.linkedNeed}
+                        >
+                          X
+                        </span>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 grid gap-2 md:grid-cols-3">
+          {staffingPlan
+            .filter((staffing) => staffing.needsRecruitment)
+            .map((staffing) => (
+              <div
+                className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"
+                key={staffing.linkedNeed}
+              >
+                <p className="font-semibold">X recrutement</p>
+                <p className="mt-1 leading-6">
+                  {staffing.project}: {staffing.linkedNeed}
+                </p>
+              </div>
+            ))}
+        </div>
+      </Panel>
     </div>
   );
 }
@@ -1281,6 +1585,50 @@ function Panel({ children }: { children: ReactNode }) {
     <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-white">
       {children}
     </section>
+  );
+}
+
+function VoiceActivity({
+  isListening,
+  isProcessing,
+  isSpeaking,
+}: {
+  isListening: boolean;
+  isProcessing: boolean;
+  isSpeaking: boolean;
+}) {
+  if (!isListening && !isProcessing && !isSpeaking) return null;
+
+  const label = isListening
+    ? "Écoute active"
+    : isSpeaking
+      ? "NAIA répond"
+      : "Traitement vocal";
+  const tone = isListening
+    ? "border-cyan-200 bg-cyan-50 text-cyan-800"
+    : isSpeaking
+      ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+      : "border-violet-200 bg-violet-50 text-violet-800";
+
+  return (
+    <div
+      className={`mt-4 flex min-h-12 items-center justify-between gap-3 rounded-md border px-3 ${tone}`}
+      aria-live="polite"
+    >
+      <span className="text-xs font-semibold uppercase">{label}</span>
+      <span className="flex h-8 items-end gap-1.5" aria-hidden="true">
+        {[0, 1, 2, 3, 4].map((index) => (
+          <span
+            className="block w-1.5 rounded-full bg-current opacity-80 motion-safe:animate-pulse"
+            key={index}
+            style={{
+              animationDelay: `${index * 110}ms`,
+              height: `${10 + ((index + 1) % 3) * 6}px`,
+            }}
+          />
+        ))}
+      </span>
+    </div>
   );
 }
 

@@ -13,6 +13,7 @@ import {
 } from "@/features/crm/contracts";
 import {
   inferCrmStatus,
+  isNaiaOverviewQuestion,
   orchestrateNaiaCommand,
   type NaiaOrchestrationResult,
   type NaiaActionDraft,
@@ -105,7 +106,7 @@ async function enhanceWithGroqOrchestrator({
   result: NaiaOrchestrationResult;
 }> {
   const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
-  if (!apiKey || !command) {
+  if (!apiKey || !command || isNaiaOverviewQuestion(command)) {
     return { mode: "local-orchestrated", result: localResult };
   }
 

@@ -65,6 +65,28 @@ describe("NAIA orchestrate route", () => {
     expect(body.response).toContain("Valider et créer le lead");
   });
 
+  it("keeps NAIA in charge for capability questions even when Groq is configured", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          command: "que sais tu faire ?",
+        }),
+        method: "POST",
+      }),
+    );
+    const body = await response.json();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(body.agent.id).toBe("naia");
+    expect(body.actions).toHaveLength(0);
+    expect(body.response).toContain("Je peux");
+    expect(body.response).not.toContain("Salma");
+  });
+
   it("returns accented French wording after validating a CRM lead", async () => {
     vi.stubEnv("NODE_ENV", "development");
     mocks.createLeadAction.mockResolvedValue({

@@ -155,6 +155,10 @@ export function orchestrateNaiaCommand({
 export function classifyNaiaAgent(command: string): NaiaAgentId {
   const normalized = normalize(command);
 
+  if (isNaiaOverviewQuestion(normalized)) {
+    return "naia";
+  }
+
   if (
     includesAny(normalized, [
       "ajoute une feature",
@@ -266,6 +270,27 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
   }
 
   return "naia";
+}
+
+export function isNaiaOverviewQuestion(command: string) {
+  const normalized = normalize(command);
+  if (normalized === "aide" || normalized === "help") return true;
+
+  return includesAny(normalized, [
+    "que sais tu faire",
+    "qu est ce que tu sais faire",
+    "qu est-ce que tu sais faire",
+    "tu peux faire quoi",
+    "que peux tu faire",
+    "qu est ce que tu peux faire",
+    "qu est-ce que tu peux faire",
+    "a quoi tu sers",
+    "a quoi sers tu",
+    "comment tu peux m aider",
+    "comment peux tu m aider",
+    "tes capacites",
+    "tes fonctions",
+  ]);
 }
 
 export function inferCrmStatus(command: string): CrmLeadStatus | null {
@@ -504,6 +529,10 @@ function buildResponse(
 
   if (!command) {
     return "Je suis en ligne. Donne-moi une instruction et je route vers le bon agent.";
+  }
+
+  if (agentId === "naia" && isNaiaOverviewQuestion(command)) {
+    return "Je peux router tes demandes vers les agents NAIA, preparer des leads CRM avec validation humaine, analyser les donnees disponibles du cockpit, aider sur finance/projets/RH, et repondre aux questions generales quand elles ne demandent pas d'action sensible. Pour les actions externes, je prepare d'abord une carte a valider.";
   }
 
   if (agentId === "crm") {
