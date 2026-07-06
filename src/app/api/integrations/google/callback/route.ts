@@ -1,6 +1,7 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { getAppBaseUrl } from "@/platform/auth/config";
+import { GOOGLE_WORKSPACE_SCOPES } from "@/platform/integrations/google-workspace-scopes";
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
@@ -115,11 +116,7 @@ export async function GET(request: NextRequest) {
           provider: "google",
           status: "connected",
           external_account_label: externalAccountLabel,
-          scopes: [
-            "https://www.googleapis.com/auth/drive.file",
-            "https://www.googleapis.com/auth/calendar.events",
-            "https://www.googleapis.com/auth/calendar.freebusy",
-          ],
+          scopes: [...GOOGLE_WORKSPACE_SCOPES],
           encrypted_token_reference: JSON.stringify(tokenData),
           connected_by_profile_id: user.id,
           connected_at: new Date().toISOString(),

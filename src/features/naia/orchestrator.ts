@@ -65,6 +65,48 @@ export type NaiaActionDraft =
         request: string;
       };
       risk: NaiaActionRisk;
+    }
+  | {
+      agentId: "integrations";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "google.gmail.listMessages";
+      label: string;
+      payload: {
+        maxResults: number;
+        query?: string;
+        unreadOnly: boolean;
+      };
+      risk: NaiaActionRisk;
+    }
+  | {
+      agentId: "meetings";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "google.calendar.listEvents";
+      label: string;
+      payload: {
+        calendarId?: string;
+        daysAhead: number;
+        maxResults: number;
+      };
+      risk: NaiaActionRisk;
+    }
+  | {
+      agentId: "integrations";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "slack.prepareMessage";
+      label: string;
+      payload: {
+        channel?: string;
+        targetLabel?: string;
+        text: string;
+      };
+      risk: NaiaActionRisk;
     };
 
 export type NaiaOrchestrationResult = {
@@ -125,12 +167,15 @@ export function orchestrateNaiaCommand({
     ? "crm"
     : (agentIdOverride ?? localAgentId);
   const agent = getNaiaAgent(agentId);
+  const workspaceActions = buildWorkspaceActions(cleanCommand, localAgentId);
   const actions =
     agentId === "crm" || localAgentId === "crm"
       ? buildCrmActions(cleanCommand, crmLeads)
       : agentId === "developer" || localAgentId === "developer"
         ? [buildDeveloperAction(cleanCommand)]
-        : [];
+        : workspaceActions.length > 0
+          ? workspaceActions
+          : [];
 
   return {
     actions,
@@ -245,7 +290,19 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
     return "hr";
   }
 
-  if (includesAny(normalized, ["meeting", "reunion", "rdv", "compte rendu"])) {
+  if (
+    includesAny(normalized, [
+      "meeting",
+      "reunion",
+      "rdv",
+      "compte rendu",
+      "agenda",
+      "calendrier",
+      "calendar",
+      "dispo",
+      "disponibilite",
+    ])
+  ) {
     return "meetings";
   }
 
@@ -259,7 +316,21 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
     return "automations";
   }
 
-  if (includesAny(normalized, ["integration", "connecteur", "token", "api"])) {
+  if (
+    includesAny(normalized, [
+      "integration",
+      "connecteur",
+      "token",
+      "api",
+      "gmail",
+      "email",
+      "emails",
+      "mail",
+      "mails",
+      "inbox",
+      "slack",
+    ])
+  ) {
     return "integrations";
   }
 
@@ -482,6 +553,74 @@ function buildDeveloperAction(command: string): NaiaActionDraft {
   };
 }
 
+function buildWorkspaceActions(
+  command: string,
+  localAgentId: NaiaAgentId,
+): NaiaActionDraft[] {
+  const normalized = normalize(command);
+
+  if (wantsGmailRead(normalized)) {
+    return [
+      {
+        agentId: "integrations",
+        approvalRequired: true,
+        description:
+          "Lina lira les derniers messages Gmail autorises par OAuth et retournera un resume avant toute action d'envoi.",
+        id: `gmail-list-${stableActionSuffix(command)}`,
+        kind: "google.gmail.listMessages",
+        label: "Lire Gmail",
+        payload: {
+          maxResults: includesAny(normalized, ["urgent", "priorite"]) ? 15 : 10,
+          unreadOnly: includesAny(normalized, [
+            "non lu",
+            "non lus",
+            "unread",
+            "urgent",
+          ]),
+        },
+        risk: "low",
+      },
+    ];
+  }
+
+  if (wantsCalendarRead(normalized, localAgentId)) {
+    return [
+      {
+        agentId: "meetings",
+        approvalRequired: true,
+        description:
+          "Adam lira Google Calendar pour te donner les creneaux et conflits visibles avant toute creation d'evenement.",
+        id: `calendar-list-${stableActionSuffix(command)}`,
+        kind: "google.calendar.listEvents",
+        label: "Lire l'agenda",
+        payload: {
+          daysAhead: inferCalendarWindowDays(normalized),
+          maxResults: 10,
+        },
+        risk: "low",
+      },
+    ];
+  }
+
+  if (wantsSlackMessage(normalized)) {
+    return [
+      {
+        agentId: "integrations",
+        approvalRequired: true,
+        description:
+          "Lina preparera le message Slack. L'envoi restera bloque tant qu'un canal explicite et une validation ne sont pas fournis.",
+        id: `slack-message-${stableActionSuffix(command)}`,
+        kind: "slack.prepareMessage",
+        label: "Preparer le message Slack",
+        payload: extractSlackMessageDraft(command),
+        risk: "medium",
+      },
+    ];
+  }
+
+  return [];
+}
+
 function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
   const normalizedCommand = normalize(command);
   const commandTokens = tokenSet(normalizedCommand);
@@ -563,6 +702,28 @@ function buildResponse(
 
   if (agentId === "developer") {
     return `${agent.name} peut preparer la mission dev: spec, branche, criteres d'acceptation et revue humaine. NAIA ne modifie pas le code sans validation.`;
+  }
+
+  if (agentId === "integrations") {
+    if (actions.some((action) => action.kind === "google.gmail.listMessages")) {
+      return `${agent.name} prend le relais integrations. J'ai prepare une lecture Gmail limitee et approuvee; NAIA resumera les messages autorises sans envoyer d'email automatiquement.`;
+    }
+
+    if (actions.some((action) => action.kind === "slack.prepareMessage")) {
+      return `${agent.name} prend le relais Slack. J'ai prepare un brouillon de message; l'envoi reste bloque tant que le canal et la validation humaine ne sont pas confirmes.`;
+    }
+
+    return `${agent.name} prend le relais integrations: Google Workspace, Gmail, Calendar et Slack sont traites comme des connecteurs gardes avec validation humaine.`;
+  }
+
+  if (agentId === "meetings") {
+    if (
+      actions.some((action) => action.kind === "google.calendar.listEvents")
+    ) {
+      return `${agent.name} prend le relais agenda. J'ai prepare une lecture Google Calendar pour verifier tes evenements et disponibilites avant toute creation.`;
+    }
+
+    return `${agent.name} prend le relais meetings: agenda, comptes rendus, decisions et suivis CRM.`;
   }
 
   if (agentId === "leads") {
@@ -787,6 +948,119 @@ function isCashFlowIntent(normalizedCommand: string) {
       "relances cash",
     ])
   );
+}
+
+function wantsGmailRead(normalizedCommand: string) {
+  const mentionsGmail = includesAny(normalizedCommand, [
+    "gmail",
+    "mes emails",
+    "mes email",
+    "mes mails",
+    "mes mail",
+    "boite mail",
+    "inbox",
+  ]);
+  const asksRead = includesAny(normalizedCommand, [
+    "lis",
+    "lire",
+    "check",
+    "verifie",
+    "verifier",
+    "resume",
+    "resumer",
+    "recap",
+    "analyse",
+    "priorise",
+    "prioriser",
+    "non lu",
+    "non lus",
+    "unread",
+  ]);
+
+  return mentionsGmail && asksRead;
+}
+
+function wantsCalendarRead(
+  normalizedCommand: string,
+  localAgentId: NaiaAgentId,
+) {
+  if (isPotentialClientMeeting(normalizedCommand)) return false;
+
+  const mentionsCalendar =
+    localAgentId === "meetings" ||
+    includesAny(normalizedCommand, [
+      "agenda",
+      "calendrier",
+      "calendar",
+      "dispo",
+      "disponibilite",
+      "disponibilites",
+    ]);
+  const asksRead = includesAny(normalizedCommand, [
+    "check",
+    "verifie",
+    "verifier",
+    "lis",
+    "lire",
+    "regarde",
+    "montre",
+    "quoi de prevu",
+    "creneau",
+    "creneaux",
+    "libre",
+  ]);
+
+  return mentionsCalendar && asksRead;
+}
+
+function wantsSlackMessage(normalizedCommand: string) {
+  return (
+    normalizedCommand.includes("slack") &&
+    includesAny(normalizedCommand, [
+      "message",
+      "prepare",
+      "preparer",
+      "ecris",
+      "redige",
+      "envoie",
+      "envoyer",
+      "notifie",
+      "notification",
+    ])
+  );
+}
+
+function inferCalendarWindowDays(normalizedCommand: string) {
+  if (includesAny(normalizedCommand, ["demain", "tomorrow"])) return 1;
+  if (includesAny(normalizedCommand, ["semaine", "week"])) return 7;
+  if (includesAny(normalizedCommand, ["mois", "month"])) return 31;
+  return 3;
+}
+
+function extractSlackMessageDraft(command: string) {
+  const targetMatch = command.match(
+    /\b(?:pour|a|à|dans|sur)\s+([^:]+?)\s*:\s*(.+)$/i,
+  );
+
+  if (targetMatch) {
+    return {
+      targetLabel: targetMatch[1].trim().slice(0, 120),
+      text: targetMatch[2].trim().slice(0, 1200),
+    };
+  }
+
+  const text = command
+    .replace(/^(naia[, ]*)?/i, "")
+    .replace(
+      /\b(slack|message|prepare|preparer|ecris|redige|envoie|envoyer)\b/gi,
+      "",
+    )
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return {
+    text: text.slice(0, 1200) || command.trim().slice(0, 1200),
+  };
 }
 
 function includesAny(value: string, needles: string[]) {

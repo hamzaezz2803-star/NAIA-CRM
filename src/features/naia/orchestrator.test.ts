@@ -202,6 +202,64 @@ describe("NAIA orchestrator", () => {
     expect(result.response).not.toContain("Nora prend le relais finance");
   });
 
+  it("prepares a Gmail read action for workspace email requests", () => {
+    const result = orchestrateNaiaCommand({
+      command: "NAIA lis mes emails Gmail non lus et resume les urgences",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("integrations");
+    expect(result.agent.name).toBe("Lina");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      agentId: "integrations",
+      approvalRequired: true,
+      kind: "google.gmail.listMessages",
+      payload: {
+        maxResults: 10,
+        unreadOnly: true,
+      },
+    });
+    expect(result.response).toContain("Gmail");
+  });
+
+  it("prepares a Calendar read action for agenda checks", () => {
+    const result = orchestrateNaiaCommand({
+      command: "NAIA check mon agenda demain matin",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("meetings");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      agentId: "meetings",
+      approvalRequired: true,
+      kind: "google.calendar.listEvents",
+      payload: {
+        daysAhead: 1,
+      },
+    });
+  });
+
+  it("prepares a Slack message action without sending it directly", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "NAIA prepare un message Slack pour Nabil: la demo client est prete",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("integrations");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      agentId: "integrations",
+      approvalRequired: true,
+      kind: "slack.prepareMessage",
+      payload: {
+        text: "la demo client est prete",
+      },
+    });
+  });
+
   it("can use an LLM-selected agent while keeping deterministic action drafts", () => {
     const result = orchestrateNaiaCommand({
       agentIdOverride: "hr",

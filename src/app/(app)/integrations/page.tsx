@@ -61,10 +61,11 @@ export default async function IntegrationsPage() {
               Etat reel des connecteurs
             </h2>
             <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">
-              Google Drive et Calendar ont un backend. Slack, WhatsApp,
-              Microsoft 365 et Gmail API restent derriere une fondation
-              d&apos;approbation tant que leurs routes OAuth/API ne sont pas
-              implementees dans NAIA.
+              Google Drive, Calendar et Gmail ont un backend OAuth/API. Slack
+              peut preparer des notifications approuvees via token bot. WhatsApp
+              et Microsoft 365 restent derriere une fondation d&apos;approbation
+              tant que leurs routes OAuth/API ne sont pas implementees dans
+              NAIA.
             </p>
           </div>
         </div>

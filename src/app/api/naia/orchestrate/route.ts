@@ -26,6 +26,10 @@ import {
   type OrganizationRole,
   type PermissionAction,
 } from "@/platform/core/permissions";
+import {
+  listGmailMessages,
+  listGoogleCalendarEvents,
+} from "@/platform/integrations/google-workspace";
 
 type OrchestratePayload = {
   actionId?: string;
@@ -356,6 +360,74 @@ async function executeAction({
       execution: "prepared",
       message:
         "Adam passera par le lead CRM validé pour vérifier les disponibilités Google Calendar et créer l'événement. Valide d'abord l'action Salma si le lead n'existe pas encore.",
+      success: true,
+    });
+  }
+
+  if (action.kind === "google.gmail.listMessages") {
+    try {
+      const messages = await listGmailMessages(action.payload);
+
+      return Response.json({
+        action,
+        execution: "applied",
+        message:
+          messages.length > 0
+            ? `Lina a lu ${messages.length} message(s) Gmail autorise(s).`
+            : "Lina n'a trouvé aucun message Gmail correspondant.",
+        providerResult: {
+          messages,
+        },
+        success: true,
+      });
+    } catch (error) {
+      return Response.json({
+        action,
+        execution: "failed",
+        message:
+          error instanceof Error ? error.message : "Lecture Gmail impossible.",
+        success: false,
+      });
+    }
+  }
+
+  if (action.kind === "google.calendar.listEvents") {
+    try {
+      const events = await listGoogleCalendarEvents(action.payload);
+
+      return Response.json({
+        action,
+        execution: "applied",
+        message:
+          events.length > 0
+            ? `Adam a lu ${events.length} evenement(s) Google Calendar.`
+            : "Adam n'a trouvé aucun événement dans la fenêtre demandée.",
+        providerResult: {
+          events,
+        },
+        success: true,
+      });
+    } catch (error) {
+      return Response.json({
+        action,
+        execution: "failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Lecture Google Calendar impossible.",
+        success: false,
+      });
+    }
+  }
+
+  if (action.kind === "slack.prepareMessage") {
+    return Response.json({
+      action,
+      execution: "prepared",
+      message:
+        action.payload.channel && process.env.SLACK_BOT_TOKEN
+          ? "Message Slack prêt. L'envoi automatique reste désactivé pour cette action; valide le canal dans le connecteur Slack avant activation."
+          : "Brouillon Slack préparé. Ajoute un canal explicite et configure SLACK_BOT_TOKEN avant tout envoi.",
       success: true,
     });
   }

@@ -7,6 +7,7 @@ import {
   type IntegrationHealth,
   plannedIntegrationProviders,
 } from "./contracts";
+import { GOOGLE_WORKSPACE_SCOPES } from "./google-workspace-scopes";
 
 type IntegrationConnectionRow = {
   encrypted_token_reference: string | null;
@@ -27,6 +28,10 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       (item) => item.provider === provider.provider,
     );
     const scopes = connection?.scopes ?? [];
+    const missingRequiredScopes =
+      provider.provider === "google"
+        ? GOOGLE_WORKSPACE_SCOPES.filter((scope) => !scopes.includes(scope))
+        : [];
 
     if (!provider.isImplemented) {
       return {
@@ -50,7 +55,11 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
     if (connection?.status === "connected") {
       const hasTokenReference = Boolean(connection.encrypted_token_reference);
 
-      if (missingEnvVars.length === 0 && hasTokenReference) {
+      if (
+        missingEnvVars.length === 0 &&
+        hasTokenReference &&
+        missingRequiredScopes.length === 0
+      ) {
         return {
           capabilities: [...provider.capabilities],
           detail: `Compte connecte${connection.external_account_label ? `: ${connection.external_account_label}` : ""}.`,
@@ -69,7 +78,9 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       return {
         capabilities: [...provider.capabilities],
         detail:
-          "Une connexion existe, mais il manque une variable serveur ou une reference token. Reconnecte le provider.",
+          missingRequiredScopes.length > 0
+            ? "Une connexion existe, mais elle n'a pas encore les nouveaux scopes Gmail. Reconnecte Google Workspace."
+            : "Une connexion existe, mais il manque une variable serveur ou une reference token. Reconnecte le provider.",
         envVars: [...provider.envVars],
         externalAccountLabel: connection.external_account_label ?? undefined,
         isImplemented: true,
@@ -86,7 +97,9 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       return {
         capabilities: [...provider.capabilities],
         detail:
-          "Credentials serveur presents. Connexion utilisateur Google Workspace requise.",
+          provider.provider === "google"
+            ? "Credentials serveur presents. Connexion utilisateur Google Workspace requise."
+            : "Token serveur present. NAIA peut preparer des notifications Slack approuvees.",
         envVars: [...provider.envVars],
         externalAccountLabel: connection?.external_account_label ?? undefined,
         isImplemented: true,

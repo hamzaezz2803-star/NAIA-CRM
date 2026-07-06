@@ -4,6 +4,8 @@ const mocks = vi.hoisted(() => ({
   createLeadAction: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
   fetchLeadsAction: vi.fn(),
+  listGmailMessages: vi.fn(),
+  listGoogleCalendarEvents: vi.fn(),
   updateLeadStatusAction: vi.fn(),
 }));
 
@@ -16,6 +18,11 @@ vi.mock("@/features/crm/actions", () => ({
 
 vi.mock("@/platform/auth/supabase-server", () => ({
   createServerSupabaseClient: vi.fn(),
+}));
+
+vi.mock("@/platform/integrations/google-workspace", () => ({
+  listGmailMessages: mocks.listGmailMessages,
+  listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
 
 import { POST } from "./route";
@@ -38,6 +45,20 @@ describe("NAIA orchestrate route", () => {
       },
       success: true,
     });
+    mocks.listGmailMessages.mockResolvedValue([
+      {
+        from: "nabil@qarizmi.com",
+        id: "gmail-1",
+        subject: "Demo client",
+      },
+    ]);
+    mocks.listGoogleCalendarEvents.mockResolvedValue([
+      {
+        id: "event-1",
+        start: "2026-07-07T09:00:00.000Z",
+        title: "Point client",
+      },
+    ]);
   });
 
   afterEach(() => {
@@ -173,5 +194,74 @@ describe("NAIA orchestrate route", () => {
     const executeBody = await executeResponse.json();
 
     expect(executeBody.message).toBe("Lead CRM créé.");
+  });
+
+  it("executes an approved Gmail read action", async () => {
+    const command = "NAIA lis mes emails Gmail non lus";
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const gmailAction = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "google.gmail.listMessages",
+    );
+
+    const executeResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: gmailAction.id,
+          approvalToken: gmailAction.approvalToken,
+          command,
+          execute: true,
+        }),
+        method: "POST",
+      }),
+    );
+    const executeBody = await executeResponse.json();
+
+    expect(mocks.listGmailMessages).toHaveBeenCalledWith({
+      maxResults: 10,
+      unreadOnly: true,
+    });
+    expect(executeBody.execution).toBe("applied");
+    expect(executeBody.providerResult.messages).toHaveLength(1);
+  });
+
+  it("executes an approved Calendar read action", async () => {
+    const command = "NAIA check mon agenda demain matin";
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const calendarAction = draftBody.actions.find(
+      (action: { kind: string }) =>
+        action.kind === "google.calendar.listEvents",
+    );
+
+    const executeResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: calendarAction.id,
+          approvalToken: calendarAction.approvalToken,
+          command,
+          execute: true,
+        }),
+        method: "POST",
+      }),
+    );
+    const executeBody = await executeResponse.json();
+
+    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith({
+      daysAhead: 1,
+      maxResults: 10,
+    });
+    expect(executeBody.execution).toBe("applied");
+    expect(executeBody.providerResult.events).toHaveLength(1);
   });
 });
