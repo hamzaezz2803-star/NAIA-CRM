@@ -25,9 +25,13 @@ export async function POST(request: Request) {
       "model",
       process.env.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
     );
+    const language = getTranscriptionLanguage();
+    if (language) {
+      groqForm.append("language", language);
+    }
     groqForm.append(
       "prompt",
-      "Business voice command for Qarizmi OS. The speaker may mix French and English in the same sentence. Preserve the original languages, CRM terms, company names, people names, dates, and times.",
+      "Commande vocale business pour Qarizmi OS. Transcris exactement ce qui est dit et ne traduis jamais vers l'anglais. Si la phrase est en francais, garde le francais. Si le speaker melange francais et anglais, conserve le melange original, les termes CRM, les noms de societes, les noms de personnes, les dates et les heures.",
     );
     groqForm.append("response_format", "json");
     groqForm.append("temperature", "0");
@@ -98,4 +102,10 @@ function getAudioFileName(audio: Blob) {
   if (audio.type.includes("ogg")) return "naia-command.ogg";
   if (audio.type.includes("wav")) return "naia-command.wav";
   return "naia-command.webm";
+}
+
+function getTranscriptionLanguage() {
+  const language = process.env.GROQ_WHISPER_LANGUAGE?.trim().toLowerCase();
+  if (language === "auto") return undefined;
+  return language || "fr";
 }

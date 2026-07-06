@@ -59,15 +59,17 @@ export async function POST(req: NextRequest) {
 
     const groq = new Groq({ apiKey });
     const extension = getAudioExtension(contentType);
+    const language = getTranscriptionLanguage();
 
     // Transcribe the audio using whisper-large-v3
     const transcription = await groq.audio.transcriptions.create({
       file: await toFile(buffer, `recording.${extension}`, {
         type: contentType,
       }),
+      ...(language ? { language } : {}),
       model: "whisper-large-v3",
       prompt:
-        "Business CRM note. The speaker may mix French and English. Preserve CRM terms, people names, company names, dates, and times.",
+        "Note CRM business. Transcris exactement ce qui est dit et ne traduis jamais vers l'anglais. Si la phrase est en francais, garde le francais. Si le speaker melange francais et anglais, conserve le melange original, les termes CRM, les noms de societes, les noms de personnes, les dates et les heures.",
       response_format: "json",
       temperature: 0,
     });
@@ -90,4 +92,10 @@ function getAudioExtension(contentType: string) {
   if (contentType.includes("wav")) return "wav";
   if (contentType.includes("webm")) return "webm";
   return "webm";
+}
+
+function getTranscriptionLanguage() {
+  const language = process.env.GROQ_WHISPER_LANGUAGE?.trim().toLowerCase();
+  if (language === "auto") return undefined;
+  return language || "fr";
 }

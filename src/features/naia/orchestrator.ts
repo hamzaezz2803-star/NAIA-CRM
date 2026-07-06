@@ -210,6 +210,10 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
     return "crm";
   }
 
+  if (isPotentialClientOpportunity(normalized)) {
+    return "crm";
+  }
+
   if (
     includesAny(normalized, [
       "cash",
@@ -323,17 +327,29 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
     "prospect",
   ]);
   const wantsProspectMeeting = isPotentialClientMeeting(normalized);
+  const wantsPotentialClientOpportunity =
+    isPotentialClientOpportunity(normalized);
 
-  if (wantsLeadCreation || wantsProspectMeeting) {
+  if (
+    wantsLeadCreation ||
+    wantsProspectMeeting ||
+    wantsPotentialClientOpportunity
+  ) {
     const identity = extractSimpleLeadIdentity(command);
-    const effectiveStatus = status ?? "lead-to-contact";
+    const effectiveStatus =
+      status ??
+      (wantsPotentialClientOpportunity && !wantsProspectMeeting
+        ? "contacted"
+        : "lead-to-contact");
     const createLeadAction = {
       agentId: "crm",
       approvalRequired: true,
       description:
         wantsProspectMeeting && !wantsLeadCreation
           ? "Salma creera le lead CRM car un rendez-vous avec un prospect doit toujours etre rattache au pipeline."
-          : "Salma creera un lead avec le texte de la commande comme contexte initial.",
+          : wantsPotentialClientOpportunity && !wantsLeadCreation
+            ? "Salma creera une opportunite CRM depuis cette conversation commerciale pour que tu puisses verifier et completer le lead."
+            : "Salma creera un lead avec le texte de la commande comme contexte initial.",
       id: `crm-create-${stableActionSuffix(command)}`,
       kind: "crm.createLead",
       label: "Creer le lead CRM",
@@ -569,7 +585,12 @@ function extractSimpleLeadIdentity(command: string) {
   const contextualMatch =
     withoutPrefix.match(
       /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
-    ) ?? withoutPrefix.match(/\b(.+?)\s+chez\s+([^,.;]+)\b/i);
+    ) ??
+    withoutPrefix.match(
+      /\b(?:talked|spoke|discussed|exchanged|met)\s+(?:to|with)\s+(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
+    ) ??
+    withoutPrefix.match(/\b(.+?)\s+chez\s+([^,.;]+)\b/i) ??
+    withoutPrefix.match(/\b(.+?)\s+(?:from|at)\s+([^,.;]+)\b/i);
 
   if (!contextualMatch) {
     return {};
@@ -618,9 +639,17 @@ function isPotentialClientMeeting(normalizedCommand: string) {
     "discute avec",
     "echange avec",
     "contact avec",
+    "i talked to",
+    "i spoke to",
+    "talked to",
+    "spoke to",
+    "discussed with",
+    "met with",
   ]);
   const hasPersonCompanyPattern =
-    /\b(?:de|chez)\s+[\p{Letter}\p{Number}\s&'-]{2,}/u.test(normalizedCommand);
+    /\b(?:de|chez|from|at)\s+[\p{Letter}\p{Number}\s&'-]{2,}/u.test(
+      normalizedCommand,
+    );
   const isExplicitInternalMeeting = includesAny(normalizedCommand, [
     "interne",
     "daily",
@@ -634,6 +663,54 @@ function isPotentialClientMeeting(normalizedCommand: string) {
     !isExplicitInternalMeeting &&
     (hasCommercialConversation || hasPersonCompanyPattern)
   );
+}
+
+function isPotentialClientOpportunity(normalizedCommand: string) {
+  const hasCommercialConversation = includesAny(normalizedCommand, [
+    "j ai parle",
+    "j ai discute",
+    "j ai echange",
+    "on a parle",
+    "on a discute",
+    "parle a",
+    "parle avec",
+    "discute avec",
+    "echange avec",
+    "contact avec",
+    "i talked to",
+    "i spoke to",
+    "talked to",
+    "spoke to",
+    "discussed with",
+    "met with",
+  ]);
+  const hasCompanyPattern =
+    /\b(?:de|chez|from|at)\s+[\p{Letter}\p{Number}\s&'-]{2,}/u.test(
+      normalizedCommand,
+    );
+  const hasBusinessSignal = includesAny(normalizedCommand, [
+    "collabor",
+    "use case",
+    "use cases",
+    "cas d usage",
+    "cas d utilisation",
+    "cas d'utilisation",
+    "developper",
+    "develop",
+    "projet",
+    "besoin",
+    "partenariat",
+    "partnered",
+    "pipeline",
+    "opportunite",
+    "opportunity",
+    "llm",
+    "crm",
+    "ia",
+    "ai",
+  ]);
+
+  return hasCommercialConversation && hasCompanyPattern && hasBusinessSignal;
 }
 
 function includesAny(value: string, needles: string[]) {

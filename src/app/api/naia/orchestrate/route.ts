@@ -490,9 +490,13 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
     .trim()
     .replace(/[.!?]$/g, "");
-  const prospectMeetingMatch = clean.match(
-    /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
-  );
+  const prospectMeetingMatch =
+    clean.match(
+      /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
+    ) ??
+    clean.match(
+      /\b(?:talked|spoke|discussed|exchanged|met)\s+(?:to|with)\s+(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
+    );
   const isMeetingCommand =
     /\b(meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion)\b/i.test(
       clean,

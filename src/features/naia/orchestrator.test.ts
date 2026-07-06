@@ -107,6 +107,46 @@ describe("NAIA orchestrator", () => {
     ).toBe(true);
   });
 
+  it("creates a CRM lead card from a French commercial conversation without meeting wording", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "J'ai parlé à Abdaslam Alaoui Ismaili de HPS. Ils ont déjà travaillé avec Mistral IA et veulent collaborer avec nous sur des cas d'utilisation de leur LLM local.",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.createLead",
+      payload: {
+        companyName: "HPS",
+        contactName: "Abdaslam Alaoui Ismaili",
+        status: "contacted",
+      },
+    });
+  });
+
+  it("still creates a CRM lead card when Whisper returns the same opportunity in English", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "I talked to Abdaslam Alaoui Ismaili from HPS. They have already partnered with Mistralia. They would collaborate with us to develop use cases on their local LLM.",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.createLead",
+      payload: {
+        companyName: "HPS",
+        contactName: "Abdaslam Alaoui Ismaili",
+        status: "contacted",
+      },
+    });
+  });
+
   it("routes feature requests to the developer agent", () => {
     expect(
       classifyNaiaAgent("NAIA demande a Codex d'ajouter une nouvelle feature"),
