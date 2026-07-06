@@ -162,8 +162,6 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
       "nouvelle feature",
       "feature",
       "fonctionnalite",
-      "developpe",
-      "developper",
       "code",
       "codex",
       "openclaw",
@@ -584,10 +582,10 @@ function extractSimpleLeadIdentity(command: string) {
     .replace(/[.!?]$/g, "");
   const contextualMatch =
     withoutPrefix.match(
-      /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
+      /\b(?:parle|parlé|contacte|contacté|appele|appelé|echange|échangé|discute|discuté)\s+(?:(?:a|à|avec)\s+)?(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
     ) ??
     withoutPrefix.match(
-      /\b(?:talked|spoke|discussed|exchanged|met)\s+(?:to|with)\s+(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
+      /\b(?:talked|spoke|contacted|called|discussed|exchanged|met)\s+(?:to|with)?\s*(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
     ) ??
     withoutPrefix.match(/\b(.+?)\s+chez\s+([^,.;]+)\b/i) ??
     withoutPrefix.match(/\b(.+?)\s+(?:from|at)\s+([^,.;]+)\b/i);
@@ -630,12 +628,14 @@ function isPotentialClientMeeting(normalizedCommand: string) {
   ]);
   const hasCommercialConversation = includesAny(normalizedCommand, [
     "j ai parle",
+    "j ai contacte",
     "j ai discute",
     "j ai echange",
     "on a parle",
     "on a discute",
     "parle a",
     "parle avec",
+    "contacte",
     "discute avec",
     "echange avec",
     "contact avec",
@@ -668,12 +668,14 @@ function isPotentialClientMeeting(normalizedCommand: string) {
 function isPotentialClientOpportunity(normalizedCommand: string) {
   const hasCommercialConversation = includesAny(normalizedCommand, [
     "j ai parle",
+    "j ai contacte",
     "j ai discute",
     "j ai echange",
     "on a parle",
     "on a discute",
     "parle a",
     "parle avec",
+    "contacte",
     "discute avec",
     "echange avec",
     "contact avec",
@@ -695,6 +697,8 @@ function isPotentialClientOpportunity(normalizedCommand: string) {
     "cas d usage",
     "cas d utilisation",
     "cas d'utilisation",
+    "solution",
+    "solutions",
     "developper",
     "develop",
     "projet",

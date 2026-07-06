@@ -147,6 +147,38 @@ describe("NAIA orchestrator", () => {
     });
   });
 
+  it("creates a new lead card instead of updating an unrelated lead for contacted prospect notes", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "J'ai contacté Abdeslam El-Alawi de HPS. Il m'a dit qu'il avait déjà entamé les discussions avec Mistral hier, mais qu'il voudrait qu'on l'aide à développer des solutions sur le LLM de Mistral.",
+      crmLeads: [
+        ...crmLeads,
+        {
+          createdAt: "2026-07-02T10:00:00.000Z",
+          id: "lead-unrelated-crm",
+          notes: "Prospects CRM automatisation commerciale",
+          organizationId: "org-1",
+          status: "lead-to-contact",
+          topic:
+            "mettre en place un CRM avec un agent IA pour automatiser la gestion des prospects",
+          updatedAt: "2026-07-02T10:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.createLead",
+      payload: {
+        companyName: "HPS",
+        contactName: "Abdeslam El-Alawi",
+        status: "contacted",
+      },
+    });
+  });
+
   it("routes feature requests to the developer agent", () => {
     expect(
       classifyNaiaAgent("NAIA demande a Codex d'ajouter une nouvelle feature"),

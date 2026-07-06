@@ -298,11 +298,12 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
     setNotice("");
 
     try {
+      const approvedCommand = result?.command ?? command;
       const response = await fetch("/api/naia/orchestrate", {
         body: JSON.stringify({
           actionId: action.id,
           approvalToken: action.approvalToken,
-          command,
+          command: approvedCommand,
           execute: true,
           leadInput,
         }),
@@ -342,7 +343,7 @@ export function NaiaCommandCenter({ initialCrmStats }: NaiaCommandCenterProps) {
         return;
       }
 
-      await runCommand(command);
+      await runCommand(approvedCommand);
       setNotice(successMessage);
     } catch (error) {
       setNotice(

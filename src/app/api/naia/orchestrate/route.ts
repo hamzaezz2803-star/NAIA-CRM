@@ -52,12 +52,17 @@ export async function POST(request: Request) {
   const localResult = orchestrateNaiaCommand({ command, crmLeads });
 
   if (payload.execute) {
+    const hydratedLocalResult = await hydrateCrmLeadDrafts({
+      command,
+      result: localResult,
+    });
+
     return executeAction({
       actionId: payload.actionId,
       approvalToken: payload.approvalToken,
       command,
       leadInput: payload.leadInput,
-      serverActions: localResult.actions,
+      serverActions: hydratedLocalResult.actions,
     });
   }
 
@@ -492,10 +497,10 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
     .replace(/[.!?]$/g, "");
   const prospectMeetingMatch =
     clean.match(
-      /\b(?:parle|parlé|echange|échangé|discute|discuté)\s+(?:a|à|avec)\s+(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
+      /\b(?:parle|parlé|contacte|contacté|appele|appelé|echange|échangé|discute|discuté)\s+(?:(?:a|à|avec)\s+)?(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
     ) ??
     clean.match(
-      /\b(?:talked|spoke|discussed|exchanged|met)\s+(?:to|with)\s+(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
+      /\b(?:talked|spoke|contacted|called|discussed|exchanged|met)\s+(?:to|with)?\s*(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
     );
   const isMeetingCommand =
     /\b(meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion)\b/i.test(
@@ -514,7 +519,7 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
         : "Qualifier le besoin et confirmer le prochain rendez-vous",
       notes: `Commande NAIA: ${command}`,
       source: "NAIA",
-      status: isMeetingCommand ? "meeting-booked" : "lead-to-contact",
+      status: isMeetingCommand ? "meeting-booked" : "contacted",
       topic: `${companyName} - nouveau lead`,
     };
   }
