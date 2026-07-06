@@ -87,6 +87,54 @@ describe("NAIA orchestrate route", () => {
     expect(body.response).not.toContain("Salma");
   });
 
+  it("sends operating context to Groq and allows general non-action answers", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "naia",
+                confidence: 0.84,
+                response:
+                  "Un LLM est un modele de langage capable de comprendre et generer du texte.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          command: "c'est quoi un LLM ?",
+        }),
+        method: "POST",
+      }),
+    );
+    const body = await response.json();
+    const groqRequest = JSON.parse(fetchMock.mock.calls[0][1].body);
+    const systemPrompt = groqRequest.messages[0].content;
+    const userPrompt = JSON.parse(groqRequest.messages[1].content);
+
+    expect(body.agent.id).toBe("naia");
+    expect(body.actions).toHaveLength(0);
+    expect(body.response).toContain("modele de langage");
+    expect(systemPrompt).toContain("question generale");
+    expect(systemPrompt).toContain("sans pretendre avoir execute");
+    expect(userPrompt.operatingContext.cashFlow).toContain("Oct.");
+    expect(userPrompt.operatingContext.pipeline).toContain("Atlas Process");
+    expect(userPrompt.operatingContext.projects).toContain("Sahara Logistics");
+    expect(userPrompt.operatingContext.staffing).toContain(
+      "Full-stack Next.js",
+    );
+    expect(userPrompt.operatingContext.followUps).toContain("Medina Health");
+  });
+
   it("returns accented French wording after validating a CRM lead", async () => {
     vi.stubEnv("NODE_ENV", "development");
     mocks.createLeadAction.mockResolvedValue({

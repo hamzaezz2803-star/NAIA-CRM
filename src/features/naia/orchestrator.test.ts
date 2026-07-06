@@ -188,6 +188,20 @@ describe("NAIA orchestrator", () => {
     );
   });
 
+  it("answers cash-flow analysis questions with operating data instead of a generic handoff", () => {
+    const result = orchestrateNaiaCommand({
+      command: "analyse mes CFs et dis moi les risques principaux",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("finance");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("Oct.");
+    expect(result.response).toContain("Medina Health");
+    expect(result.response).toContain("Sahara Logistics");
+    expect(result.response).not.toContain("Nora prend le relais finance");
+  });
+
   it("can use an LLM-selected agent while keeping deterministic action drafts", () => {
     const result = orchestrateNaiaCommand({
       agentIdOverride: "hr",

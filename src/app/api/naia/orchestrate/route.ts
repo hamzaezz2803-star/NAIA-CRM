@@ -18,6 +18,7 @@ import {
   type NaiaOrchestrationResult,
   type NaiaActionDraft,
 } from "@/features/naia/orchestrator";
+import { buildNaiaOperatingContext } from "@/features/naia/operational-context";
 import { naiaAgents, type NaiaAgentId } from "@/features/naia/agents";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import {
@@ -110,6 +111,8 @@ async function enhanceWithGroqOrchestrator({
     return { mode: "local-orchestrated", result: localResult };
   }
 
+  const operatingContext = buildNaiaOperatingContext();
+
   try {
     const groqResponse = await fetch(
       "https://api.groq.com/openai/v1/chat/completions",
@@ -119,7 +122,7 @@ async function enhanceWithGroqOrchestrator({
           messages: [
             {
               content:
-                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. Si la demande mentionne un rendez-vous, call ou meeting avec un prospect/client potentiel, choisis toujours "crm" pour que Salma cree ou mette a jour le lead; Adam intervient ensuite pour le calendrier. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
+                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. Utilise operatingContext pour toute analyse operationnelle: cash flow, pipeline, projets, staffing, relances et risques. Si la demande est une question generale hors contexte Qarizmi, choisis "naia" et reponds comme un assistant LLM normal, sans pretendre avoir execute une action externe. Si la demande mentionne un rendez-vous, call ou meeting avec un prospect/client potentiel, choisis toujours "crm" pour que Salma cree ou mette a jour le lead; Adam intervient ensuite pour le calendrier. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
               role: "system",
             },
             {
@@ -147,6 +150,7 @@ async function enhanceWithGroqOrchestrator({
                   })),
                   response: localResult.response,
                 },
+                operatingContext,
               }),
               role: "user",
             },

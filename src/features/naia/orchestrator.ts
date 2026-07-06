@@ -5,6 +5,7 @@ import type {
 } from "@/features/crm/contracts";
 
 import { getNaiaAgent, type NaiaAgentId } from "./agents";
+import { buildOperationalAnalysisResponse } from "./operational-context";
 
 export type NaiaActionRisk = "low" | "medium" | "high";
 
@@ -176,6 +177,10 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
     return "developer";
   }
 
+  if (isCashFlowIntent(normalized)) {
+    return "finance";
+  }
+
   if (
     includesAny(normalized, [
       "crm",
@@ -217,15 +222,8 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
   }
 
   if (
-    includesAny(normalized, [
-      "cash",
-      "finance",
-      "tresorerie",
-      "paiement",
-      "cout",
-      "relance client",
-      "facture",
-    ])
+    isCashFlowIntent(normalized) ||
+    includesAny(normalized, ["paiement", "cout", "relance client", "facture"])
   ) {
     return "finance";
   }
@@ -535,6 +533,14 @@ function buildResponse(
     return "Je peux router tes demandes vers les agents NAIA, preparer des leads CRM avec validation humaine, analyser les donnees disponibles du cockpit, aider sur finance/projets/RH, et repondre aux questions generales quand elles ne demandent pas d'action sensible. Pour les actions externes, je prepare d'abord une carte a valider.";
   }
 
+  const operationalResponse = buildOperationalAnalysisResponse({
+    agentId,
+    command,
+  });
+  if (operationalResponse && actions.length === 0) {
+    return operationalResponse;
+  }
+
   if (agentId === "crm") {
     if (actions.length > 0) {
       const actionLabels = actions.map((action) => `"${action.label}"`);
@@ -761,6 +767,26 @@ function isPotentialClientOpportunity(normalizedCommand: string) {
   ]);
 
   return hasCommercialConversation && hasCompanyPattern && hasBusinessSignal;
+}
+
+function isCashFlowIntent(normalizedCommand: string) {
+  const tokens = tokenSet(normalizedCommand);
+
+  return (
+    tokens.has("cf") ||
+    tokens.has("cfs") ||
+    includesAny(normalizedCommand, [
+      "cash",
+      "cash flow",
+      "cashflow",
+      "finance",
+      "tresorerie",
+      "encaissement",
+      "decaissement",
+      "relance cash",
+      "relances cash",
+    ])
+  );
 }
 
 function includesAny(value: string, needles: string[]) {
