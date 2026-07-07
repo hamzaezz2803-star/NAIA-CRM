@@ -1,3 +1,8 @@
+export async function GET() {
+  const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
+  return Response.json({ available: !!apiKey });
+}
+
 export async function POST(request: Request) {
   const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
 

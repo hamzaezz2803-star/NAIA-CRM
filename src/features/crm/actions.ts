@@ -504,6 +504,8 @@ export async function createLeadAction(input: {
   contactLinkedinUrl?: string;
   assignedToProfileId?: string;
   tagIds?: string[];
+  skipGoogleCalendarSync?: boolean;
+  skipGoogleDriveCreate?: boolean;
 }): Promise<CreateLeadActionResult> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) {
@@ -595,7 +597,7 @@ export async function createLeadAction(input: {
       company_id: companyId,
       contact_id: contactId,
       source: input.source ?? null,
-      status: input.status ?? "lead-to-contact",
+      status: resolveLeadInsertStatus(input),
       notes: input.notes ?? null,
       next_action: input.nextAction ?? null,
       lead_date: input.leadDate ? new Date(input.leadDate).toISOString() : null,
@@ -626,8 +628,8 @@ export async function createLeadAction(input: {
 
   let calendarSyncResult: { error?: string; success: boolean } | null = null;
 
-  // Sync to Google Calendar if leadDate is set
-  if (input.leadDate) {
+  // Sync to Google Calendar if leadDate is set and not skipped
+  if (input.leadDate && !input.skipGoogleCalendarSync) {
     calendarSyncResult = await syncLeadToGoogleCalendar(
       supabase,
       orgId,
@@ -638,27 +640,29 @@ export async function createLeadAction(input: {
   // Sync Todo task
   await syncLeadTask(supabase, orgId, row.id, user?.id ?? null);
 
-  // Auto-create Google Drive folder inside NAIA'S-INFOS
-  try {
-    const companyName = input.companyId
-      ? ((
-          await supabase
-            .from("crm_companies")
-            .select("name")
-            .eq("id", input.companyId)
-            .single()
-        ).data?.name ?? input.topic)
-      : input.topic;
-    await createLeadDriveFolderIfConnected(
-      supabase,
-      orgId,
-      row.id,
-      companyName,
-      input.topic,
-    );
-  } catch (driveErr) {
-    // Non-blocking — Drive failure must not block lead creation
-    console.error("Drive folder auto-create error:", driveErr);
+  // Auto-create Google Drive folder inside NAIA'S-INFOS if not skipped
+  if (!input.skipGoogleDriveCreate) {
+    try {
+      const companyName = input.companyId
+        ? ((
+            await supabase
+              .from("crm_companies")
+              .select("name")
+              .eq("id", input.companyId)
+              .single()
+          ).data?.name ?? input.topic)
+        : input.topic;
+      await createLeadDriveFolderIfConnected(
+        supabase,
+        orgId,
+        row.id,
+        companyName,
+        input.topic,
+      );
+    } catch (driveErr) {
+      // Non-blocking — Drive failure must not block lead creation
+      console.error("Drive folder auto-create error:", driveErr);
+    }
   }
 
   revalidatePath("/crm");
@@ -798,6 +802,12 @@ function createDummyLead(input: {
     contactPhone: input.contactPhone,
     contactJobTitle: input.contactJobTitle,
     contactLinkedinUrl: input.contactLinkedinUrl,
+    tags: (input.tagIds ?? []).map((tagId) => ({
+      id: tagId,
+      organizationId: dummyCrmOrganizationId,
+      name: tagId.replace("demo-tag-", ""),
+      color: "teal",
+    })),
     createdAt: now,
     id: `demo-lead-${Date.now().toString(36)}-${suffix}`,
     leadDate: input.leadDate
@@ -818,6 +828,22 @@ function createDummyLead(input: {
     lead,
     success: true,
   };
+}
+
+function resolveLeadInsertStatus(input: {
+  leadDate?: string;
+  status?: CrmLeadStatus;
+}): CrmLeadStatus {
+  const status = input.status ?? "lead-to-contact";
+
+  if (
+    input.leadDate &&
+    (status === "lead-to-contact" || status === "contacted")
+  ) {
+    return "meeting-booked";
+  }
+
+  return status;
 }
 
 export async function updateLeadStatusAction(
@@ -1690,6 +1716,7 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
     nextAction?: string;
     leadDate?: string;
     status?: CrmLeadStatus;
+    tags?: string[];
   };
   error?: string;
 }> {
@@ -1724,7 +1751,8 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "notes": "notes complémentaires",
   "nextAction": "prochaine action commerciale concise à afficher dans les tâches (ex: relancer lundi, envoyer la proposition, préparer le meeting). Si aucune action claire n'est mentionnée, mets null.",
   "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null.",
-  "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Si le texte dit qu'un meeting/rdv/call/démo est booké, fixé, prévu, calé ou confirmé, utilise meeting-booked. Si le texte dit seulement de relancer/rappeler, utilise to-follow-up. Si le texte dit seulement qu'on a parlé/contacté sans action planifiée, utilise contacted. Si aucune information claire, utilise lead-to-contact."
+  "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Mapping obligatoire: lead-to-contact = prospect identifié mais pas encore contacté; contacted = Ali/l'équipe vient de parler, contacter, appeler, échanger, discuter ou rencontrer le prospect, avec discussion entamée mais sans rendez-vous encore fixé; to-follow-up = il faut relancer, rappeler ou faire un follow-up; meeting-booked = un meeting, rdv, call, démo ou visio est booké, fixé, prévu, calé, planifié ou confirmé; proposal-sent = une propale, proposition, offre ou devis est envoyé, à envoyer ou à préparer; won = projet signé, gagné, validé ou accepté; dead-end = perdu, refusé, stop ou pas intéressé. Si le texte dit 'j'ai parlé/contacté/échangé avec X', ne mets jamais lead-to-contact: utilise contacted, sauf si un rendez-vous est explicitement fixé, alors utilise meeting-booked.",
+  "tags": ["tableau de chaînes de caractères (array of strings) représentant les étiquettes ou tags mentionnés ou déduits (ex: ['Automobile', 'CRM', 'IA', 'B2B']). S'il y a une section 'Tags :' ou similaire à la fin du texte, extrait les tags exactement. Sinon, déduis 3 à 5 tags pertinents basés sur le secteur d'activité, la technologie, le type de client ou la priorité."]
 }`,
         },
         {
@@ -2511,11 +2539,36 @@ async function syncLeadToGoogleCalendar(
     const appLink = `${getAppBaseUrl()}/dashboard/leads`;
     const description = `${cleanNotes ? cleanNotes + "\n\n" : ""}Lien vers le lead dans l'application : ${appLink}`;
 
+    // Fetch attendees (only internal creator/assignee emails to avoid auto-sending notifications to external clients)
+    const attendeeEmailsSet = new Set<string>();
+
+    const attendeeProfileIds = [
+      lead.created_by_profile_id,
+      lead.assigned_to_profile_id,
+    ].filter(Boolean) as string[];
+
+    if (attendeeProfileIds.length > 0) {
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("email")
+        .in("id", attendeeProfileIds);
+      if (profiles) {
+        profiles.forEach((p) => {
+          if (p.email) {
+            attendeeEmailsSet.add(p.email.trim());
+          }
+        });
+      }
+    }
+
+    const attendees = Array.from(attendeeEmailsSet).map((email) => ({ email }));
+
     let eventPayload: {
       summary: string;
       description: string;
-      start: { date?: string; dateTime?: string };
-      end: { date?: string; dateTime?: string };
+      start: { date?: string; dateTime?: string; timeZone?: string };
+      end: { date?: string; dateTime?: string; timeZone?: string };
+      attendees?: { email: string }[];
     };
     if (isMidnight) {
       const startDateStr = leadDateStr.split("T")[0];
@@ -2527,10 +2580,13 @@ async function syncLeadToGoogleCalendar(
         description,
         start: {
           date: startDateStr,
+          timeZone: CALENDAR_TIME_ZONE,
         },
         end: {
           date: endDateStr,
+          timeZone: CALENDAR_TIME_ZONE,
         },
+        attendees: attendees.length > 0 ? attendees : undefined,
       };
     } else {
       const startDate = new Date(leadDateStr);
@@ -2544,10 +2600,13 @@ async function syncLeadToGoogleCalendar(
         description,
         start: {
           dateTime: startIso,
+          timeZone: CALENDAR_TIME_ZONE,
         },
         end: {
           dateTime: endIso,
+          timeZone: CALENDAR_TIME_ZONE,
         },
+        attendees: attendees.length > 0 ? attendees : undefined,
       };
     }
 
@@ -2583,7 +2642,7 @@ async function syncLeadToGoogleCalendar(
 
     if (existingEventId) {
       const updateRes = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}?sendUpdates=all`,
         {
           method: "PUT",
           headers: {
@@ -2625,7 +2684,7 @@ async function syncLeadToGoogleCalendar(
     }
 
     const createRes = await fetch(
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all",
       {
         method: "POST",
         headers: {

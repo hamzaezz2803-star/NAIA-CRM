@@ -5,6 +5,8 @@ import {
   extractLeadFromNaturalTextAction,
   fetchLeadsAction,
   updateLeadStatusAction,
+  fetchTagsAction,
+  createTagAction,
 } from "@/features/crm/actions";
 import {
   crmLeadStatuses,
@@ -36,7 +38,12 @@ type OrchestratePayload = {
   approvalToken?: string;
   command?: string;
   execute?: boolean;
-  leadInput?: Partial<CrmLeadDraft>;
+  leadInput?: Partial<
+    CrmLeadDraft & {
+      createGoogleDrive?: boolean;
+      createGoogleCalendar?: boolean;
+    }
+  >;
 };
 
 type SignedAction = NaiaActionDraft & {
@@ -248,7 +255,12 @@ async function executeAction({
   actionId?: string;
   approvalToken?: string;
   command: string;
-  leadInput?: Partial<CrmLeadDraft>;
+  leadInput?: Partial<
+    CrmLeadDraft & {
+      createGoogleDrive?: boolean;
+      createGoogleCalendar?: boolean;
+    }
+  >;
   serverActions: NaiaActionDraft[];
 }) {
   if (!actionId || !approvalToken) {
@@ -319,6 +331,45 @@ async function executeAction({
       );
     }
 
+    const shouldCreateDrive = leadInput?.createGoogleDrive !== false;
+    const shouldCreateCalendar = leadInput?.createGoogleCalendar !== false;
+
+    // Map tag names to database tag IDs
+    const tagIds: string[] = [];
+    if (leadDraft.tags && leadDraft.tags.length > 0) {
+      const existingTags = await fetchTagsAction();
+      for (const tagName of leadDraft.tags) {
+        const trimmed = tagName.trim();
+        if (!trimmed) continue;
+
+        // Check if tag already exists (case-insensitive)
+        const found = existingTags.find(
+          (t) => t.name.toLowerCase() === trimmed.toLowerCase(),
+        );
+
+        if (found) {
+          tagIds.push(found.id);
+        } else {
+          // Create new tag with a random color
+          const colors = [
+            "teal",
+            "blue",
+            "indigo",
+            "rose",
+            "amber",
+            "emerald",
+            "stone",
+            "orange",
+          ];
+          const randomColor = colors[Math.floor(Math.random() * colors.length)];
+          const createRes = await createTagAction(trimmed, randomColor);
+          if (createRes.success && createRes.tag) {
+            tagIds.push(createRes.tag.id);
+          }
+        }
+      }
+    }
+
     const response = await createLeadAction({
       companyName: leadDraft.companyName,
       contactEmail: leadDraft.contactEmail,
@@ -330,6 +381,9 @@ async function executeAction({
       source: leadDraft.source || "NAIA",
       status,
       topic,
+      skipGoogleCalendarSync: !shouldCreateCalendar,
+      skipGoogleDriveCreate: !shouldCreateDrive,
+      tagIds,
     });
     const calendarSuccess = Boolean(response.calendarSynced);
     let calendarMessage = "";
@@ -438,6 +492,16 @@ async function executeAction({
       execution: "prepared",
       message:
         "Mission dev préparée. L'étape suivante doit créer une branche, une spécification et une revue avant implémentation.",
+      success: true,
+    });
+  }
+
+  if (action.kind === "crm.generateFollowUpDraft") {
+    return Response.json({
+      action,
+      execution: "applied",
+      message:
+        "Génération du brouillon de relance préparée. Redirection en cours...",
       success: true,
     });
   }
@@ -563,6 +627,7 @@ async function extractLeadDraft(
       source: extracted.extracted.source ?? "NAIA",
       status: extracted.extracted.status ?? "lead-to-contact",
       topic: extracted.extracted.topic,
+      tags: extracted.extracted.tags,
     };
   }
 
@@ -645,7 +710,30 @@ function sanitizeLeadDraft(input: Partial<CrmLeadDraft>): CrmLeadDraft {
     source: cleanOptional(input.source, 120) ?? "NAIA",
     status,
     topic: cleanRequired(input.topic, "Nouveau lead NAIA", 160),
+    tags: normalizeLeadTags(input.tags),
   };
+}
+
+function normalizeLeadTags(tags: unknown) {
+  const rawTags = Array.isArray(tags)
+    ? tags
+    : typeof tags === "string"
+      ? [tags]
+      : [];
+  const seen = new Set<string>();
+
+  return rawTags
+    .filter((tag): tag is string => typeof tag === "string")
+    .flatMap((tag) => tag.split(/[,;]+/))
+    .map((tag) => tag.trim().slice(0, 60))
+    .filter((tag) => {
+      if (!tag) return false;
+      const key = tag.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 12);
 }
 
 function buildLeadNotes(leadDraft: CrmLeadDraft) {

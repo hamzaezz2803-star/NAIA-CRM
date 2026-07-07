@@ -831,6 +831,21 @@ export default function LeadsPage() {
           setIsGoogleConnected(isAuth);
           setTags(tagsData);
           setTeamMembers(teamData);
+
+          if (typeof window !== "undefined") {
+            const params = new URLSearchParams(window.location.search);
+            const leadId = params.get("leadId");
+            if (leadId) {
+              const matchedLead = leadsData.find((l) => l.id === leadId);
+              if (matchedLead) {
+                openEditModal(matchedLead);
+                const generateDraft = params.get("generateDraft");
+                if (generateDraft === "true") {
+                  void handleGenerateDraft(matchedLead);
+                }
+              }
+            }
+          }
         }
       } catch (err) {
         console.error(err);
@@ -844,6 +859,7 @@ export default function LeadsPage() {
     return () => {
       isMounted = false;
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Listen for Google Auth callback popup messaging

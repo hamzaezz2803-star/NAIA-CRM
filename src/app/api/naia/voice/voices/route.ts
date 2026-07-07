@@ -33,10 +33,26 @@ export async function GET() {
     });
 
     if (!response.ok) {
+      let errorDetail: {
+        detail?: { status?: string; message?: string };
+      } | null = null;
+      try {
+        errorDetail = (await response.json()) as {
+          detail?: { status?: string; message?: string };
+        };
+      } catch {}
+
+      const isPermissionError =
+        errorDetail?.detail?.status === "missing_permissions" ||
+        (typeof errorDetail?.detail?.message === "string" &&
+          errorDetail.detail.message.includes("permission"));
+
       return Response.json(
         {
           configuredVoiceId,
-          mode: "elevenlabs-error",
+          mode: isPermissionError
+            ? "elevenlabs-permissions-error"
+            : "elevenlabs-error",
           status: response.status,
           voices: [],
         },

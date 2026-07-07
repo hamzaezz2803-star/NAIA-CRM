@@ -10,7 +10,6 @@ import {
   ChevronRight,
   FileText,
   Headphones,
-  Loader2,
   Mic,
   Play,
   RefreshCw,
@@ -20,6 +19,7 @@ import {
   Users,
   Volume2,
   WandSparkles,
+  Square,
   type LucideIcon,
 } from "lucide-react";
 
@@ -148,6 +148,8 @@ export function NaiaExperience({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceNotice, setVoiceNotice] = useState("");
+  const [manualAudioUrl] = useState("");
+  const [forceBrowserSpeech, setForceBrowserSpeech] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -187,6 +189,29 @@ export function NaiaExperience({
 
       recognitionRef.current?.stop();
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
+    };
+  }, []);
+
+  useEffect(() => {
+    let isMounted = true;
+    const checkGroq = async () => {
+      try {
+        const response = await fetch("/api/naia/transcribe");
+        if (response.ok) {
+          const data = (await response.json()) as { available: boolean };
+          if (isMounted && data.available === false) {
+            setForceBrowserSpeech(true);
+          }
+        }
+      } catch (err) {
+        console.error("Failed to check Groq availability:", err);
+      }
+    };
+
+    void checkGroq();
+
+    return () => {
+      isMounted = false;
     };
   }, []);
 
@@ -266,12 +291,25 @@ export function NaiaExperience({
   };
 
   const startVoiceControl = () => {
-    if (canRecordAudio) {
+    if (canRecordAudio && !forceBrowserSpeech) {
       void startMediaRecorderControl();
       return;
     }
 
     startBrowserSpeechControl();
+  };
+
+  const stopVoiceControl = () => {
+    if (
+      mediaRecorderRef.current &&
+      mediaRecorderRef.current.state !== "inactive"
+    ) {
+      mediaRecorderRef.current.stop();
+    }
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
+    }
+    setIsListening(false);
   };
 
   const startBrowserSpeechControl = () => {
@@ -288,11 +326,24 @@ export function NaiaExperience({
     }
 
     const recognition = new Recognition();
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
     recognition.lang = "fr-FR";
     browserFinalTranscriptRef.current = "";
+
+    let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const resetSilenceTimer = () => {
+      if (silenceTimer) clearTimeout(silenceTimer);
+      silenceTimer = setTimeout(() => {
+        setVoiceNotice("Silence détecté, arrêt de l'écoute...");
+        recognition.stop();
+      }, 3000); // 3 seconds silence threshold
+    };
+
     recognition.onresult = (event) => {
+      resetSilenceTimer();
+
       let interimTranscript = "";
 
       for (
@@ -314,12 +365,20 @@ export function NaiaExperience({
       );
     };
     recognition.onerror = (event) => {
+      if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+      }
       setVoiceNotice(
         event.error ? `Voix: ${event.error}` : "Commande vocale interrompue.",
       );
       setIsListening(false);
     };
     recognition.onend = () => {
+      if (silenceTimer) {
+        clearTimeout(silenceTimer);
+        silenceTimer = null;
+      }
       const spokenText = browserFinalTranscriptRef.current.trim();
       setIsListening(false);
 
@@ -334,10 +393,11 @@ export function NaiaExperience({
     };
     recognitionRef.current = recognition;
     setVoiceNotice(
-      "Je t'ecoute. NAIA transcrira automatiquement apres un silence prononce.",
+      "Je t'ecoute. NAIA transcrira automatiquement apres un silence de 3 secondes.",
     );
     setIsListening(true);
     recognition.start();
+    resetSilenceTimer();
   };
 
   const stopSilenceDetection = () => {
@@ -457,6 +517,7 @@ export function NaiaExperience({
           setVoiceNotice(
             "Groq Whisper n'est pas configure en local. J'active la reconnaissance vocale du navigateur.",
           );
+          setForceBrowserSpeech(true);
           startBrowserSpeechControl();
           return;
         }
@@ -543,11 +604,9 @@ export function NaiaExperience({
 
             <div className="flex flex-wrap gap-2">
               <ActionButton
-                disabled={isListening}
-                icon={isListening ? Loader2 : Mic}
-                label={isListening ? "J'ecoute..." : "Parler"}
-                loading={isListening}
-                onClick={startVoiceControl}
+                icon={isListening ? Square : Mic}
+                label={isListening ? "Arrêter" : "Parler"}
+                onClick={isListening ? stopVoiceControl : startVoiceControl}
                 variant="secondary"
               />
               <ActionButton
@@ -566,6 +625,17 @@ export function NaiaExperience({
               />
             </div>
           </div>
+
+          {manualAudioUrl ? (
+            <audio
+              className="mt-4 w-full"
+              controls
+              preload="none"
+              src={manualAudioUrl}
+            >
+              <track kind="captions" />
+            </audio>
+          ) : null}
 
           <VoiceActivity
             isListening={isListening}

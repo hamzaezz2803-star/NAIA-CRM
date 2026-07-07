@@ -2,8 +2,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   createLeadAction: vi.fn(),
+  createTagAction: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
   fetchLeadsAction: vi.fn(),
+  fetchTagsAction: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   updateLeadStatusAction: vi.fn(),
@@ -11,8 +13,10 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/features/crm/actions", () => ({
   createLeadAction: mocks.createLeadAction,
+  createTagAction: mocks.createTagAction,
   extractLeadFromNaturalTextAction: mocks.extractLeadFromNaturalTextAction,
   fetchLeadsAction: mocks.fetchLeadsAction,
+  fetchTagsAction: mocks.fetchTagsAction,
   updateLeadStatusAction: mocks.updateLeadStatusAction,
 }));
 
@@ -45,6 +49,13 @@ describe("NAIA orchestrate route", () => {
       },
       success: true,
     });
+    mocks.fetchTagsAction.mockResolvedValue([
+      { color: "teal", id: "tag-crm", name: "CRM", organizationId: "org" },
+    ]);
+    mocks.createTagAction.mockImplementation(async (name: string) => ({
+      success: true,
+      tag: { color: "blue", id: `tag-${name.toLowerCase()}`, name },
+    }));
     mocks.listGmailMessages.mockResolvedValue([
       {
         from: "nabil@qarizmi.com",
@@ -194,6 +205,49 @@ describe("NAIA orchestrate route", () => {
     const executeBody = await executeResponse.json();
 
     expect(executeBody.message).toBe("Lead CRM créé.");
+  });
+
+  it("normalizes client-provided tag strings before creating a lead", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    mocks.createLeadAction.mockResolvedValue({
+      lead: { id: "lead-tags" },
+      success: true,
+    });
+
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          command: "Ajoute un lead CRM pour Atlas autour de l'IA.",
+        }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const createLeadAction = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "crm.createLead",
+    );
+
+    await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: createLeadAction.id,
+          approvalToken: createLeadAction.approvalToken,
+          command: "Ajoute un lead CRM pour Atlas autour de l'IA.",
+          execute: true,
+          leadInput: {
+            ...createLeadAction.payload,
+            tags: "CRM, IA, CRM",
+          },
+        }),
+        method: "POST",
+      }),
+    );
+
+    expect(mocks.createLeadAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tagIds: ["tag-crm", "tag-ia"],
+      }),
+    );
   });
 
   it("executes an approved Gmail read action", async () => {

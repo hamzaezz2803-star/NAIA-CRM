@@ -100,15 +100,25 @@ export function inferLeadStatusFromNaturalText(input: {
     return explicitStatus;
   }
 
-  if (
-    /\b(meeting|rdv|rendez vous|rendez-vous|demo|démo|call|appel|visio|reunion|réunion)\b/.test(
+  if (/\b(perdu|refuse|decline|dead end|pas interesse)\b/.test(content)) {
+    return "dead-end";
+  }
+
+  const hasMeetingIntent =
+    /\b(meeting|rdv|rendez vous|rendez-vous|demo|démo|demonstration|démonstration|call|appel|visio|reunion|réunion|teleconf|téléconf)\b/.test(
       content,
-    ) &&
-    /\b(booke|booked|fixe|planifie|prevu|programme|cale|confirme|pris)\b/.test(
+    );
+  const hasMeetingBookedSignal =
+    /\b(booke|booked|fixe|planifie|prevu|programme|cale|confirme|pris|valide|accepte)\b/.test(
       content,
-    )
-  ) {
+    );
+
+  if (hasMeetingIntent && hasMeetingBookedSignal) {
     return "meeting-booked";
+  }
+
+  if (/\b(gagne|signe|valide|accepte|clos)\b/.test(content)) {
+    return "won";
   }
 
   if (/\b(propale|proposition|devis|offre)\b/.test(content)) {
@@ -117,20 +127,17 @@ export function inferLeadStatusFromNaturalText(input: {
     }
   }
 
-  if (/\b(gagne|signe|valide|accepte|clos)\b/.test(content)) {
-    return "won";
-  }
-
-  if (/\b(perdu|refuse|decline|dead end|pas interesse)\b/.test(content)) {
-    return "dead-end";
-  }
-
   if (/\b(relance|relancer|rappel|rappeler|follow up)\b/.test(content)) {
     return "to-follow-up";
   }
 
   if (/\b(parle|contacte|appele|echange|discute)\b/.test(content)) {
     return "contacted";
+  }
+
+  // If a leadDate is set (a specific meeting is scheduled), auto-promote to meeting-booked
+  if (input.leadDate) {
+    return "meeting-booked";
   }
 
   return undefined;

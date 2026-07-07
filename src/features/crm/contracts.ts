@@ -106,6 +106,7 @@ export type CrmLeadDraft = {
   source?: string;
   status: CrmLeadStatus;
   topic: string;
+  tags?: string[];
 };
 
 export type CrmLeadFollowUp = {

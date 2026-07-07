@@ -285,4 +285,37 @@ describe("NAIA orchestrator", () => {
     expect(inferCrmStatus("j'ai contacté Abdeslam de HPS")).toBe("contacted");
     expect(inferCrmStatus("client signe")).toBe("won");
   });
+
+  it("creates a generateFollowUpDraft action when the user asks to write/draft a relance", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "rédiger le message mail et whatsapp de relance pour monsieur ahmed de l'entreprise exemple",
+      crmLeads: [
+        ...crmLeads,
+        {
+          createdAt: "2026-07-01T10:00:00.000Z",
+          id: "lead-ahmed",
+          notes: "Contact: Ahmed\nEntreprise: exemple",
+          organizationId: "org-1",
+          status: "lead-to-contact",
+          topic: "Projet IA pour exemple",
+          updatedAt: "2026-07-01T10:00:00.000Z",
+          contactName: "Ahmed",
+          companyName: "exemple",
+        },
+      ],
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.generateFollowUpDraft",
+      payload: {
+        leadId: "lead-ahmed",
+        contactName: "Ahmed",
+        companyName: "exemple",
+      },
+    });
+  });
 });

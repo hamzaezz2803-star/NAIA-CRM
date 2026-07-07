@@ -21,6 +21,25 @@ describe("CRM natural language status inference", () => {
     ).toBe("to-follow-up");
   });
 
+  it("keeps dated explicit follow-ups out of meetings", () => {
+    expect(
+      inferLeadStatusFromNaturalText({
+        leadDate: "2026-06-26",
+        status: "to-follow-up",
+        text: "Relancer Karim vendredi à 10h.",
+      }),
+    ).toBe("to-follow-up");
+  });
+
+  it("classifies validated appointments as meeting-booked, not won", () => {
+    expect(
+      inferLeadStatusFromNaturalText({
+        leadDate: "2026-06-30T15:00:00",
+        text: "RDV validé avec Fouzi mardi à 15h.",
+      }),
+    ).toBe("meeting-booked");
+  });
+
   it("marks plain contact notes as contacted", () => {
     expect(
       inferLeadStatusFromNaturalText({

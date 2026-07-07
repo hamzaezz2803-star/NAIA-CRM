@@ -25,8 +25,14 @@ import {
   Building2,
   Clock,
   ListTodo,
+  FolderOpen,
 } from "lucide-react";
 
+import {
+  fetchLeadsAction,
+  fetchCompaniesAction,
+  fetchLeadsForTodoAction,
+} from "@/features/crm/actions";
 import { NotificationBell } from "./notification-bell";
 import Image from "next/image";
 import Link from "next/link";
@@ -73,6 +79,48 @@ export function AppShell({
   session: AppSession;
 }) {
   const pathname = usePathname();
+  const [pipelineCount, setPipelineCount] = useState<number | null>(null);
+  const [drivesCount, setDrivesCount] = useState<number | null>(null);
+  const [followUpsCount, setFollowUpsCount] = useState<number | null>(null);
+  const [todoCount, setTodoCount] = useState<number | null>(null);
+  const [clientsCount, setClientsCount] = useState<number | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+    async function loadCounts() {
+      try {
+        const [leads, companies, todoLeads] = await Promise.all([
+          fetchLeadsAction(),
+          fetchCompaniesAction(),
+          fetchLeadsForTodoAction(),
+        ]);
+
+        if (isMounted) {
+          const activeLeads = leads.filter(
+            (l) => l.status !== "won" && l.status !== "dead-end",
+          );
+          setPipelineCount(activeLeads.length);
+
+          const drives = [
+            ...leads.filter((l) => getLeadDriveFolderUrl(l)),
+            ...companies.filter((c) => c.driveFolderUrl),
+          ];
+          setDrivesCount(drives.length);
+
+          setFollowUpsCount(activeLeads.length);
+          setTodoCount(todoLeads.length);
+          setClientsCount(companies.length);
+        }
+      } catch (err) {
+        console.error("Failed to load crm navigation counts:", err);
+      }
+    }
+    loadCounts();
+    return () => {
+      isMounted = false;
+    };
+  }, [pathname]);
+
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
@@ -130,6 +178,13 @@ export function AppShell({
             pathname={pathname}
             isCollapsed={isCollapsed}
             onToggleCollapse={() => setIsCollapsed(!isCollapsed)}
+            crmCounts={{
+              pipeline: pipelineCount,
+              drives: drivesCount,
+              followUps: followUpsCount,
+              todo: todoCount,
+              clients: clientsCount,
+            }}
           />
         </aside>
       )}
@@ -166,6 +221,13 @@ export function AppShell({
               pathname={pathname}
               showBrand={false}
               isCollapsed={false}
+              crmCounts={{
+                pipeline: pipelineCount,
+                drives: drivesCount,
+                followUps: followUpsCount,
+                todo: todoCount,
+                clients: clientsCount,
+              }}
             />
           </aside>
         </>
@@ -299,6 +361,7 @@ function ShellSidebar({
   showBrand = true,
   isCollapsed = false,
   onToggleCollapse,
+  crmCounts,
 }: {
   modules: PlatformModule[];
   pathname: string;
@@ -306,9 +369,17 @@ function ShellSidebar({
   showBrand?: boolean;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
+  crmCounts?: {
+    pipeline: number | null;
+    drives: number | null;
+    followUps: number | null;
+    todo: number | null;
+    clients: number | null;
+  };
 }) {
   const isCrmActive =
     pathname.startsWith("/dashboard/leads") ||
+    pathname.startsWith("/dashboard/drives") ||
     pathname.startsWith("/dashboard/follow-ups") ||
     pathname.startsWith("/dashboard/todo") ||
     pathname.startsWith("/dashboard/clients");
@@ -393,21 +464,31 @@ function ShellSidebar({
                         href: "/dashboard/leads",
                         label: "Pipeline",
                         icon: Activity,
+                        count: crmCounts?.pipeline,
+                      },
+                      {
+                        href: "/dashboard/drives",
+                        label: "Dossiers Drive",
+                        icon: FolderOpen,
+                        count: crmCounts?.drives,
                       },
                       {
                         href: "/dashboard/follow-ups",
                         label: "Suivi des relances",
                         icon: Clock,
+                        count: crmCounts?.followUps,
                       },
                       {
                         href: "/dashboard/todo",
                         label: "Tâches (Todo)",
                         icon: ListTodo,
+                        count: crmCounts?.todo,
                       },
                       {
                         href: "/dashboard/clients",
                         label: "Clients",
                         icon: Building2,
+                        count: crmCounts?.clients,
                       },
                     ].map((sub) => {
                       const SubIcon = sub.icon;
@@ -420,7 +501,7 @@ function ShellSidebar({
                           href={sub.href}
                           onClick={onNavigate}
                           className={cn(
-                            "flex min-h-8 items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition",
+                            "flex min-h-8 items-center gap-2 rounded-md px-3 py-1.5 text-xs font-semibold transition w-full",
                             subActive
                               ? "bg-teal-50 text-teal-800 dark:bg-teal-950/30 dark:text-teal-400"
                               : "text-stone-500 hover:bg-stone-100 hover:text-stone-900 dark:text-stone-400 dark:hover:bg-stone-800 dark:hover:text-white",
@@ -434,7 +515,12 @@ function ShellSidebar({
                                 : "text-stone-400",
                             )}
                           />
-                          <span>{sub.label}</span>
+                          <span className="flex-1 truncate">{sub.label}</span>
+                          {sub.count !== null && sub.count !== undefined && (
+                            <span className="ml-auto flex h-5 min-w-[20px] items-center justify-center rounded-full bg-rose-500 px-1 text-[10px] font-bold text-white shadow-sm ring-1 ring-rose-350">
+                              {sub.count}
+                            </span>
+                          )}
                         </Link>
                       );
                     })}
@@ -494,6 +580,21 @@ function ShellSidebar({
       )}
     </div>
   );
+}
+
+function getLeadDriveFolderUrl(lead: {
+  driveFolderUrl?: string;
+  notes?: string;
+}) {
+  return lead.driveFolderUrl ?? extractDriveLinkFromNotes(lead.notes);
+}
+
+function extractDriveLinkFromNotes(notes?: string) {
+  const match = (notes ?? "").match(
+    /\[Google Drive Folder:[^\]]*\]\((https:\/\/[^)]+)\)/,
+  );
+
+  return match?.[1] ?? undefined;
 }
 
 function Brand({ isCollapsed }: { isCollapsed: boolean }) {

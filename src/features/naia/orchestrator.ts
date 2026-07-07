@@ -107,6 +107,21 @@ export type NaiaActionDraft =
         text: string;
       };
       risk: NaiaActionRisk;
+    }
+  | {
+      agentId: "crm";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "crm.generateFollowUpDraft";
+      label: string;
+      payload: {
+        leadId: string;
+        leadLabel: string;
+        contactName?: string;
+        companyName?: string;
+      };
+      risk: NaiaActionRisk;
     };
 
 export type NaiaOrchestrationResult = {
@@ -226,6 +241,10 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
     return "finance";
   }
 
+  if (wantsGmailRead(normalized) || wantsSlackMessage(normalized)) {
+    return "integrations";
+  }
+
   if (
     includesAny(normalized, [
       "crm",
@@ -238,7 +257,17 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
       "pitch",
       "contacte",
       "relance",
+      "relancer",
       "gagne",
+      "brouillon",
+      "draft",
+      "suivi",
+      "mail",
+      "email",
+      "whatsapp",
+      "message",
+      "rediger",
+      "ecrire",
     ])
   ) {
     if (
@@ -373,6 +402,16 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
       "rendez vous fixe",
       "call confirme",
       "meeting",
+      "demo",
+      "demontration",
+      "demonstration",
+      "démonstration",
+      "visio",
+      "reunion",
+      "réunion",
+      "appel",
+      "rdv",
+      "rendez-vous",
     ])
   ) {
     return "meeting-booked";
@@ -498,6 +537,53 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
     }
 
     return actions;
+  }
+
+  const isRelanceKeyword = includesAny(normalized, [
+    "relance",
+    "follow up",
+    "suivi",
+  ]);
+  const isDraftingKeyword = includesAny(normalized, [
+    "draft",
+    "brouillon",
+    "rediger",
+    "generer",
+    "ecrire",
+    "message",
+    "mail",
+    "email",
+    "whatsapp",
+  ]);
+  const wantsFollowUpDraft =
+    (isRelanceKeyword && isDraftingKeyword) ||
+    includesAny(normalized, [
+      "draft",
+      "brouillon",
+      "rediger le mail",
+      "rediger le whatsapp",
+      "rediger le message",
+      "creer un relance",
+    ]);
+
+  if (wantsFollowUpDraft && matchedLead) {
+    return [
+      {
+        agentId: "crm",
+        approvalRequired: true,
+        description: `Salma va préparer les messages de relance (Email et WhatsApp) pour "${matchedLead.topic}" et vous rediriger vers les brouillons.`,
+        id: `crm-draft-${matchedLead.id}`,
+        kind: "crm.generateFollowUpDraft",
+        label: "Rédiger la relance (Email/WhatsApp)",
+        payload: {
+          leadId: matchedLead.id,
+          leadLabel: matchedLead.topic,
+          companyName: matchedLead.companyName,
+          contactName: matchedLead.contactName,
+        },
+        risk: "low",
+      } satisfies NaiaActionDraft,
+    ];
   }
 
   if (status && matchedLead) {
@@ -630,7 +716,14 @@ function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
 
   for (const lead of crmLeads) {
     const haystack = normalize(
-      [lead.topic, lead.source, lead.notes, lead.nextAction]
+      [
+        lead.topic,
+        lead.source,
+        lead.notes,
+        lead.nextAction,
+        lead.companyName,
+        lead.contactName,
+      ]
         .filter(Boolean)
         .join(" "),
     );
