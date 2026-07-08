@@ -46,6 +46,15 @@ export type ClientDriveFolder = {
   folderUrl: string;
 };
 
+// Google-native files reject alt=media downloads: they must be exported to an
+// Office equivalent instead (Slides -> pptx, Docs -> docx).
+const GOOGLE_NATIVE_EXPORT_MIME_TYPES: Record<string, string> = {
+  "application/vnd.google-apps.document":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.google-apps.presentation":
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+};
+
 let cachedToken: { accessToken: string; expiresAt: number } | null = null;
 
 // Collapses concurrent ensureClientDriveFolder calls for the same client
@@ -143,10 +152,45 @@ export async function listDriveFolderFiles(
   return (payload.files ?? []).filter((file) => Boolean(file.id));
 }
 
-/** Downloads a Drive file's binary content (use export for Google-native formats). */
-export async function downloadDriveFile(fileId: string): Promise<ArrayBuffer> {
+/**
+ * Downloads a Drive file's binary content. Google-native files are exported
+ * to their Office equivalent (Slides -> pptx, Docs -> docx, capped at 10 MB
+ * by the Drive API); anything else is downloaded as-is with alt=media. Pass
+ * the mimeType when it is already known (e.g. from a folder listing) to
+ * skip the extra metadata lookup.
+ */
+export async function downloadDriveFile(
+  fileId: string,
+  { mimeType }: { mimeType?: string } = {},
+): Promise<ArrayBuffer> {
+  const exportMimeType = mimeType
+    ? (GOOGLE_NATIVE_EXPORT_MIME_TYPES[mimeType] ?? null)
+    : await findDriveExportMimeType(fileId);
+  const url = exportMimeType
+    ? new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}/export`)
+    : new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}`);
+  if (exportMimeType) {
+    url.searchParams.set("mimeType", exportMimeType);
+  } else {
+    url.searchParams.set("alt", "media");
+  }
+  url.searchParams.set("supportsAllDrives", "true");
+
+  const response = await fetch(url, {
+    headers: await driveAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    throw new Error(await driveDownloadError(response));
+  }
+
+  return response.arrayBuffer();
+}
+
+/** Export mime type for Google-native files, null when alt=media applies. */
+async function findDriveExportMimeType(fileId: string) {
   const url = new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}`);
-  url.searchParams.set("alt", "media");
+  url.searchParams.set("fields", "mimeType");
   url.searchParams.set("supportsAllDrives", "true");
 
   const response = await fetch(url, {
@@ -157,7 +201,27 @@ export async function downloadDriveFile(fileId: string): Promise<ArrayBuffer> {
     throw new Error(await driveError(response));
   }
 
-  return response.arrayBuffer();
+  const metadata = (await response.json()) as { mimeType?: string };
+
+  return GOOGLE_NATIVE_EXPORT_MIME_TYPES[metadata.mimeType ?? ""] ?? null;
+}
+
+/** Maps download failures to actionable messages instead of raw API errors. */
+async function driveDownloadError(response: Response) {
+  const text = await response.text();
+
+  if (text.includes("exportSizeLimitExceeded")) {
+    return "L'export Google Drive est plafonné à 10 Mo et ce fichier dépasse la limite : stocke le deck en .pptx natif dans la bibliothèque pitch plutôt qu'en Google Slides.";
+  }
+
+  if (
+    text.includes("cannotDownloadFile") ||
+    text.includes("fileNotDownloadable")
+  ) {
+    return "Le service account ne peut pas télécharger ce fichier : passe-le en Éditeur sur le dossier, ou désactive la restriction de téléchargement pour les lecteurs du Drive partagé, ou stocke le deck en .pptx natif.";
+  }
+
+  return `Google Drive service request failed (${response.status}): ${text.slice(0, 500)}`;
 }
 
 /** Uploads a file into a shared-drive folder. Used by Maya to store generated decks. */

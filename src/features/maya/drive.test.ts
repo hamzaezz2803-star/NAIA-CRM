@@ -23,6 +23,7 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
 }));
 
 import {
+  downloadMayaDriveDeckToTemp,
   getMayaDriveConfigFromEnv,
   hasMayaDriveFolderConfig,
   listMayaDriveDeckFiles,
@@ -97,6 +98,51 @@ describe("Maya Drive configuration", () => {
       kind: "generic",
       webViewLink: "https://drive.google.com/file/d/deck-1/view",
     });
+  });
+
+  it("lists native Google Slides decks and names their pptx export", async () => {
+    driveServiceMocks.listDriveFolderFiles.mockResolvedValue([
+      {
+        id: "slides-deck",
+        mimeType: "application/vnd.google-apps.presentation",
+        modifiedTime: "2026-07-08T09:00:00.000Z",
+        name: "Qarizmi Generic Pitch",
+        webViewLink: "https://docs.google.com/presentation/d/slides-deck",
+      },
+    ]);
+
+    const decks = await listMayaDriveDeckFiles({
+      sourceFolderId: "pitch-library-id",
+    });
+
+    expect(decks).toHaveLength(1);
+    expect(decks[0]).toMatchObject({
+      driveFileId: "slides-deck",
+      fileName: "Qarizmi Generic Pitch.pptx",
+      kind: "generic",
+    });
+  });
+
+  it("passes the listed mimeType to the download to skip the metadata lookup", async () => {
+    driveServiceMocks.downloadDriveFile.mockResolvedValue(
+      new Uint8Array([80, 75]).buffer,
+    );
+
+    const downloaded = await downloadMayaDriveDeckToTemp({
+      driveFileId: "slides-deck",
+      fileName: "Qarizmi Generic Pitch.pptx",
+      filePath: "gdrive:slides-deck",
+      kind: "generic",
+      mimeType: "application/vnd.google-apps.presentation",
+      modifiedAt: new Date("2026-07-08T09:00:00.000Z"),
+      sizeBytes: 0,
+    });
+    tempRoot = path.dirname(downloaded.filePath);
+
+    expect(driveServiceMocks.downloadDriveFile).toHaveBeenCalledWith(
+      "slides-deck",
+      { mimeType: "application/vnd.google-apps.presentation" },
+    );
   });
 
   it("uploads Maya drafts into the client 01_Pitch folder through the service account", async () => {

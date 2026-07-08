@@ -578,25 +578,39 @@ async function executeAction({
   }
 
   if (action.kind === "pitch.generateDraft") {
-    const response = await generateMayaPitchDraftForLeadAction(
-      action.payload.leadId,
-    );
+    try {
+      const response = await generateMayaPitchDraftForLeadAction(
+        action.payload.leadId,
+      );
 
-    return Response.json({
-      action,
-      execution: response.success ? "applied" : "failed",
-      message: response.success
-        ? `Pitch Maya généré: ${response.draftFileName}`
-        : (response.error ?? "Génération du pitch impossible."),
-      providerResult: response.success
-        ? {
-            draftFileName: response.draftFileName,
-            draftFilePath: response.draftFilePath,
-            manifestPath: response.manifestPath,
-          }
-        : undefined,
-      success: response.success,
-    });
+      return Response.json({
+        action,
+        execution: response.success ? "applied" : "failed",
+        message: response.success
+          ? `Pitch Maya généré: ${response.draftFileName}`
+          : (response.error ?? "Génération du pitch impossible."),
+        providerResult: response.success
+          ? {
+              draftFileName: response.draftFileName,
+              draftFilePath: response.draftFilePath,
+              manifestPath: response.manifestPath,
+            }
+          : undefined,
+        success: response.success,
+      });
+    } catch (error) {
+      // Owner-only generation lock and Drive failures surface as a clear
+      // failed action instead of a 500.
+      return Response.json({
+        action,
+        execution: "failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Génération du pitch impossible.",
+        success: false,
+      });
+    }
   }
 
   return Response.json({ error: "Unsupported action" }, { status: 400 });

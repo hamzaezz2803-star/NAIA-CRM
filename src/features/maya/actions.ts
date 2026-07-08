@@ -21,7 +21,10 @@ import {
 } from "./pptx";
 import { enhanceMayaDeckPlanWithOpenAI } from "./openai-planner";
 import { buildMayaDeckPlan, buildMayaPitchBriefFromLead } from "./planning";
-import { requireMayaPitchGeneratorAccess } from "./access";
+import {
+  requireMayaPitchGenerationAccess,
+  requireMayaPitchGeneratorAccess,
+} from "./access";
 import {
   downloadMayaDriveDeckToTemp,
   findMayaDriveDraftForClient,
@@ -137,7 +140,9 @@ export async function generateMayaPitchDraftFormAction(formData: FormData) {
 }
 
 export async function generateMayaPitchDraftForLeadAction(leadId: string) {
-  await requireMayaPitchGeneratorAccess();
+  // Generation only starts from an explicit human click (never on a lead
+  // status change) and is locked server-side to owner roles.
+  await requireMayaPitchGenerationAccess();
 
   const leads = await fetchLeadsAction();
   const lead = leads.find((candidate) => candidate.id === leadId);
@@ -150,7 +155,12 @@ export async function generateMayaPitchDraftForLeadAction(leadId: string) {
 
   try {
     if (!library.genericDeckFile || !library.genericDeck) {
-      return { error: "Generic pitch deck not found", success: false };
+      // Surface the pitch library failure (e.g. an actionable Drive download
+      // error) instead of a misleading "not found".
+      return {
+        error: library.warnings[0] ?? "Generic pitch deck not found",
+        success: false,
+      };
     }
 
     const brief = buildMayaPitchBriefFromLead(lead);

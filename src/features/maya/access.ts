@@ -1,7 +1,10 @@
 import "server-only";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-import { canUseMayaPitchGeneratorEmail } from "./access-policy";
+import {
+  canTriggerMayaPitchGenerationRole,
+  canUseMayaPitchGeneratorEmail,
+} from "./access-policy";
 
 export async function requireMayaPitchGeneratorAccess() {
   const supabase = await createServerSupabaseClient();
@@ -38,4 +41,20 @@ export async function requireMayaPitchGeneratorAccess() {
     role: membership.role as string,
     user,
   };
+}
+
+/**
+ * Stricter gate for the generation actions themselves: generation is never
+ * automatic (it costs OpenAI tokens) and stays reserved to owner roles.
+ */
+export async function requireMayaPitchGenerationAccess() {
+  const access = await requireMayaPitchGeneratorAccess();
+
+  if (!canTriggerMayaPitchGenerationRole(access.role)) {
+    throw new Error(
+      "La génération de pitch Maya est réservée au rôle owner : demande à un cofondateur owner de lancer la génération.",
+    );
+  }
+
+  return access;
 }

@@ -3,6 +3,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { getAppBaseUrl } from "@/platform/auth/config";
 import {
@@ -861,6 +862,11 @@ export async function updateLeadStatusAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
+  const previousStatus =
+    status === "meeting-booked"
+      ? await fetchLeadStatus(supabase, orgId, leadId)
+      : null;
+
   const nextAction = getStatusDrivenNextAction(status);
   const { error } = await supabase
     .from("crm_leads")
@@ -874,9 +880,31 @@ export async function updateLeadStatusAction(
 
   if (error) return { success: false, error: error.message };
 
+  if (status === "meeting-booked" && previousStatus !== "meeting-booked") {
+    // Deferred after the response: up to a dozen sequential Drive calls must
+    // not block the status change.
+    after(() => createMeetingBookedLeadDriveFolder(supabase, leadId));
+  }
+
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
   return { success: true };
+}
+
+/** Status of a lead before an update, used to detect real transitions. */
+async function fetchLeadStatus(
+  supabase: any,
+  orgId: string,
+  leadId: string,
+): Promise<CrmLeadStatus | null> {
+  const { data } = await supabase
+    .from("crm_leads")
+    .select("status")
+    .eq("id", leadId)
+    .eq("organization_id", orgId)
+    .maybeSingle();
+
+  return data?.status ?? null;
 }
 
 function getStatusDrivenNextAction(status: CrmLeadStatus) {
@@ -906,6 +934,7 @@ export async function updateLeadAction(
     contactLinkedinUrl: string;
     assignedToProfileId: string | null;
     tagIds: string[];
+    skipGoogleDriveCreate: boolean;
   }>,
 ): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
   const supabase = await createServerSupabaseClient();
@@ -985,6 +1014,12 @@ export async function updateLeadAction(
     }
   }
 
+  const shouldCreateDriveFolder =
+    updates.status === "meeting-booked" && !updates.skipGoogleDriveCreate;
+  const previousStatus = shouldCreateDriveFolder
+    ? await fetchLeadStatus(supabase, orgId, leadId)
+    : null;
+
   const { error } = await supabase
     .from("crm_leads")
     .update({
@@ -1019,6 +1054,12 @@ export async function updateLeadAction(
     .eq("organization_id", orgId);
 
   if (error) return { success: false, error: error.message };
+
+  if (shouldCreateDriveFolder && previousStatus !== "meeting-booked") {
+    // Deferred after the response: up to a dozen sequential Drive calls must
+    // not block the update.
+    after(() => createMeetingBookedLeadDriveFolder(supabase, leadId));
+  }
 
   // Sync tags if provided
   if (updates.tagIds !== undefined) {
@@ -2067,6 +2108,41 @@ export async function createGoogleDriveFolderAction(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
+  }
+}
+
+/**
+ * Non-blocking helper run after the response when a lead transitions to
+ * meeting-booked: the client folder must exist before Maya writes the pitch
+ * draft into it. Skips leads that already have a folder or have no
+ * resolvable company name.
+ */
+async function createMeetingBookedLeadDriveFolder(
+  supabase: any,
+  leadId: string,
+): Promise<void> {
+  try {
+    const { data: lead } = await supabase
+      .from("crm_leads")
+      .select("company_id, drive_folder_url, notes, company:company_id(name)")
+      .eq("id", leadId)
+      .maybeSingle();
+
+    if (!lead || lead.drive_folder_url) return;
+
+    const companyName =
+      lead.company?.name?.trim() ||
+      parseContactInfoFromNotes(lead.notes).company;
+    if (!companyName) return;
+
+    await createLeadDriveFolderIfConfigured(supabase, leadId, companyName);
+
+    // The folder was created after the response: make the link show up on
+    // the next render.
+    revalidatePath("/dashboard/leads");
+  } catch (driveErr) {
+    // Non-blocking — Drive failure must not block the status change
+    console.error("Drive folder auto-create error:", driveErr);
   }
 }
 
