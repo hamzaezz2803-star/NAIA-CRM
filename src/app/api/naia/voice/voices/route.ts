@@ -7,11 +7,14 @@ type ElevenLabsVoice = {
   voice_id?: string;
 };
 
+// "Martin Dupont" — NAIA's default voice when ELEVENLABS_VOICE_ID is unset.
+const DEFAULT_ELEVENLABS_VOICE_ID = "a5n9pJUnAhX4fn7lx3uo";
 const DEFAULT_FREE_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
 
 export async function GET() {
   const apiKey = process.env.ELEVENLABS_API_KEY;
-  const configuredVoiceId = process.env.ELEVENLABS_VOICE_ID ?? "";
+  const configuredVoiceId =
+    process.env.ELEVENLABS_VOICE_ID?.trim() || DEFAULT_ELEVENLABS_VOICE_ID;
 
   if (!apiKey) {
     return Response.json(
@@ -80,10 +83,7 @@ export async function GET() {
       (voice) => voice.voiceId === configuredVoiceId,
     );
     const recommendedVoice =
-      voices.find(
-        (voice) =>
-          voice.voiceId === configuredVoiceId && voice.category === "premade",
-      ) ??
+      voices.find((voice) => voice.voiceId === configuredVoiceId) ??
       voices.find(
         (voice) => voice.voiceId === DEFAULT_FREE_ELEVENLABS_VOICE_ID,
       ) ??

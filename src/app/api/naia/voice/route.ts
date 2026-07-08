@@ -13,6 +13,8 @@ type ElevenLabsError = {
 };
 
 const DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2";
+// "Martin Dupont" — NAIA's default voice when ELEVENLABS_VOICE_ID is unset.
+const DEFAULT_ELEVENLABS_VOICE_ID = "a5n9pJUnAhX4fn7lx3uo";
 const DEFAULT_FREE_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
 const MAX_VOICE_TEXT_LENGTH = 1200;
 
@@ -55,8 +57,10 @@ async function createVoiceResponse({
   const fallbackVoiceId =
     sanitizeVoiceId(process.env.ELEVENLABS_FALLBACK_VOICE_ID) ??
     DEFAULT_FREE_ELEVENLABS_VOICE_ID;
-  const configuredVoiceId = sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID);
-  const voiceId = requestedCleanVoiceId ?? configuredVoiceId ?? fallbackVoiceId;
+  const configuredVoiceId =
+    sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID) ??
+    DEFAULT_ELEVENLABS_VOICE_ID;
+  const voiceId = requestedCleanVoiceId ?? configuredVoiceId;
 
   if (!text) {
     return browserVoiceFallback("missing-text", { status: 400 });
