@@ -27,6 +27,7 @@ export type MayaDriveConfig = {
 
 export type MayaDriveDeckFile = MayaDeckFile & {
   driveFileId: string;
+  mimeType?: string;
   webViewLink?: string;
 };
 
@@ -83,7 +84,9 @@ export async function downloadMayaDriveDeckToTemp(file: MayaDriveDeckFile) {
 
   await writeFile(
     filePath,
-    Buffer.from(await downloadDriveFile(file.driveFileId)),
+    Buffer.from(
+      await downloadDriveFile(file.driveFileId, { mimeType: file.mimeType }),
+    ),
   );
 
   return {
@@ -213,6 +216,7 @@ function toMayaDriveDeckFile(file: DriveFileSummary): MayaDriveDeckFile {
     fileName,
     filePath: `gdrive:${file.id ?? ""}`,
     kind: inferDriveDeckKind(fileName),
+    mimeType: file.mimeType,
     modifiedAt: file.modifiedTime ? new Date(file.modifiedTime) : new Date(0),
     sizeBytes: Number(file.size ?? 0),
     webViewLink: file.webViewLink,

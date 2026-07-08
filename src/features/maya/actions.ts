@@ -155,7 +155,12 @@ export async function generateMayaPitchDraftForLeadAction(leadId: string) {
 
   try {
     if (!library.genericDeckFile || !library.genericDeck) {
-      return { error: "Generic pitch deck not found", success: false };
+      // Surface the pitch library failure (e.g. an actionable Drive download
+      // error) instead of a misleading "not found".
+      return {
+        error: library.warnings[0] ?? "Generic pitch deck not found",
+        success: false,
+      };
     }
 
     const brief = buildMayaPitchBriefFromLead(lead);

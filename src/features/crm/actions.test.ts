@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  afterCallbacks: [] as Array<() => unknown>,
   createServerSupabaseClient: vi.fn(),
   createSystemNotification: vi.fn(),
   ensureClientDriveFolder: vi.fn(),
@@ -9,6 +10,12 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
+}));
+
+vi.mock("next/server", () => ({
+  after: (callback: () => unknown) => {
+    mocks.afterCallbacks.push(callback);
+  },
 }));
 
 vi.mock("@/platform/auth/supabase-server", () => ({
@@ -50,6 +57,14 @@ type FakeQueryBuilder = {
   ) => Promise<unknown>;
   update: (payload: unknown) => FakeQueryBuilder;
 };
+
+/** Runs the callbacks deferred with next/server after() by the actions. */
+async function flushAfterCallbacks() {
+  const callbacks = mocks.afterCallbacks.splice(0);
+  for (const callback of callbacks) {
+    await callback();
+  }
+}
 
 function createFakeSupabase(respond: QueryResponder) {
   return {
@@ -106,10 +121,12 @@ function createFakeSupabase(respond: QueryResponder) {
 function respondForLead({
   companyName,
   driveFolderUrl = null,
+  previousStatus = "contacted",
   onUpdate,
 }: {
   companyName: string | null;
   driveFolderUrl?: string | null;
+  previousStatus?: string;
   onUpdate?: (state: QueryState) => void;
 }): QueryResponder {
   return (state) => {
@@ -121,6 +138,10 @@ function respondForLead({
       return { data: { organization_id: "org-1" }, error: null };
     }
     if (state.table === "crm_leads" && state.op === "select") {
+      // The pre-update transition check only reads the status column.
+      if (state.columns === "status") {
+        return { data: { status: previousStatus }, error: null };
+      }
       return {
         data: {
           company: companyName ? { name: companyName } : null,
@@ -141,6 +162,7 @@ function respondForLead({
 describe("CRM lead status Drive folder creation", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.afterCallbacks.length = 0;
     mocks.isDriveServiceConfigured.mockReturnValue(true);
     mocks.ensureClientDriveFolder.mockResolvedValue({
       created: true,
@@ -168,7 +190,12 @@ describe("CRM lead status Drive folder creation", () => {
 
     const result = await updateLeadStatusAction("lead-1", "meeting-booked");
 
+    // The Drive work is deferred after the response, never awaited inline.
     expect(result).toEqual({ success: true });
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+
+    await flushAfterCallbacks();
+
     expect(mocks.ensureClientDriveFolder).toHaveBeenCalledWith(
       "Total Energies",
     );
@@ -184,8 +211,26 @@ describe("CRM lead status Drive folder creation", () => {
     );
 
     const result = await updateLeadStatusAction("lead-1", "contacted");
+    await flushAfterCallbacks();
 
     expect(result).toEqual({ success: true });
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run Drive work when the lead was already meeting-booked", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(
+        respondForLead({
+          companyName: "Total Energies",
+          previousStatus: "meeting-booked",
+        }),
+      ),
+    );
+
+    const result = await updateLeadStatusAction("lead-1", "meeting-booked");
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.afterCallbacks).toHaveLength(0);
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
   });
 
@@ -200,6 +245,7 @@ describe("CRM lead status Drive folder creation", () => {
     );
 
     const result = await updateLeadStatusAction("lead-1", "meeting-booked");
+    await flushAfterCallbacks();
 
     expect(result).toEqual({ success: true });
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
@@ -211,6 +257,7 @@ describe("CRM lead status Drive folder creation", () => {
     );
 
     const result = await updateLeadStatusAction("lead-1", "meeting-booked");
+    await flushAfterCallbacks();
 
     expect(result).toEqual({ success: true });
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
@@ -228,6 +275,7 @@ describe("CRM lead status Drive folder creation", () => {
       .mockImplementation(() => {});
 
     const result = await updateLeadStatusAction("lead-1", "meeting-booked");
+    await flushAfterCallbacks();
 
     expect(result).toEqual({ success: true });
     expect(consoleError).toHaveBeenCalled();
@@ -242,10 +290,26 @@ describe("CRM lead status Drive folder creation", () => {
     const result = await updateLeadAction("lead-1", {
       status: "meeting-booked",
     });
+    await flushAfterCallbacks();
 
     expect(result.success).toBe(true);
     expect(mocks.ensureClientDriveFolder).toHaveBeenCalledWith(
       "Total Energies",
     );
+  });
+
+  it("respects the explicit Drive opt-out in updateLeadAction", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(respondForLead({ companyName: "Total Energies" })),
+    );
+
+    const result = await updateLeadAction("lead-1", {
+      skipGoogleDriveCreate: true,
+      status: "meeting-booked",
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.afterCallbacks).toHaveLength(0);
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
   });
 });

@@ -155,10 +155,17 @@ export async function listDriveFolderFiles(
 /**
  * Downloads a Drive file's binary content. Google-native files are exported
  * to their Office equivalent (Slides -> pptx, Docs -> docx, capped at 10 MB
- * by the Drive API); anything else is downloaded as-is with alt=media.
+ * by the Drive API); anything else is downloaded as-is with alt=media. Pass
+ * the mimeType when it is already known (e.g. from a folder listing) to
+ * skip the extra metadata lookup.
  */
-export async function downloadDriveFile(fileId: string): Promise<ArrayBuffer> {
-  const exportMimeType = await findDriveExportMimeType(fileId);
+export async function downloadDriveFile(
+  fileId: string,
+  { mimeType }: { mimeType?: string } = {},
+): Promise<ArrayBuffer> {
+  const exportMimeType = mimeType
+    ? (GOOGLE_NATIVE_EXPORT_MIME_TYPES[mimeType] ?? null)
+    : await findDriveExportMimeType(fileId);
   const url = exportMimeType
     ? new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}/export`)
     : new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}`);

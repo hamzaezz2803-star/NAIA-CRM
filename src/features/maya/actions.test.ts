@@ -136,6 +136,26 @@ describe("Maya actions", () => {
     );
   });
 
+  it("surfaces the actionable Drive download error instead of a generic not-found", async () => {
+    mocks.hasMayaDriveFolderConfig.mockReturnValue(true);
+    mocks.downloadMayaDriveDeckToTemp.mockRejectedValue(
+      new Error(
+        "Le service account ne peut pas télécharger ce fichier : passe-le en Éditeur sur le dossier, ou désactive la restriction de téléchargement pour les lecteurs du Drive partagé, ou stocke le deck en .pptx natif.",
+      ),
+    );
+
+    const result = await generateMayaPitchDraftForLeadAction("lead-1");
+
+    expect(result).toEqual({
+      error: expect.stringContaining(
+        "Le service account ne peut pas télécharger ce fichier",
+      ),
+      success: false,
+    });
+    expect(mocks.enhanceMayaDeckPlanWithOpenAI).not.toHaveBeenCalled();
+    expect(mocks.generateMayaPitchDraft).not.toHaveBeenCalled();
+  });
+
   it("refuses to generate anything when the owner-only gate rejects", async () => {
     mocks.requireMayaPitchGenerationAccess.mockRejectedValue(
       new Error("La génération de pitch Maya est réservée au rôle owner."),
