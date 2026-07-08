@@ -38,6 +38,7 @@ import {
   buildNaiaVoiceUrl,
   createVoiceSilenceDetector,
   playElevenLabsVoice,
+  primeVoicePlayback,
   VOICE_RECORDING_MAX_MS,
   type VoicePlaybackHandle,
 } from "./voice-client";
@@ -496,6 +497,7 @@ export function NaiaCommandCenter() {
   };
 
   const startVoiceControl = () => {
+    primeVoicePlayback();
     if (canRecordAudio && !forceBrowserSpeech) {
       void startMediaRecorderControl();
       return;
@@ -768,6 +770,7 @@ export function NaiaCommandCenter() {
   };
 
   const speakCurrentAnswer = async () => {
+    primeVoicePlayback();
     speakText(result?.response ?? "NAIA est en ligne.");
   };
 
@@ -996,9 +999,12 @@ export function NaiaCommandCenter() {
                 <button
                   className="inline-flex min-h-10 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:hover:bg-slate-700 dark:focus-visible:ring-cyan-200"
                   disabled={!selectedVoiceId || isSpeaking}
-                  onClick={() =>
-                    speakText(`Bonjour ${userName}, je suis NAIA. Je t'ecoute.`)
-                  }
+                  onClick={() => {
+                    primeVoicePlayback();
+                    speakText(
+                      `Bonjour ${userName}, je suis NAIA. Je t'ecoute.`,
+                    );
+                  }}
                   type="button"
                 >
                   Tester
