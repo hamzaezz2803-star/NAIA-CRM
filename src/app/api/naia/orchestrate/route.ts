@@ -1,5 +1,3 @@
-import { createHmac, timingSafeEqual } from "node:crypto";
-
 import {
   createLeadAction,
   extractLeadFromNaturalTextAction,
@@ -18,7 +16,6 @@ import {
   isNaiaOverviewQuestion,
   orchestrateNaiaCommand,
   type NaiaOrchestrationResult,
-  type NaiaActionDraft,
 } from "@/features/naia/orchestrator";
 import { buildNaiaOperatingContext } from "@/features/naia/operational-context";
 import { naiaAgents, type NaiaAgentId } from "@/features/naia/agents";
@@ -32,6 +29,7 @@ import {
   listGmailMessages,
   listGoogleCalendarEvents,
 } from "@/platform/integrations/google-workspace";
+import { signAction, verifyApprovalToken } from "@/platform/naia/action-tokens";
 import { generateMayaPitchDraftForLeadAction } from "@/features/maya/actions";
 
 type OrchestratePayload = {
@@ -46,12 +44,6 @@ type OrchestratePayload = {
     }
   >;
 };
-
-type SignedAction = NaiaActionDraft & {
-  approvalToken: string;
-};
-
-const APPROVAL_TTL_MS = 5 * 60 * 1000;
 
 export async function POST(request: Request) {
   let payload: OrchestratePayload;
@@ -877,96 +869,4 @@ function coerceStatus(status: string): CrmLeadStatus | null {
 
 function parseCommand(command: unknown) {
   return typeof command === "string" ? command.trim().slice(0, 2000) : "";
-}
-
-function signAction(action: NaiaActionDraft, command: string): SignedAction {
-  // The token embeds the full approved action so the execute phase can run it
-  // as-is after signature verification, without re-deriving the action list.
-  const payload = {
-    action,
-    commandHash: hashValue(command),
-    expiresAt: Date.now() + APPROVAL_TTL_MS,
-  };
-  const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
-    "base64url",
-  );
-  const signature = hmac(encodedPayload);
-
-  return {
-    ...action,
-    approvalToken: `${encodedPayload}.${signature}`,
-  };
-}
-
-function verifyApprovalToken(
-  approvalToken: string,
-  actionId: string,
-  command: string,
-): NaiaActionDraft | null {
-  const [encodedPayload, signature] = approvalToken.split(".");
-  if (!encodedPayload || !signature) return null;
-
-  const expected = hmac(encodedPayload);
-  if (!safeEqual(signature, expected)) return null;
-
-  try {
-    const payload = JSON.parse(
-      Buffer.from(encodedPayload, "base64url").toString("utf8"),
-    ) as {
-      action?: NaiaActionDraft;
-      commandHash?: string;
-      expiresAt?: number;
-    };
-    const action = payload.action;
-
-    if (
-      !action ||
-      typeof action !== "object" ||
-      typeof action.id !== "string" ||
-      typeof action.kind !== "string" ||
-      typeof action.payload !== "object" ||
-      action.payload === null ||
-      action.id !== actionId ||
-      payload.commandHash !== hashValue(command) ||
-      typeof payload.expiresAt !== "number" ||
-      payload.expiresAt < Date.now()
-    ) {
-      return null;
-    }
-
-    return action;
-  } catch {
-    return null;
-  }
-}
-
-function hashValue(value: string) {
-  return createHmac("sha256", getApprovalSecret()).update(value).digest("hex");
-}
-
-function hmac(value: string) {
-  return createHmac("sha256", getApprovalSecret()).update(value).digest("hex");
-}
-
-function getApprovalSecret() {
-  const secret =
-    process.env.NAIA_ACTION_APPROVAL_SECRET ??
-    process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (secret) return secret;
-
-  if (process.env.NODE_ENV === "development") {
-    return "naia-local-approval-secret";
-  }
-
-  throw new Error("NAIA_ACTION_APPROVAL_SECRET is required");
-}
-
-function safeEqual(left: string, right: string) {
-  const leftBuffer = Buffer.from(left);
-  const rightBuffer = Buffer.from(right);
-
-  return (
-    leftBuffer.length === rightBuffer.length &&
-    timingSafeEqual(leftBuffer, rightBuffer)
-  );
 }

@@ -1,8 +1,21 @@
 import { Buffer } from "node:buffer";
 
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
+
+// Optional execution context for trusted server-side bridges (for example the
+// Slack bridge) that already resolved the acting user. When provided, it
+// short-circuits the cookie-session resolution while keeping the same
+// per-user connection lookup: actions always run on the acting user's own
+// Google account.
+export type GoogleWorkspaceContext = {
+  organizationId: string;
+  profileId: string;
+  supabase: SupabaseClient;
+};
 
 type GoogleTokenReference = {
   access_token?: string;
@@ -55,17 +68,20 @@ export async function getGoogleWorkspaceAccessToken({
   return getGoogleAccessToken(connection);
 }
 
-export async function listGoogleCalendarEvents({
-  calendarId = "primary",
-  daysAhead = 7,
-  maxResults = 10,
-}: {
-  calendarId?: string;
-  daysAhead?: number;
-  maxResults?: number;
-} = {}): Promise<GoogleCalendarEventSummary[]> {
-  const connection = await getGoogleWorkspaceConnection();
-  const accessToken = await getGoogleAccessToken(connection);
+export async function listGoogleCalendarEvents(
+  {
+    calendarId = "primary",
+    daysAhead = 7,
+    maxResults = 10,
+  }: {
+    calendarId?: string;
+    daysAhead?: number;
+    maxResults?: number;
+  } = {},
+  context?: GoogleWorkspaceContext,
+): Promise<GoogleCalendarEventSummary[]> {
+  const connection = await getGoogleWorkspaceConnection(context);
+  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
   const timeMin = new Date();
   const timeMax = new Date(
     timeMin.getTime() + Math.max(daysAhead, 1) * 24 * 60 * 60 * 1000,
@@ -109,17 +125,20 @@ export async function listGoogleCalendarEvents({
   }));
 }
 
-export async function listGmailMessages({
-  maxResults = 10,
-  query,
-  unreadOnly = false,
-}: {
-  maxResults?: number;
-  query?: string;
-  unreadOnly?: boolean;
-} = {}): Promise<GmailMessageSummary[]> {
-  const connection = await getGoogleWorkspaceConnection();
-  const accessToken = await getGoogleAccessToken(connection);
+export async function listGmailMessages(
+  {
+    maxResults = 10,
+    query,
+    unreadOnly = false,
+  }: {
+    maxResults?: number;
+    query?: string;
+    unreadOnly?: boolean;
+  } = {},
+  context?: GoogleWorkspaceContext,
+): Promise<GmailMessageSummary[]> {
+  const connection = await getGoogleWorkspaceConnection(context);
+  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
   const listUrl = new URL(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages",
   );
@@ -234,29 +253,39 @@ export async function sendGmailDraft({
   return (await response.json()) as { id?: string; threadId?: string };
 }
 
-async function getGoogleWorkspaceConnection(): Promise<GoogleConnectionRow> {
-  const supabase = await createServerSupabaseClient();
+async function getGoogleWorkspaceConnection(
+  context?: GoogleWorkspaceContext,
+): Promise<GoogleConnectionRow> {
+  const supabase = context?.supabase ?? (await createServerSupabaseClient());
   if (!supabase) {
     throw new Error("Google Workspace requires an authenticated session.");
   }
 
-  const {
-    data: { user },
-    error: userError,
-  } = await supabase.auth.getUser();
-  if (userError || !user) {
-    throw new Error("Google Workspace requires an authenticated session.");
-  }
+  let profileId = context?.profileId;
+  let organizationId = context?.organizationId;
 
-  const { data: membership } = await supabase
-    .from("organization_memberships")
-    .select("organization_id")
-    .eq("profile_id", user.id)
-    .limit(1)
-    .maybeSingle();
+  if (!profileId || !organizationId) {
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser();
+    if (userError || !user) {
+      throw new Error("Google Workspace requires an authenticated session.");
+    }
 
-  if (!membership?.organization_id) {
-    throw new Error("Google Workspace requires an organization membership.");
+    const { data: membership } = await supabase
+      .from("organization_memberships")
+      .select("organization_id")
+      .eq("profile_id", user.id)
+      .limit(1)
+      .maybeSingle();
+
+    if (!membership?.organization_id) {
+      throw new Error("Google Workspace requires an organization membership.");
+    }
+
+    profileId = user.id;
+    organizationId = membership.organization_id;
   }
 
   // Per-user connection: each member's Calendar/Gmail actions run on their
@@ -266,9 +295,9 @@ async function getGoogleWorkspaceConnection(): Promise<GoogleConnectionRow> {
     .select(
       "id,organization_id,external_account_label,scopes,encrypted_token_reference,connected_by_profile_id",
     )
-    .eq("organization_id", membership.organization_id)
+    .eq("organization_id", organizationId)
     .eq("provider", "google")
-    .eq("connected_by_profile_id", user.id)
+    .eq("connected_by_profile_id", profileId)
     .eq("status", "connected")
     .order("connected_at", { ascending: false })
     .limit(1)
@@ -281,7 +310,10 @@ async function getGoogleWorkspaceConnection(): Promise<GoogleConnectionRow> {
   return data as GoogleConnectionRow;
 }
 
-async function getGoogleAccessToken(connection: GoogleConnectionRow) {
+async function getGoogleAccessToken(
+  connection: GoogleConnectionRow,
+  supabaseOverride?: SupabaseClient,
+) {
   const tokenReference = parseTokenReference(
     connection.encrypted_token_reference,
   );
@@ -337,7 +369,7 @@ async function getGoogleAccessToken(connection: GoogleConnectionRow) {
     refresh_token: refreshed.refresh_token ?? tokenReference.refresh_token,
   };
 
-  const supabase = await createServerSupabaseClient();
+  const supabase = supabaseOverride ?? (await createServerSupabaseClient());
   await supabase
     ?.from("integration_connections")
     .update({

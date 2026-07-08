@@ -107,6 +107,33 @@ async function getOrgId(): Promise<string | null> {
   return membership?.organization_id ?? null;
 }
 
+// Trusted execution context for server-side bridges (for example the Slack
+// bridge) that already resolved the acting user and organization without a
+// cookie session. The caller is responsible for checking role permissions
+// with hasPermission() before invoking a write action with this context.
+export type CrmActionContext = {
+  actorProfileId: string | null;
+  organizationId: string;
+  supabase: SupabaseClient;
+};
+
+function resolveTrustedCrmContext(
+  context?: CrmActionContext,
+): CrmActionContext | null {
+  if (!context) return null;
+
+  // Server actions are network-invokable, so a malicious client could post a
+  // forged context object to hijack the organization scope. A serialized
+  // payload can never carry a callable Supabase client, so requiring one
+  // guarantees the context was injected by trusted server code.
+  if (typeof context.supabase?.from !== "function") return null;
+  if (!context.organizationId || typeof context.organizationId !== "string") {
+    return null;
+  }
+
+  return context;
+}
+
 function sanitizeJsonString(str: string): string {
   let inString = false;
   let result = "";
@@ -492,43 +519,48 @@ type CreateLeadActionResult = {
   success: boolean;
 };
 
-export async function createLeadAction(input: {
-  topic: string;
-  companyId?: string;
-  companyName?: string;
-  contactId?: string;
-  contactEmail?: string;
-  contactName?: string;
-  contactPhone?: string;
-  source?: string;
-  status?: CrmLeadStatus;
-  notes?: string;
-  nextAction?: string;
-  leadDate?: string;
-  contactJobTitle?: string;
-  contactLinkedinUrl?: string;
-  assignedToProfileId?: string;
-  tagIds?: string[];
-  skipGoogleCalendarSync?: boolean;
-  skipGoogleDriveCreate?: boolean;
-}): Promise<CreateLeadActionResult> {
-  const supabase = await createServerSupabaseClient();
+export async function createLeadAction(
+  input: {
+    topic: string;
+    companyId?: string;
+    companyName?: string;
+    contactId?: string;
+    contactEmail?: string;
+    contactName?: string;
+    contactPhone?: string;
+    source?: string;
+    status?: CrmLeadStatus;
+    notes?: string;
+    nextAction?: string;
+    leadDate?: string;
+    contactJobTitle?: string;
+    contactLinkedinUrl?: string;
+    assignedToProfileId?: string;
+    tagIds?: string[];
+    skipGoogleCalendarSync?: boolean;
+    skipGoogleDriveCreate?: boolean;
+  },
+  context?: CrmActionContext,
+): Promise<CreateLeadActionResult> {
+  const trustedContext = resolveTrustedCrmContext(context);
+  const supabase =
+    trustedContext?.supabase ?? (await createServerSupabaseClient());
   if (!supabase) {
     return shouldUseDummyCrmData()
       ? createDummyLead(input)
       : { success: false, error: "Not configured" };
   }
 
-  const orgId = await getOrgId();
+  const orgId = trustedContext?.organizationId ?? (await getOrgId());
   if (!orgId) {
     return shouldUseDummyCrmData()
       ? createDummyLead(input)
       : { success: false, error: "Not authenticated" };
   }
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  const actorProfileId = trustedContext
+    ? trustedContext.actorProfileId
+    : ((await supabase.auth.getUser()).data.user?.id ?? null);
 
   let companyId = input.companyId ?? null;
   let contactId = input.contactId ?? null;
@@ -554,7 +586,7 @@ export async function createLeadAction(input: {
         .insert({
           organization_id: orgId,
           name: company,
-          created_by_profile_id: user?.id ?? null,
+          created_by_profile_id: actorProfileId,
         })
         .select("id")
         .single();
@@ -586,7 +618,7 @@ export async function createLeadAction(input: {
           phone: input.contactPhone ?? null,
           job_title: input.contactJobTitle ?? null,
           linkedin_url: input.contactLinkedinUrl ?? null,
-          created_by_profile_id: user?.id ?? null,
+          created_by_profile_id: actorProfileId,
         })
         .select("id")
         .single();
@@ -609,9 +641,9 @@ export async function createLeadAction(input: {
       contact_job_title: input.contactJobTitle ?? null,
       contact_linkedin_url: input.contactLinkedinUrl ?? null,
       assigned_to_profile_id: input.assignedToProfileId ?? null,
-      last_updated_by_profile_id: user?.id ?? null,
+      last_updated_by_profile_id: actorProfileId,
       last_updated_at: new Date().toISOString(),
-      created_by_profile_id: user?.id ?? null,
+      created_by_profile_id: actorProfileId,
     })
     .select()
     .single();
@@ -639,11 +671,12 @@ export async function createLeadAction(input: {
       supabase,
       orgId,
       row.id,
+      actorProfileId,
     );
   }
 
   // Sync Todo task
-  await syncLeadTask(supabase, orgId, row.id, user?.id ?? null);
+  await syncLeadTask(supabase, orgId, row.id, actorProfileId);
 
   // Auto-create the client folder in the cofounders shared drive if not
   // skipped. Folders are named after the client company: without a resolved
@@ -855,11 +888,14 @@ function resolveLeadInsertStatus(input: {
 export async function updateLeadStatusAction(
   leadId: string,
   status: CrmLeadStatus,
+  context?: CrmActionContext,
 ): Promise<{ success: boolean; error?: string }> {
-  const supabase = await createServerSupabaseClient();
+  const trustedContext = resolveTrustedCrmContext(context);
+  const supabase =
+    trustedContext?.supabase ?? (await createServerSupabaseClient());
   if (!supabase) return { success: false, error: "Not configured" };
 
-  const orgId = await getOrgId();
+  const orgId = trustedContext?.organizationId ?? (await getOrgId());
   if (!orgId) return { success: false, error: "Not authenticated" };
 
   const previousStatus =
@@ -868,7 +904,7 @@ export async function updateLeadStatusAction(
       : null;
 
   const nextAction = getStatusDrivenNextAction(status);
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("crm_leads")
     .update({
       ...(nextAction ? { next_action: nextAction } : {}),
@@ -876,9 +912,16 @@ export async function updateLeadStatusAction(
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
-    .eq("organization_id", orgId);
+    .eq("organization_id", orgId)
+    .select("id");
 
   if (error) return { success: false, error: error.message };
+
+  // Zero returned rows means the update matched nothing (unknown lead id or
+  // another organization): report a failure instead of a silent no-op.
+  if (!data || data.length === 0) {
+    return { success: false, error: "Lead introuvable" };
+  }
 
   if (status === "meeting-booked" && previousStatus !== "meeting-booked") {
     // Deferred after the response: up to a dozen sequential Drive calls must
@@ -2470,6 +2513,7 @@ async function syncLeadToGoogleCalendar(
   supabase: SupabaseClient,
   orgId: string,
   leadId: string,
+  actorProfileId?: string | null,
 ): Promise<{ success: boolean; error?: string }> {
   try {
     const { data: lead, error: leadError } = await supabase
@@ -2490,18 +2534,18 @@ async function syncLeadToGoogleCalendar(
     const existingEventId = eventIdMatch ? eventIdMatch[1].trim() : null;
 
     // Fetch the acting user's own google connection: calendar events are
-    // created on the calendar of whoever triggers the sync.
-    const {
-      data: { user: actingUser },
-    } = await supabase.auth.getUser();
+    // created on the calendar of whoever triggers the sync. Bridges without a
+    // cookie session (for example Slack) inject the acting profile id.
+    const actingUserId =
+      actorProfileId ?? (await supabase.auth.getUser()).data.user?.id ?? null;
 
-    const { data: connection } = actingUser
+    const { data: connection } = actingUserId
       ? await supabase
           .from("integration_connections")
           .select("*")
           .eq("organization_id", orgId)
           .eq("provider", "google")
-          .eq("connected_by_profile_id", actingUser.id)
+          .eq("connected_by_profile_id", actingUserId)
           .limit(1)
           .maybeSingle()
       : { data: null };
@@ -2537,7 +2581,7 @@ async function syncLeadToGoogleCalendar(
       ? eventOwnerMatch[1].trim()
       : null;
     const actingUserOwnsEvent =
-      !existingEventOwner || existingEventOwner === actingUser?.id;
+      !existingEventOwner || existingEventOwner === actingUserId;
 
     // If lead_date is not set, delete existing event if any
     const finalLeadDate = lead.lead_date ?? lead.next_action_date;
@@ -2788,7 +2832,7 @@ async function syncLeadToGoogleCalendar(
         .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
         .trim();
 
-      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUser?.id ?? "unknown"}]\n[Google Calendar Event Link: ${htmlLink}]`;
+      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId ?? "unknown"}]\n[Google Calendar Event Link: ${htmlLink}]`;
       const updatedNotes = cleanIdNotes
         ? `${cleanIdNotes}\n${eventTags}`
         : eventTags;

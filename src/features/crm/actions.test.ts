@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -31,7 +32,11 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
   isDriveServiceConfigured: mocks.isDriveServiceConfigured,
 }));
 
-import { updateLeadAction, updateLeadStatusAction } from "./actions";
+import {
+  updateLeadAction,
+  updateLeadStatusAction,
+  type CrmActionContext,
+} from "./actions";
 
 type QueryState = {
   table: string;
@@ -132,7 +137,7 @@ function respondForLead({
   return (state) => {
     if (state.op === "update") {
       onUpdate?.(state);
-      return { data: null, error: null };
+      return { data: [{ id: "lead-1" }], error: null };
     }
     if (state.table === "organization_memberships") {
       return { data: { organization_id: "org-1" }, error: null };
@@ -311,5 +316,77 @@ describe("CRM lead status Drive folder creation", () => {
     expect(result.success).toBe(true);
     expect(mocks.afterCallbacks).toHaveLength(0);
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+  });
+});
+
+function fakeLeadUpdateClient(result: {
+  data: Array<{ id: string }> | null;
+  error: { message: string } | null;
+}) {
+  const select = vi.fn().mockResolvedValue(result);
+  const orgEq = vi.fn(() => ({ select }));
+  const idEq = vi.fn(() => ({ eq: orgEq }));
+  const update = vi.fn(() => ({ eq: idEq }));
+
+  return {
+    client: { from: vi.fn(() => ({ update })) } as unknown as SupabaseClient,
+    update,
+  };
+}
+
+function trustedContext(client: SupabaseClient): CrmActionContext {
+  return {
+    actorProfileId: "profile-ali",
+    organizationId: "org-1",
+    supabase: client,
+  };
+}
+
+describe("updateLeadStatusAction trusted context", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.afterCallbacks.length = 0;
+  });
+
+  it("succeeds when the scoped update matches a lead", async () => {
+    const { client } = fakeLeadUpdateClient({
+      data: [{ id: "lead-1" }],
+      error: null,
+    });
+
+    const result = await updateLeadStatusAction(
+      "lead-1",
+      "won",
+      trustedContext(client),
+    );
+
+    expect(result).toEqual({ success: true });
+  });
+
+  it("fails when the update matches zero rows instead of silently succeeding", async () => {
+    const { client } = fakeLeadUpdateClient({ data: [], error: null });
+
+    const result = await updateLeadStatusAction(
+      "lead-of-another-org",
+      "won",
+      trustedContext(client),
+    );
+
+    expect(result).toEqual({ success: false, error: "Lead introuvable" });
+  });
+
+  it("propagates database errors", async () => {
+    const { client } = fakeLeadUpdateClient({
+      data: null,
+      error: { message: "permission denied" },
+    });
+
+    const result = await updateLeadStatusAction(
+      "lead-1",
+      "won",
+      trustedContext(client),
+    );
+
+    expect(result).toEqual({ success: false, error: "permission denied" });
   });
 });
