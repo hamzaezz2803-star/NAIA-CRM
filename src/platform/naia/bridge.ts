@@ -1,5 +1,9 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+
+import type { SupabaseClient } from "@supabase/supabase-js";
+
 import {
   createLeadAction,
   updateLeadStatusAction,
@@ -10,10 +14,7 @@ import {
   type CrmLeadStatus,
   type CrmLeadSummary,
 } from "@/features/crm/contracts";
-import {
-  orchestrateNaiaCommand,
-  type NaiaActionDraft,
-} from "@/features/naia/orchestrator";
+import { orchestrateNaiaCommand } from "@/features/naia/orchestrator";
 import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 import {
   hasPermission,
@@ -34,7 +35,17 @@ import {
 // It reuses the same pure orchestrator and the same HMAC approval tokens as
 // the web cockpit, but resolves the acting user by email through the
 // service-role Supabase client instead of a cookie session. Every execution
-// re-verifies the approval token and the caller's role before writing.
+// re-verifies the approval token (which embeds the approved action), claims
+// it as single-use, and checks the caller's role before writing.
+
+// Slack commands are truncated before planning so the inline button value
+// (approval token + command) always fits Slack's 2000-character limit. The
+// token's commandHash is computed on the same truncated string, so
+// verification stays consistent. Long dictated notes are therefore truncated
+// on the Slack channel; the web cockpit keeps the full 2000-character budget.
+export const SLACK_COMMAND_MAX_LENGTH = 500;
+
+const CONSUMED_TOKEN_RETENTION_MS = 10 * 60 * 1000;
 
 export type NaiaBridgeUser = {
   email: string;
@@ -113,7 +124,7 @@ export async function planBridgeCommand(
   user: NaiaBridgeUser,
   command: string,
 ): Promise<NaiaBridgePlan> {
-  const cleanCommand = command.trim().slice(0, 2000);
+  const cleanCommand = command.trim().slice(0, SLACK_COMMAND_MAX_LENGTH);
   const crmLeads = await fetchBridgeLeads(user.organizationId);
   const result = orchestrateNaiaCommand({ command: cleanCommand, crmLeads });
 
@@ -128,16 +139,19 @@ export async function planBridgeCommand(
 export async function executeBridgeAction(
   user: NaiaBridgeUser,
   {
-    action,
+    actionId,
     approvalToken,
     command,
   }: {
-    action: NaiaActionDraft;
+    actionId: string;
     approvalToken: string;
     command: string;
   },
 ): Promise<NaiaBridgeExecution> {
-  if (!verifyApprovalToken(approvalToken, action, command)) {
+  // The token is the source of truth: it embeds the exact action the user
+  // approved, so execution runs the decoded action, never a re-derived one.
+  const action = verifyApprovalToken(approvalToken, actionId, command);
+  if (!action) {
     return {
       message:
         "Jeton d'approbation invalide ou expiré (5 min). Renvoie ta commande à NAIA pour régénérer l'action.",
@@ -151,6 +165,17 @@ export async function executeBridgeAction(
       message: "Supabase service role non configuré côté serveur.",
       success: false,
     };
+  }
+
+  // Single-use claim BEFORE any side effect: the first click inserts the
+  // token hash, any concurrent or repeated click fails on the primary key.
+  const claim = await claimApprovalToken(
+    supabase,
+    approvalToken,
+    user.organizationId,
+  );
+  if (!claim.claimed) {
+    return { message: claim.message, success: false };
   }
 
   const crmContext: CrmActionContext = {
@@ -296,6 +321,45 @@ export async function executeBridgeAction(
     message:
       "Cette action se valide depuis le cockpit web NAIA: https://os.qarizmi.com/naia",
     success: false,
+  };
+}
+
+async function claimApprovalToken(
+  supabase: SupabaseClient,
+  approvalToken: string,
+  organizationId: string,
+): Promise<{ claimed: true } | { claimed: false; message: string }> {
+  const tokenHash = createHash("sha256").update(approvalToken).digest("hex");
+
+  // Opportunistic purge: consumed rows are useless once the 5 minute token
+  // TTL has passed; 10 minutes keeps a safety margin for clock skew.
+  await supabase
+    .from("naia_consumed_action_tokens")
+    .delete()
+    .lt(
+      "consumed_at",
+      new Date(Date.now() - CONSUMED_TOKEN_RETENTION_MS).toISOString(),
+    );
+
+  const { error } = await supabase.from("naia_consumed_action_tokens").insert({
+    organization_id: organizationId,
+    token_hash: tokenHash,
+  });
+
+  if (!error) {
+    return { claimed: true };
+  }
+
+  if (error.code === "23505") {
+    return { claimed: false, message: "Cette action a déjà été validée." };
+  }
+
+  // Fail closed: without a registered claim the action must not run.
+  console.error("NAIA bridge approval token claim failed:", error);
+  return {
+    claimed: false,
+    message:
+      "Validation impossible pour le moment (enregistrement du jeton). Réessaie dans un instant.",
   };
 }
 

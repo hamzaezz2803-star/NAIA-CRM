@@ -60,9 +60,14 @@ export async function POST(request: Request) {
     return Response.json({ challenge: payload.challenge ?? "" });
   }
 
-  // Slack retries deliveries it considers slow; the first delivery already
-  // scheduled the work, so retries are acknowledged without reprocessing.
-  if (request.headers.get("x-slack-retry-num")) {
+  // Slack retries a delivery it considers slow (http_timeout): the first
+  // delivery already scheduled the work, so those are acknowledged without
+  // reprocessing. Other retry reasons (connection failures, 5xx) mean the
+  // first delivery was never processed, so they go through.
+  if (
+    request.headers.get("x-slack-retry-num") &&
+    request.headers.get("x-slack-retry-reason") === "http_timeout"
+  ) {
     return Response.json({ ignored: "retry", ok: true });
   }
 
@@ -166,11 +171,12 @@ function buildPlanBlocks(plan: NaiaBridgePlan) {
     },
   ];
 
-  for (const signedAction of plan.actions) {
-    const { approvalToken, ...action } = signedAction;
+  for (const action of plan.actions) {
+    // The approval token embeds the full signed action; the button value only
+    // carries {actionId, approvalToken, command} (see slack-approval.ts).
     const value = encodeSlackApprovalValue({
-      action,
-      approvalToken,
+      actionId: action.id,
+      approvalToken: action.approvalToken,
       command: plan.command,
     });
 
@@ -182,6 +188,24 @@ function buildPlanBlocks(plan: NaiaBridgePlan) {
       },
       type: "section",
     });
+
+    if (!value) {
+      // The draft exceeds Slack's 2000-character button value limit even
+      // after command truncation: degrade gracefully instead of posting a
+      // broken button.
+      blocks.push({
+        block_id: `naia_action_buttons:${action.id}`,
+        elements: [
+          {
+            text: "⚠️ Brouillon trop volumineux pour une validation Slack. Valide cette action depuis https://os.qarizmi.com/naia",
+            type: "mrkdwn",
+          },
+        ],
+        type: "context",
+      });
+      continue;
+    }
+
     blocks.push({
       block_id: `naia_action_buttons:${action.id}`,
       elements: [
