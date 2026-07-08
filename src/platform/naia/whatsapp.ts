@@ -44,12 +44,16 @@ export function verifyWhatsAppSignature({
 // WHATSAPP_USER_MAP format: "212661234567:ali@qarizmi.com,33612345678:nabil@qarizmi.com".
 // Numbers use the international Cloud API `from` format (digits only, no `+`
 // or spaces); the parser still tolerates `+`, spaces, dashes, and empty
-// entries so a hand-edited env value keeps working.
+// entries so a hand-edited env value keeps working. A number mapped to two
+// DIFFERENT emails is a misconfiguration and fails closed: the number is
+// removed entirely instead of silently impersonating the last entry.
 export function parseWhatsAppUserMap(
   raw = process.env.WHATSAPP_USER_MAP,
 ): Map<string, string> {
   const map = new Map<string, string>();
   if (!raw) return map;
+
+  const conflicts = new Set<string>();
 
   for (const entry of raw.split(/[,;\n]/)) {
     const separatorIndex = entry.indexOf(":");
@@ -62,7 +66,21 @@ export function parseWhatsAppUserMap(
       .toLowerCase();
 
     if (!phone || !email.includes("@")) continue;
+
+    const existing = map.get(phone);
+    if (existing !== undefined && existing !== email) {
+      conflicts.add(phone);
+      continue;
+    }
+
     map.set(phone, email);
+  }
+
+  for (const phone of conflicts) {
+    console.warn(
+      `WHATSAPP_USER_MAP maps number ${phone} to conflicting emails; the number is ignored until the map is fixed.`,
+    );
+    map.delete(phone);
   }
 
   return map;
@@ -82,6 +100,19 @@ export function resolveWhatsAppEmail(
   return parseWhatsAppUserMap(raw).get(normalized) ?? null;
 }
 
+// Truncates without ever splitting a UTF-16 surrogate pair: a half emoji at
+// the cut point makes the Graph API reject the whole payload.
+export function truncateToLimit(value: string, limit: number): string {
+  if (value.length <= limit) return value;
+
+  const truncated = value.slice(0, limit);
+  const lastCode = truncated.charCodeAt(truncated.length - 1);
+
+  return lastCode >= 0xd800 && lastCode <= 0xdbff
+    ? truncated.slice(0, -1)
+    : truncated;
+}
+
 export async function sendWhatsAppText({
   body,
   to,
@@ -91,7 +122,7 @@ export async function sendWhatsAppText({
 }): Promise<void> {
   await postWhatsAppMessage({
     text: {
-      body: body.slice(0, WHATSAPP_TEXT_BODY_LIMIT),
+      body: truncateToLimit(body, WHATSAPP_TEXT_BODY_LIMIT),
       preview_url: false,
     },
     to,
@@ -141,7 +172,9 @@ export async function sendWhatsAppButtons({
           type: "reply",
         })),
       },
-      body: { text: bodyText.slice(0, WHATSAPP_INTERACTIVE_BODY_LIMIT) },
+      body: {
+        text: truncateToLimit(bodyText, WHATSAPP_INTERACTIVE_BODY_LIMIT),
+      },
       type: "button",
     },
     to,

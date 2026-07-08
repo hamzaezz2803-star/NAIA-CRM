@@ -42,7 +42,9 @@ import {
 // (approval token + command) always fits Slack's 2000-character limit. The
 // token's commandHash is computed on the same truncated string, so
 // verification stays consistent. Long dictated notes are therefore truncated
-// on the Slack channel; the web cockpit keeps the full 2000-character budget.
+// on the Slack channel; the web cockpit keeps the full 2000-character budget,
+// and channels that store drafts server-side (WhatsApp) pass their own
+// maxLength to planBridgeCommand instead of inheriting the Slack constraint.
 export const SLACK_COMMAND_MAX_LENGTH = 500;
 
 const CONSUMED_TOKEN_RETENTION_MS = 10 * 60 * 1000;
@@ -123,8 +125,11 @@ export async function resolveBridgeUser(
 export async function planBridgeCommand(
   user: NaiaBridgeUser,
   command: string,
+  maxLength = SLACK_COMMAND_MAX_LENGTH,
 ): Promise<NaiaBridgePlan> {
-  const cleanCommand = command.trim().slice(0, SLACK_COMMAND_MAX_LENGTH);
+  // The commandHash inside the approval tokens is computed on this same
+  // truncated string, so HMAC verification stays consistent per channel.
+  const cleanCommand = command.trim().slice(0, maxLength);
   const crmLeads = await fetchBridgeLeads(user.organizationId);
   const result = orchestrateNaiaCommand({ command: cleanCommand, crmLeads });
 

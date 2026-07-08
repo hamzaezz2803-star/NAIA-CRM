@@ -9,6 +9,7 @@ vi.mock("@/platform/auth/supabase-server", () => ({
 }));
 
 import {
+  claimInboundMessage,
   claimPendingAction,
   NAIA_PENDING_ACTION_TTL_MS,
   storePendingAction,
@@ -201,5 +202,95 @@ describe("NAIA pending actions store", () => {
     expect(
       await claimPendingAction({ id: DRAFT_ID, profileId: "profile-ali" }),
     ).toBeNull();
+  });
+
+  it("logs and fails closed when the claim query errors", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const fake = createFakeSupabase([
+        { data: null, error: null },
+        { data: null, error: { code: "57014", message: "timeout" } },
+      ]);
+      mocks.createServiceRoleSupabaseClient.mockReturnValue(fake.client);
+
+      expect(
+        await claimPendingAction({ id: DRAFT_ID, profileId: "profile-ali" }),
+      ).toBeNull();
+      expect(errorSpy).toHaveBeenCalledWith(
+        "NAIA pending action claim failed:",
+        expect.objectContaining({ message: "timeout" }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe("inbound message deduplication", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-08T12:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.clearAllMocks();
+  });
+
+  it("claims a fresh wamid after purging rows older than 7 days", async () => {
+    const fake = createFakeSupabase([
+      { data: null, error: null },
+      { data: null, error: null },
+    ]);
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(fake.client);
+
+    expect(await claimInboundMessage("wamid.fresh")).toBe(true);
+
+    expect(methods(fake.queries[0])).toEqual(["delete", "lte"]);
+    expect(fake.queries[0][1].args).toEqual([
+      "processed_at",
+      "2026-07-01T12:00:00.000Z",
+    ]);
+
+    expect(methods(fake.queries[1])).toEqual(["insert"]);
+    expect(fake.queries[1][0].args).toEqual([{ wamid: "wamid.fresh" }]);
+  });
+
+  it("returns false on a redelivery (unique violation)", async () => {
+    const fake = createFakeSupabase([
+      { data: null, error: null },
+      { data: null, error: { code: "23505", message: "duplicate key" } },
+    ]);
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(fake.client);
+
+    expect(await claimInboundMessage("wamid.dup")).toBe(false);
+  });
+
+  it("fails open (logs, returns true) on any other insert error", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    try {
+      const fake = createFakeSupabase([
+        { data: null, error: null },
+        { data: null, error: { code: "57014", message: "timeout" } },
+      ]);
+      mocks.createServiceRoleSupabaseClient.mockReturnValue(fake.client);
+
+      // Better a duplicate answer than a silently dropped command.
+      expect(await claimInboundMessage("wamid.flaky")).toBe(true);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "NAIA inbound message dedup failed:",
+        expect.objectContaining({ code: "57014" }),
+      );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("fails open when Supabase is not configured", async () => {
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(null);
+
+    expect(await claimInboundMessage("wamid.any")).toBe(true);
   });
 });

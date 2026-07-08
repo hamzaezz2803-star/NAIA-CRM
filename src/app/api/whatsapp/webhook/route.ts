@@ -7,6 +7,7 @@ import {
   type NaiaBridgeUser,
 } from "@/platform/naia/bridge";
 import {
+  claimInboundMessage,
   claimPendingAction,
   storePendingAction,
 } from "@/platform/naia/pending-actions";
@@ -15,7 +16,6 @@ import {
   sendWhatsAppButtons,
   sendWhatsAppText,
   verifyWhatsAppSignature,
-  WHATSAPP_TEXT_BODY_LIMIT,
 } from "@/platform/naia/whatsapp";
 
 // WhatsApp Business Cloud API webhook for the NAIA bridge. Same contract as
@@ -26,6 +26,10 @@ import {
 
 const APPROVE_PREFIX = "naia_approve:";
 const DISMISS_PREFIX = "naia_dismiss:";
+
+// WhatsApp drafts live in the database (not in button values), so commands
+// keep the full web-cockpit budget instead of Slack's 500-character limit.
+const WHATSAPP_COMMAND_MAX_LENGTH = 2000;
 
 type WhatsAppInboundMessage = {
   from?: string;
@@ -141,6 +145,12 @@ async function handleInboundMessage(message: WhatsAppInboundMessage) {
   const from = message.from as string;
 
   try {
+    // Meta delivers webhooks at least once: skip redeliveries of an already
+    // processed wamid so a command is never planned (or executed) twice.
+    if (message.id && !(await claimInboundMessage(message.id))) {
+      return;
+    }
+
     const email = resolveWhatsAppEmail(from);
     if (!email) {
       await sendWhatsAppText({
@@ -187,43 +197,64 @@ async function handleTextCommand(
   to: string,
   text: string,
 ) {
-  const command = text.replace(/\s+/g, " ").trim().slice(0, 2000);
+  const command = text
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, WHATSAPP_COMMAND_MAX_LENGTH);
   if (!command) return;
 
-  const plan = await planBridgeCommand(user, command);
+  const plan = await planBridgeCommand(
+    user,
+    command,
+    WHATSAPP_COMMAND_MAX_LENGTH,
+  );
   await sendWhatsAppText({ body: plan.response, to });
 
   for (const action of plan.actions) {
-    // The HMAC token embeds the full approved action; the stored draft only
-    // needs the reference {actionId, approvalToken, command} plus a label
-    // for the confirmation messages.
-    const draftId = await storePendingAction({
-      draft: {
-        actionId: action.id,
-        actionLabel: action.label,
-        approvalToken: action.approvalToken,
-        command: plan.command,
-      },
-      organizationId: user.organizationId,
-      profileId: user.profileId,
-    });
+    // Each action is delivered independently: a failure on one approval
+    // message must not swallow the remaining actions of the plan.
+    try {
+      // The HMAC token embeds the full approved action; the stored draft only
+      // needs the reference {actionId, approvalToken, command} plus a label
+      // for the confirmation messages.
+      const draftId = await storePendingAction({
+        draft: {
+          actionId: action.id,
+          actionLabel: action.label,
+          approvalToken: action.approvalToken,
+          command: plan.command,
+        },
+        organizationId: user.organizationId,
+        profileId: user.profileId,
+      });
 
-    if (!draftId) {
-      await sendWhatsAppText({
-        body: `Impossible de préparer l'approbation pour "${action.label}". Réessaie dans un instant.`,
+      if (!draftId) {
+        await sendWhatsAppText({
+          body: `Impossible de préparer l'approbation pour "${action.label}". Réessaie dans un instant.`,
+          to,
+        });
+        continue;
+      }
+
+      await sendWhatsAppButtons({
+        bodyText: `${action.label}\n${action.description}`,
+        buttons: [
+          { id: `${APPROVE_PREFIX}${draftId}`, title: "✅ Valider" },
+          { id: `${DISMISS_PREFIX}${draftId}`, title: "❌ Ignorer" },
+        ],
         to,
       });
-      continue;
+    } catch (error) {
+      console.error("WhatsApp approval message failed:", error);
+      try {
+        await sendWhatsAppText({
+          body: `Impossible d'afficher les boutons pour "${action.label}". Renvoie ta commande à NAIA.`,
+          to,
+        });
+      } catch {
+        // Already logged; keep delivering the remaining actions.
+      }
     }
-
-    await sendWhatsAppButtons({
-      bodyText: `${action.label}\n${action.description}`,
-      buttons: [
-        { id: `${APPROVE_PREFIX}${draftId}`, title: "✅ Valider" },
-        { id: `${DISMISS_PREFIX}${draftId}`, title: "❌ Ignorer" },
-      ],
-      to,
-    });
   }
 }
 
@@ -277,8 +308,9 @@ async function handleButtonReply(
     ...(result.details ?? []),
   ];
 
+  // sendWhatsAppText applies the surrogate-safe 4096-character truncation.
   await sendWhatsAppText({
-    body: lines.join("\n").slice(0, WHATSAPP_TEXT_BODY_LIMIT),
+    body: lines.join("\n"),
     to,
   });
 }

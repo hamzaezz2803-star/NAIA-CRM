@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   afterTasks: [] as Promise<unknown>[],
+  claimInboundMessage: vi.fn(),
   claimPendingAction: vi.fn(),
   executeBridgeAction: vi.fn(),
   planBridgeCommand: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("@/platform/naia/bridge", () => ({
 }));
 
 vi.mock("@/platform/naia/pending-actions", () => ({
+  claimInboundMessage: mocks.claimInboundMessage,
   claimPendingAction: mocks.claimPendingAction,
   storePendingAction: mocks.storePendingAction,
 }));
@@ -208,6 +210,7 @@ describe("WhatsApp webhook (POST)", () => {
     vi.stubEnv("WHATSAPP_APP_SECRET", APP_SECRET);
     vi.stubEnv("WHATSAPP_USER_MAP", USER_MAP);
     mocks.afterTasks = [];
+    mocks.claimInboundMessage.mockResolvedValue(true);
     mocks.resolveBridgeUser.mockResolvedValue(bridgeUser);
     mocks.planBridgeCommand.mockResolvedValue({
       actions: [{ ...gmailAction, approvalToken: "payload.signature" }],
@@ -283,6 +286,7 @@ describe("WhatsApp webhook (POST)", () => {
     expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
       bridgeUser,
       "lis mes emails gmail non lus",
+      2000,
     );
 
     expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
@@ -303,6 +307,81 @@ describe("WhatsApp webhook (POST)", () => {
       { id: `naia_approve:${DRAFT_ID}`, title: "✅ Valider" },
       { id: `naia_dismiss:${DRAFT_ID}`, title: "❌ Ignorer" },
     ]);
+  });
+
+  it("skips a Meta redelivery of an already processed wamid", async () => {
+    mocks.claimInboundMessage
+      .mockResolvedValueOnce(true)
+      .mockResolvedValueOnce(false);
+
+    const body = inboundPayload([textMessage("lis mes emails gmail non lus")]);
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    expect(mocks.claimInboundMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.claimInboundMessage).toHaveBeenCalledWith("wamid.text");
+    // The redelivery never plans again and never sends a second button set.
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.sendWhatsAppButtons).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps long commands untruncated on the WhatsApp channel", async () => {
+    const longCommand = "cree un lead ".repeat(100).trim().slice(0, 1200);
+    expect(longCommand).toHaveLength(1200);
+
+    const body = inboundPayload([textMessage(longCommand)]);
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    // The full 1200-character command reaches the planner along with the
+    // WhatsApp budget (2000), not Slack's 500-character constraint.
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      longCommand,
+      2000,
+    );
+  });
+
+  it("still delivers the next action when one approval message fails", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const secondAction = {
+      ...gmailAction,
+      approvalToken: "payload.signature2",
+      id: "calendar-list-def",
+      label: "Lire Calendar",
+    };
+    mocks.planBridgeCommand.mockResolvedValue({
+      actions: [
+        { ...gmailAction, approvalToken: "payload.signature" },
+        secondAction,
+      ],
+      agentName: "Lina",
+      command: "lis mes emails gmail non lus",
+      response: "Lina prend le relais integrations.",
+    });
+    mocks.sendWhatsAppButtons
+      .mockRejectedValueOnce(new Error("Graph API down"))
+      .mockResolvedValueOnce(undefined);
+
+    const body = inboundPayload([textMessage("lis mes emails gmail non lus")]);
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    // Both actions were attempted despite the first send failing.
+    expect(mocks.storePendingAction).toHaveBeenCalledTimes(2);
+    expect(mocks.sendWhatsAppButtons).toHaveBeenCalledTimes(2);
+    expect(mocks.sendWhatsAppButtons.mock.calls[1][0].bodyText).toContain(
+      "Lire Calendar",
+    );
+    // The failure was reported to the user without aborting the loop.
+    expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
+      body: expect.stringContaining("Impossible d'afficher les boutons"),
+      to: KNOWN_PHONE,
+    });
+
+    errorSpy.mockRestore();
   });
 
   it("answers unknown numbers without planning or storing anything", async () => {

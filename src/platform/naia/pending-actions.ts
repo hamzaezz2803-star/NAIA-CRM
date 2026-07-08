@@ -81,7 +81,7 @@ export async function claimPendingAction({
     .delete()
     .lte("expires_at", nowIso);
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("naia_pending_actions")
     .delete()
     .eq("id", id)
@@ -90,9 +90,49 @@ export async function claimPendingAction({
     .select("draft")
     .maybeSingle();
 
+  // Still fail-closed, but a transient database failure must stay observable
+  // instead of being mistaken for an already-claimed draft.
+  if (error) {
+    console.error("NAIA pending action claim failed:", error);
+    return null;
+  }
+
   const draft = (data as { draft?: unknown } | null)?.draft;
 
   return isPendingDraft(draft) ? draft : null;
+}
+
+// Meta delivers webhooks at least once, so the same message (same wamid) can
+// arrive again after a slow ack or a transient error. The first processing
+// claims the wamid on the naia_processed_messages primary key; a redelivery
+// hits the unique violation and is skipped. Any other failure fails OPEN: a
+// duplicate answer is better than a silently dropped command.
+const PROCESSED_MESSAGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+export async function claimInboundMessage(wamid: string): Promise<boolean> {
+  const supabase = createServiceRoleSupabaseClient();
+  if (!supabase) return true;
+
+  // Opportunistic purge of old dedup rows; the table stays small.
+  await supabase
+    .from("naia_processed_messages")
+    .delete()
+    .lte(
+      "processed_at",
+      new Date(Date.now() - PROCESSED_MESSAGE_RETENTION_MS).toISOString(),
+    );
+
+  const { error } = await supabase
+    .from("naia_processed_messages")
+    .insert({ wamid });
+
+  if (!error) return true;
+
+  // 23505 = unique_violation: this wamid was already processed.
+  if (error.code === "23505") return false;
+
+  console.error("NAIA inbound message dedup failed:", error);
+  return true;
 }
 
 function isPendingDraft(value: unknown): value is NaiaPendingDraft {

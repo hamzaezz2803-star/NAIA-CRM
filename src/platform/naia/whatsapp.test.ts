@@ -8,6 +8,7 @@ import {
   resolveWhatsAppEmail,
   sendWhatsAppButtons,
   sendWhatsAppText,
+  truncateToLimit,
   verifyWhatsAppSignature,
 } from "./whatsapp";
 
@@ -102,6 +103,35 @@ describe("WHATSAPP_USER_MAP parsing", () => {
     expect(map.get("212000111222")).toBe("ok@qarizmi.com");
   });
 
+  it("fails closed when a number maps to two different emails", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      const map = parseWhatsAppUserMap(
+        "212661234567:ali@qarizmi.com,+212 661 234 567:nabil@qarizmi.com,33612345678:nabil@qarizmi.com",
+      );
+
+      // The conflicting number is removed entirely — nobody gets impersonated.
+      expect(map.has("212661234567")).toBe(false);
+      expect(map.get("33612345678")).toBe("nabil@qarizmi.com");
+      expect(map.size).toBe(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("212661234567"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it("keeps a number repeated with the same email", () => {
+    const map = parseWhatsAppUserMap(
+      "212661234567:ali@qarizmi.com,+212661234567:ALI@qarizmi.com",
+    );
+
+    expect(map.get("212661234567")).toBe("ali@qarizmi.com");
+    expect(map.size).toBe(1);
+  });
+
   it("returns an empty map when the env value is missing", () => {
     expect(parseWhatsAppUserMap(undefined).size).toBe(0);
     expect(parseWhatsAppUserMap("").size).toBe(0);
@@ -118,6 +148,28 @@ describe("WHATSAPP_USER_MAP parsing", () => {
 
   it("normalizes phones to Cloud API digits", () => {
     expect(normalizeWhatsAppPhone("+212 661-234-567")).toBe("212661234567");
+  });
+});
+
+describe("truncateToLimit", () => {
+  it("returns short values untouched", () => {
+    expect(truncateToLimit("bonjour 😀", 100)).toBe("bonjour 😀");
+  });
+
+  it("truncates plain text at the limit", () => {
+    expect(truncateToLimit("a".repeat(10), 5)).toBe("aaaaa");
+  });
+
+  it("never splits a surrogate pair at the cut point", () => {
+    // "😀" is a surrogate pair (2 UTF-16 units); a naive slice(0, 5) would
+    // keep the lone high surrogate and make the Graph API reject the payload.
+    const value = `aaaa😀bbbb`;
+    const truncated = truncateToLimit(value, 5);
+
+    expect(truncated).toBe("aaaa");
+    expect(truncated).not.toMatch(/[\uD800-\uDBFF]$/);
+    // Cutting right after the full pair keeps the emoji intact.
+    expect(truncateToLimit(value, 6)).toBe("aaaa😀");
   });
 });
 
@@ -205,6 +257,18 @@ describe("WhatsApp Cloud API senders", () => {
     ).rejects.toThrow(/256/);
 
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("truncates a text body without splitting an emoji at the 4096 limit", async () => {
+    // 4095 chars + a surrogate pair straddling the limit at index 4095/4096.
+    await sendWhatsAppText({
+      body: `${"a".repeat(4095)}😀`,
+      to: "212661234567",
+    });
+
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(payload.text.body).toBe("a".repeat(4095));
+    expect(payload.text.body).not.toMatch(/[\uD800-\uDBFF]$/);
   });
 
   it("surfaces Cloud API errors", async () => {
