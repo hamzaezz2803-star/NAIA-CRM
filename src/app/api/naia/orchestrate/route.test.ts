@@ -232,6 +232,50 @@ describe("NAIA orchestrate route", () => {
     expect(userPrompt.realGoogleCalendar).toBeUndefined();
   });
 
+  it("degrades to CRM-only context when the Google Calendar fetch stalls", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+      mocks.listGoogleCalendarEvents.mockReturnValue(new Promise(() => {}));
+      const fetchMock = vi.fn().mockResolvedValue({
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  agentId: "naia",
+                  confidence: 0.8,
+                  response: "Reponse generale sans agenda.",
+                }),
+              },
+            },
+          ],
+        }),
+        ok: true,
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const responsePromise = POST(
+        new Request("http://localhost/api/naia/orchestrate", {
+          body: JSON.stringify({
+            command: "c'est quoi un LLM ?",
+          }),
+          method: "POST",
+        }),
+      );
+      await vi.advanceTimersByTimeAsync(2500);
+      const body = await (await responsePromise).json();
+      const userPrompt = JSON.parse(
+        JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content,
+      );
+
+      expect(body.mode).toBe("groq-orchestrated");
+      expect(userPrompt.realGoogleCalendar).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("returns accented French wording after validating a CRM lead", async () => {
     vi.stubEnv("NODE_ENV", "development");
     mocks.createLeadAction.mockResolvedValue({

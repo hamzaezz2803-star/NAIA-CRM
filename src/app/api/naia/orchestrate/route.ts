@@ -212,18 +212,24 @@ async function enhanceWithGroqOrchestrator({
 const REAL_CALENDAR_DAYS_AHEAD = 7;
 const REAL_CALENDAR_MAX_EVENTS = 15;
 const REAL_CALENDAR_TIME_ZONE = "Africa/Casablanca";
+const REAL_CALENDAR_CONTEXT_TIMEOUT_MS = 2500;
 
 // Reads the acting user's real Google Calendar (per-user connection) and
 // returns a compact French summary for the Groq context. Returns null when
-// the user has no connected Google account or the provider call fails; the
-// orchestration then falls back to CRM-only context. Note: event titles are
-// sent to Groq when GROQ_API_KEY is configured.
+// the user has no connected Google account, the provider call fails, or the
+// deadline expires (the provider fetches carry no AbortSignal, so a stalled
+// Google endpoint must not block the whole NAIA command); the orchestration
+// then falls back to CRM-only context. Note: event titles are sent to Groq
+// when GROQ_API_KEY is configured.
 async function buildRealGoogleCalendarContext(): Promise<string | null> {
   try {
-    const events = await listGoogleCalendarEvents({
-      daysAhead: REAL_CALENDAR_DAYS_AHEAD,
-      maxResults: REAL_CALENDAR_MAX_EVENTS,
-    });
+    const events = await withDeadline(
+      listGoogleCalendarEvents({
+        daysAhead: REAL_CALENDAR_DAYS_AHEAD,
+        maxResults: REAL_CALENDAR_MAX_EVENTS,
+      }),
+      REAL_CALENDAR_CONTEXT_TIMEOUT_MS,
+    );
 
     if (events.length === 0) {
       return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours) : aucun événement.`;
@@ -237,6 +243,18 @@ async function buildRealGoogleCalendarContext(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
 function formatRealCalendarDate(start?: string) {

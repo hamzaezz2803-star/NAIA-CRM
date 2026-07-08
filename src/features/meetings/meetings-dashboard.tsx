@@ -371,6 +371,9 @@ export function MeetingsDashboard({
   };
 
   // Google events use dateTime for timed events and date for all-day events.
+  // Timezones are pinned so SSR and the browser render the same string:
+  // bare dates parse as UTC midnight (display in UTC keeps the written day),
+  // timed events display in the company timezone like the NAIA context does.
   const formatGoogleEventDate = (start?: string) => {
     if (!start) return "Date non précisée";
     const date = new Date(start);
@@ -381,6 +384,7 @@ export function MeetingsDashboard({
         weekday: "long",
         day: "numeric",
         month: "long",
+        timeZone: "UTC",
       })} · Journée entière`;
     }
 
@@ -390,6 +394,7 @@ export function MeetingsDashboard({
       month: "long",
       hour: "2-digit",
       minute: "2-digit",
+      timeZone: "Africa/Casablanca",
     });
   };
 
