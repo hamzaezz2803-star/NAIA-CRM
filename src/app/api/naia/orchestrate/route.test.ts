@@ -333,6 +333,174 @@ describe("NAIA orchestrate route", () => {
     expect(executeBody.providerResult.events).toHaveLength(1);
   });
 
+  it("executes an approved action even after the CRM state changed between plan and execute", async () => {
+    vi.stubEnv("NODE_ENV", "development");
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    // In production the plan phase is Groq-orchestrated: the meeting-with-a-prospect
+    // rule overrides the local classification (which routes this command to
+    // "proposals" because it mentions "prépare le pitch").
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "crm",
+                confidence: 0.92,
+                response:
+                  "Salma prepare le lead et Adam verifie le calendrier.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    mocks.createLeadAction.mockResolvedValue({
+      calendarSynced: false,
+      lead: { id: "lead-jl-transit" },
+      success: true,
+    });
+
+    const command =
+      "j'ai un meeting avec Hamza Laraki, CEO de JL Transit et logistique aujourd'hui à 16h, ajoute le lead, crée le dossier drive et prépare le pitch";
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const createLeadCard = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "crm.createLead",
+    );
+    const calendarCard = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "calendar.scheduleMeeting",
+    );
+
+    expect(createLeadCard).toBeDefined();
+    expect(calendarCard).toBeDefined();
+
+    const createResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: createLeadCard.id,
+          approvalToken: createLeadCard.approvalToken,
+          command,
+          execute: true,
+          leadInput: createLeadCard.payload,
+        }),
+        method: "POST",
+      }),
+    );
+    const createBody = await createResponse.json();
+
+    expect(createResponse.status).toBe(200);
+    expect(createBody.success).toBe(true);
+
+    // Simulate the state change caused by the first validation: the lead now
+    // exists in the CRM when the second card is validated.
+    mocks.fetchLeadsAction.mockResolvedValue([
+      {
+        companyName: "JL Transit et logistique",
+        contactName: "Hamza Laraki",
+        createdAt: "2026-07-08T10:00:00.000Z",
+        id: "lead-jl-transit",
+        notes: command,
+        organizationId: "org-1",
+        status: "meeting-booked",
+        topic: "JL Transit et logistique - nouveau lead",
+        updatedAt: "2026-07-08T10:00:00.000Z",
+      },
+    ]);
+
+    const executeResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: calendarCard.id,
+          approvalToken: calendarCard.approvalToken,
+          command,
+          execute: true,
+        }),
+        method: "POST",
+      }),
+    );
+    const executeBody = await executeResponse.json();
+
+    expect(executeResponse.status).toBe(200);
+    expect(executeBody.success).toBe(true);
+    expect(executeBody.execution).toBe("prepared");
+  });
+
+  it("rejects an approval token replayed with a different command", async () => {
+    const command = "NAIA lis mes emails Gmail non lus";
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const gmailAction = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "google.gmail.listMessages",
+    );
+
+    const executeResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: gmailAction.id,
+          approvalToken: gmailAction.approvalToken,
+          command: "NAIA lis mes emails Gmail urgents",
+          execute: true,
+        }),
+        method: "POST",
+      }),
+    );
+    const executeBody = await executeResponse.json();
+
+    expect(executeResponse.status).toBe(403);
+    expect(executeBody.error).toBe("Invalid or expired approval token");
+    expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects a tampered approval token", async () => {
+    const command = "NAIA lis mes emails Gmail non lus";
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const gmailAction = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "google.gmail.listMessages",
+    );
+    const [encodedPayload, signature] = gmailAction.approvalToken.split(".");
+    const decoded = JSON.parse(
+      Buffer.from(encodedPayload, "base64url").toString("utf8"),
+    );
+    decoded.expiresAt = Date.now() + 60 * 60 * 1000;
+    const forgedToken = `${Buffer.from(JSON.stringify(decoded)).toString("base64url")}.${signature}`;
+
+    const executeResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: gmailAction.id,
+          approvalToken: forgedToken,
+          command,
+          execute: true,
+        }),
+        method: "POST",
+      }),
+    );
+    const executeBody = await executeResponse.json();
+
+    expect(executeResponse.status).toBe(403);
+    expect(executeBody.error).toBe("Invalid or expired approval token");
+    expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+  });
+
   it("executes an approved Maya pitch draft action", async () => {
     mocks.fetchLeadsAction.mockResolvedValue([
       {

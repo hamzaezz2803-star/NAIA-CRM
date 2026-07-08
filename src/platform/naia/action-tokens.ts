@@ -5,8 +5,12 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import type { NaiaActionDraft } from "@/features/naia/orchestrator";
 
 // Shared HMAC approval tokens for NAIA actions. The web orchestrate route and
-// the Slack bridge sign and verify with the same secret so an action drafted
-// on one channel can never be executed with a forged or expired approval.
+// the Slack bridge sign and verify with the same secret. The token is the
+// source of truth: it embeds the exact action (kind + payload + id) the user
+// approved plus the command hash and a TTL, so the execute phase runs the
+// decoded action as-is after signature verification without re-deriving the
+// action list, even when the CRM state or the AI extraction changed between
+// plan and execute.
 
 export const NAIA_ACTION_APPROVAL_TTL_MS = 5 * 60 * 1000;
 
@@ -18,12 +22,10 @@ export function signAction(
   action: NaiaActionDraft,
   command: string,
 ): SignedNaiaAction {
-  const expiresAt = Date.now() + NAIA_ACTION_APPROVAL_TTL_MS;
   const payload = {
-    actionHash: actionHash(action),
-    actionId: action.id,
+    action,
     commandHash: hashValue(command),
-    expiresAt,
+    expiresAt: Date.now() + NAIA_ACTION_APPROVAL_TTL_MS,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
     "base64url",
@@ -38,49 +40,44 @@ export function signAction(
 
 export function verifyApprovalToken(
   approvalToken: string,
-  action: NaiaActionDraft,
+  actionId: string,
   command: string,
-) {
+): NaiaActionDraft | null {
   const [encodedPayload, signature] = approvalToken.split(".");
-  if (!encodedPayload || !signature) return false;
+  if (!encodedPayload || !signature) return null;
 
   const expected = hmac(encodedPayload);
-  if (!safeEqual(signature, expected)) return false;
+  if (!safeEqual(signature, expected)) return null;
 
   try {
     const payload = JSON.parse(
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
     ) as {
-      actionHash?: string;
-      actionId?: string;
+      action?: NaiaActionDraft;
       commandHash?: string;
       expiresAt?: number;
     };
+    const action = payload.action;
 
-    return (
-      payload.actionId === action.id &&
-      payload.commandHash === hashValue(command) &&
-      payload.actionHash === actionHash(action) &&
-      typeof payload.expiresAt === "number" &&
-      payload.expiresAt >= Date.now()
-    );
+    if (
+      !action ||
+      typeof action !== "object" ||
+      typeof action.id !== "string" ||
+      typeof action.kind !== "string" ||
+      typeof action.payload !== "object" ||
+      action.payload === null ||
+      action.id !== actionId ||
+      payload.commandHash !== hashValue(command) ||
+      typeof payload.expiresAt !== "number" ||
+      payload.expiresAt < Date.now()
+    ) {
+      return null;
+    }
+
+    return action;
   } catch {
-    return false;
+    return null;
   }
-}
-
-function actionHash(action: NaiaActionDraft) {
-  if (action.kind === "crm.createLead") {
-    return hashValue(
-      JSON.stringify({
-        agentId: action.agentId,
-        id: action.id,
-        kind: action.kind,
-      }),
-    );
-  }
-
-  return hashValue(JSON.stringify(action));
 }
 
 function hashValue(value: string) {

@@ -16,7 +16,6 @@ import {
   isNaiaOverviewQuestion,
   orchestrateNaiaCommand,
   type NaiaOrchestrationResult,
-  type NaiaActionDraft,
 } from "@/features/naia/orchestrator";
 import { buildNaiaOperatingContext } from "@/features/naia/operational-context";
 import { naiaAgents, type NaiaAgentId } from "@/features/naia/agents";
@@ -56,23 +55,18 @@ export async function POST(request: Request) {
   }
 
   const command = parseCommand(payload.command);
-  const crmLeads = await fetchLeadsAction();
-  const localResult = orchestrateNaiaCommand({ command, crmLeads });
 
   if (payload.execute) {
-    const hydratedLocalResult = await hydrateCrmLeadDrafts({
-      command,
-      result: localResult,
-    });
-
     return executeAction({
       actionId: payload.actionId,
       approvalToken: payload.approvalToken,
       command,
       leadInput: payload.leadInput,
-      serverActions: hydratedLocalResult.actions,
     });
   }
+
+  const crmLeads = await fetchLeadsAction();
+  const localResult = orchestrateNaiaCommand({ command, crmLeads });
 
   const { mode, result } = await enhanceWithGroqOrchestrator({
     command,
@@ -244,7 +238,6 @@ async function executeAction({
   approvalToken,
   command,
   leadInput,
-  serverActions,
 }: {
   actionId?: string;
   approvalToken?: string;
@@ -255,18 +248,18 @@ async function executeAction({
       createGoogleCalendar?: boolean;
     }
   >;
-  serverActions: NaiaActionDraft[];
 }) {
   if (!actionId || !approvalToken) {
     return Response.json({ error: "Missing approval token" }, { status: 400 });
   }
 
-  const action = serverActions.find((candidate) => candidate.id === actionId);
+  // The HMAC-signed approval token is the source of truth: it carries the
+  // exact action (kind + payload) the user approved. Executing from the token
+  // keeps validation idempotent even when the CRM state, the clock, or the AI
+  // extraction changed between plan and execute, so we never re-derive the
+  // action list server-side here.
+  const action = verifyApprovalToken(approvalToken, actionId, command);
   if (!action) {
-    return Response.json({ error: "Action not found" }, { status: 404 });
-  }
-
-  if (!verifyApprovalToken(approvalToken, action, command)) {
     return Response.json(
       { error: "Invalid or expired approval token" },
       { status: 403 },
