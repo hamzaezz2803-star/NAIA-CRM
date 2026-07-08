@@ -182,13 +182,11 @@ export async function generateMayaPitchDraftForLeadAction(leadId: string) {
     });
 
     if (hasMayaDriveFolderConfig()) {
-      const driveConfig = getMayaDriveConfigFromEnv();
       const upload = await uploadMayaDriveDraftArtifacts({
         clientName: brief.clientName,
         draftFileName: result.draft.fileName,
         draftFilePath: result.draft.filePath,
         manifestPath: result.manifestPath,
-        outputFolderId: driveConfig.outputFolderId,
       });
 
       return {
@@ -304,7 +302,6 @@ async function findDraftForClient(clientName: string) {
   if (hasMayaDriveFolderConfig()) {
     return findMayaDriveDraftForClient({
       clientName,
-      outputFolderId: getMayaDriveConfigFromEnv().outputFolderId,
     });
   }
 
@@ -315,7 +312,6 @@ async function findFinalForClient(clientName: string) {
   if (hasMayaDriveFolderConfig()) {
     return findMayaDriveFinalForClient({
       clientName,
-      outputFolderId: getMayaDriveConfigFromEnv().outputFolderId,
     });
   }
 

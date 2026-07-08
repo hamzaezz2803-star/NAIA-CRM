@@ -2,15 +2,22 @@ import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { getGoogleWorkspaceAccessToken } from "@/platform/integrations/google-workspace";
+import {
+  ensureClientDriveFolder,
+  isDriveServiceConfigured,
+  listDriveFolderFiles,
+  downloadDriveFile,
+  uploadDriveFile,
+  type DriveFileSummary,
+} from "@/platform/integrations/google-drive-service";
 
 import type { MayaDeckFile, MayaDeckKind } from "./contracts";
-import { isNabilFinalPitchFileName, sanitizeMayaClientName } from "./storage";
+import { isNabilFinalPitchFileName } from "./storage";
 
-export const MAYA_DRIVE_REQUIRED_SCOPES = [
-  "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/drive.file",
-] as const;
+const PITCH_SUBFOLDER_NAME = "01_Pitch";
+const GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const PPTX_MIME_TYPE =
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
 export type MayaDriveConfig = {
   outputFolderId: string;
@@ -28,18 +35,11 @@ export type MayaDriveUploadResult = {
   manifestPath?: string;
 };
 
-type GoogleDriveFile = {
-  id?: string;
-  modifiedTime?: string;
-  name?: string;
-  size?: string;
-  webViewLink?: string;
-};
-
 export function hasMayaDriveFolderConfig(env: NodeJS.ProcessEnv = process.env) {
   return Boolean(
     env.MAYA_DRIVE_SOURCE_FOLDER_ID?.trim() &&
-    env.MAYA_DRIVE_OUTPUT_FOLDER_ID?.trim(),
+    env.MAYA_DRIVE_OUTPUT_FOLDER_ID?.trim() &&
+    isDriveServiceConfigured(),
   );
 }
 
@@ -66,41 +66,24 @@ export async function listMayaDriveDeckFiles({
 }: {
   sourceFolderId: string;
 }) {
-  const accessToken = await getMayaDriveAccessToken();
-  const files = await listGoogleDriveFiles({
-    accessToken,
-    folderId: sourceFolderId,
-    query:
-      "mimeType = 'application/vnd.openxmlformats-officedocument.presentationml.presentation' or name contains '.pptx'",
+  const files = await listDriveFolderFiles(sourceFolderId, {
+    maxResults: 1000,
   });
 
   return files
+    .filter(isPptxDriveFile)
     .map(toMayaDriveDeckFile)
     .sort((a, b) => a.fileName.localeCompare(b.fileName));
 }
 
 export async function downloadMayaDriveDeckToTemp(file: MayaDriveDeckFile) {
-  const accessToken = await getMayaDriveAccessToken();
   const tempRoot = await mkdtemp(path.join(os.tmpdir(), "maya-drive-deck-"));
   const filePath = path.join(tempRoot, file.fileName);
-  const url = new URL(
-    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.driveFileId)}`,
+
+  await writeFile(
+    filePath,
+    Buffer.from(await downloadDriveFile(file.driveFileId)),
   );
-
-  url.searchParams.set("alt", "media");
-  url.searchParams.set("supportsAllDrives", "true");
-
-  const response = await fetch(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(await googleDriveError("download file", response));
-  }
-
-  await writeFile(filePath, Buffer.from(await response.arrayBuffer()));
 
   return {
     ...file,
@@ -113,33 +96,24 @@ export async function uploadMayaDriveDraftArtifacts({
   draftFileName,
   draftFilePath,
   manifestPath,
-  outputFolderId,
 }: {
   clientName: string;
   draftFileName: string;
   draftFilePath: string;
   manifestPath: string;
-  outputFolderId: string;
 }): Promise<MayaDriveUploadResult> {
-  const accessToken = await getMayaDriveAccessToken();
-  const pitchFolderId = await ensureMayaDriveClientPitchFolder({
-    accessToken,
-    clientName,
-    outputFolderId,
-  });
-  const draft = await uploadGoogleDriveFile({
-    accessToken,
+  const clientFolder = await ensureClientDriveFolder(clientName);
+  const pitchFolderId = await findClientPitchFolderId(clientFolder.folderId);
+  const draft = await uploadDriveFile({
     content: await readFile(draftFilePath),
-    fileName: draftFileName,
-    mimeType:
-      "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    mimeType: PPTX_MIME_TYPE,
+    name: draftFileName,
     parentFolderId: pitchFolderId,
   });
-  const manifest = await uploadGoogleDriveFile({
-    accessToken,
+  const manifest = await uploadDriveFile({
     content: await readFile(manifestPath),
-    fileName: "maya-generation-manifest.json",
     mimeType: "application/json",
+    name: "maya-generation-manifest.json",
     parentFolderId: pitchFolderId,
   });
 
@@ -154,14 +128,11 @@ export async function uploadMayaDriveDraftArtifacts({
 
 export async function findMayaDriveDraftForClient({
   clientName,
-  outputFolderId,
 }: {
   clientName: string;
-  outputFolderId: string;
 }) {
   const files = await listMayaDriveClientPitchFiles({
     clientName,
-    outputFolderId,
   });
   const draft = files
     .filter((file) => file.name?.includes("_vDraft.pptx"))
@@ -177,14 +148,11 @@ export async function findMayaDriveDraftForClient({
 
 export async function findMayaDriveFinalForClient({
   clientName,
-  outputFolderId,
 }: {
   clientName: string;
-  outputFolderId: string;
 }) {
   const files = await listMayaDriveClientPitchFiles({
     clientName,
-    outputFolderId,
   });
   const final = files
     .filter((file) => file.name && isNabilFinalPitchFileName(file.name))
@@ -200,247 +168,37 @@ export async function findMayaDriveFinalForClient({
 
 async function listMayaDriveClientPitchFiles({
   clientName,
-  outputFolderId,
 }: {
   clientName: string;
-  outputFolderId: string;
 }) {
-  const accessToken = await getMayaDriveAccessToken();
-  const clientFolder = await findGoogleDriveFolder({
-    accessToken,
-    name: sanitizeMayaClientName(clientName),
-    parentFolderId: outputFolderId,
-  });
+  const clientFolder = await ensureClientDriveFolder(clientName);
+  const pitchFolderId = await findClientPitchFolderId(clientFolder.folderId);
 
-  if (!clientFolder?.id) return [];
-
-  const pitchFolder = await findGoogleDriveFolder({
-    accessToken,
-    name: "Pitch",
-    parentFolderId: clientFolder.id,
-  });
-
-  if (!pitchFolder?.id) return [];
-
-  return listGoogleDriveFiles({
-    accessToken,
-    folderId: pitchFolder.id,
-    query: "mimeType != 'application/vnd.google-apps.folder'",
-  });
+  return (
+    await listDriveFolderFiles(pitchFolderId, { maxResults: 1000 })
+  ).filter((file) => file.mimeType !== GOOGLE_FOLDER_MIME_TYPE);
 }
 
-async function ensureMayaDriveClientPitchFolder({
-  accessToken,
-  clientName,
-  outputFolderId,
-}: {
-  accessToken: string;
-  clientName: string;
-  outputFolderId: string;
-}) {
-  const clientFolderName = sanitizeMayaClientName(clientName);
-  const clientFolder =
-    (await findGoogleDriveFolder({
-      accessToken,
-      name: clientFolderName,
-      parentFolderId: outputFolderId,
-    })) ??
-    (await createGoogleDriveFolder({
-      accessToken,
-      name: clientFolderName,
-      parentFolderId: outputFolderId,
-    }));
-  if (!clientFolder.id) {
-    throw new Error("Google Drive did not return a client folder id.");
-  }
+async function findClientPitchFolderId(clientFolderId: string) {
+  const folders = await listDriveFolderFiles(clientFolderId, {
+    maxResults: 1000,
+  });
+  const pitchFolder = folders.find(
+    (file) =>
+      file.mimeType === GOOGLE_FOLDER_MIME_TYPE &&
+      file.name === PITCH_SUBFOLDER_NAME,
+  );
 
-  const pitchFolder =
-    (await findGoogleDriveFolder({
-      accessToken,
-      name: "Pitch",
-      parentFolderId: clientFolder.id,
-    })) ??
-    (await createGoogleDriveFolder({
-      accessToken,
-      name: "Pitch",
-      parentFolderId: clientFolder.id,
-    }));
-  if (!pitchFolder.id) {
-    throw new Error("Google Drive did not return a pitch folder id.");
+  if (!pitchFolder?.id) {
+    throw new Error(
+      `Google Drive client folder is missing the ${PITCH_SUBFOLDER_NAME} subfolder.`,
+    );
   }
 
   return pitchFolder.id;
 }
 
-async function getMayaDriveAccessToken() {
-  return getGoogleWorkspaceAccessToken({
-    requiredScopes: [...MAYA_DRIVE_REQUIRED_SCOPES],
-  });
-}
-
-async function listGoogleDriveFiles({
-  accessToken,
-  folderId,
-  query,
-}: {
-  accessToken: string;
-  folderId: string;
-  query: string;
-}) {
-  const files: GoogleDriveFile[] = [];
-  let pageToken = "";
-
-  do {
-    const url = new URL("https://www.googleapis.com/drive/v3/files");
-    const q = [
-      `'${escapeDriveQueryValue(folderId)}' in parents`,
-      "trashed = false",
-    ];
-
-    if (query) q.push(`(${query})`);
-
-    url.searchParams.set("q", q.join(" and "));
-    url.searchParams.set(
-      "fields",
-      "nextPageToken,files(id,name,modifiedTime,size,webViewLink)",
-    );
-    url.searchParams.set("supportsAllDrives", "true");
-    url.searchParams.set("includeItemsFromAllDrives", "true");
-    url.searchParams.set("pageSize", "100");
-    if (pageToken) url.searchParams.set("pageToken", pageToken);
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
-    });
-
-    if (!response.ok) {
-      throw new Error(await googleDriveError("list files", response));
-    }
-
-    const payload = (await response.json()) as {
-      files?: GoogleDriveFile[];
-      nextPageToken?: string;
-    };
-
-    files.push(...(payload.files ?? []));
-    pageToken = payload.nextPageToken ?? "";
-  } while (pageToken);
-
-  return files;
-}
-
-async function findGoogleDriveFolder({
-  accessToken,
-  name,
-  parentFolderId,
-}: {
-  accessToken: string;
-  name: string;
-  parentFolderId: string;
-}) {
-  const files = await listGoogleDriveFiles({
-    accessToken,
-    folderId: parentFolderId,
-    query: `mimeType = 'application/vnd.google-apps.folder' and name = '${escapeDriveQueryValue(name)}'`,
-  });
-
-  return files[0]?.id ? files[0] : null;
-}
-
-async function createGoogleDriveFolder({
-  accessToken,
-  name,
-  parentFolderId,
-}: {
-  accessToken: string;
-  name: string;
-  parentFolderId: string;
-}) {
-  const url = new URL("https://www.googleapis.com/drive/v3/files");
-
-  url.searchParams.set("supportsAllDrives", "true");
-  url.searchParams.set("fields", "id,name,webViewLink");
-
-  const response = await fetch(url, {
-    body: JSON.stringify({
-      mimeType: "application/vnd.google-apps.folder",
-      name,
-      parents: [parentFolderId],
-    }),
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": "application/json",
-    },
-    method: "POST",
-  });
-
-  if (!response.ok) {
-    throw new Error(await googleDriveError("create folder", response));
-  }
-
-  return (await response.json()) as Required<Pick<GoogleDriveFile, "id">> &
-    GoogleDriveFile;
-}
-
-async function uploadGoogleDriveFile({
-  accessToken,
-  content,
-  fileName,
-  mimeType,
-  parentFolderId,
-}: {
-  accessToken: string;
-  content: Buffer;
-  fileName: string;
-  mimeType: string;
-  parentFolderId: string;
-}) {
-  const boundary = `maya_${crypto.randomUUID().replaceAll("-", "")}`;
-  const metadata = {
-    mimeType,
-    name: fileName,
-    parents: [parentFolderId],
-  };
-  const body = Buffer.concat([
-    Buffer.from(
-      [
-        `--${boundary}`,
-        "Content-Type: application/json; charset=UTF-8",
-        "",
-        JSON.stringify(metadata),
-        `--${boundary}`,
-        `Content-Type: ${mimeType}`,
-        "",
-      ].join("\r\n"),
-    ),
-    content,
-    Buffer.from(`\r\n--${boundary}--\r\n`),
-  ]);
-  const url = new URL("https://www.googleapis.com/upload/drive/v3/files");
-
-  url.searchParams.set("uploadType", "multipart");
-  url.searchParams.set("supportsAllDrives", "true");
-  url.searchParams.set("fields", "id,name,webViewLink");
-
-  const response = await fetch(url, {
-    body,
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Content-Type": `multipart/related; boundary=${boundary}`,
-    },
-    method: "POST",
-  });
-
-  if (!response.ok) {
-    throw new Error(await googleDriveError("upload file", response));
-  }
-
-  return (await response.json()) as GoogleDriveFile;
-}
-
-function toMayaDriveDeckFile(file: GoogleDriveFile): MayaDriveDeckFile {
+function toMayaDriveDeckFile(file: DriveFileSummary): MayaDriveDeckFile {
   const fileName = file.name ?? "Untitled.pptx";
 
   return {
@@ -463,8 +221,8 @@ function inferDriveDeckKind(fileName: string): MayaDeckKind {
 }
 
 function compareGoogleDriveModifiedDesc(
-  left: GoogleDriveFile,
-  right: GoogleDriveFile,
+  left: DriveFileSummary,
+  right: DriveFileSummary,
 ) {
   return (
     new Date(right.modifiedTime ?? 0).getTime() -
@@ -472,10 +230,6 @@ function compareGoogleDriveModifiedDesc(
   );
 }
 
-function escapeDriveQueryValue(value: string) {
-  return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-}
-
-async function googleDriveError(action: string, response: Response) {
-  return `Google Drive ${action} failed (${response.status}): ${(await response.text()).slice(0, 500)}`;
+function isPptxDriveFile(file: DriveFileSummary) {
+  return file.mimeType === PPTX_MIME_TYPE || /\.pptx$/i.test(file.name ?? "");
 }

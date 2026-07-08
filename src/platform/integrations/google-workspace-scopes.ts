@@ -1,10 +1,7 @@
 // Scopes granted by each employee at Google sign-in: personal Calendar and
-// Gmail access, plus the Drive read scopes Maya still consumes through the
-// user's token today. Once Maya switches to the organization service account
-// (google-drive-service.ts), the Drive scopes can be dropped from login.
+// Gmail access only. Shared Drive/client-IP operations use the server-only
+// service account in google-drive-service.ts.
 export const GOOGLE_USER_SCOPES = [
-  "https://www.googleapis.com/auth/drive.readonly",
-  "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",
   "https://www.googleapis.com/auth/gmail.readonly",

@@ -7,7 +7,7 @@ describe("Google integration auth route", () => {
     vi.unstubAllEnvs();
   });
 
-  it("requests the per-user Drive, Calendar, and Gmail scopes", async () => {
+  it("requests only per-user Calendar and Gmail scopes", async () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "google-client-id");
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://os.qarizmi.com");
 
@@ -20,13 +20,15 @@ describe("Google integration auth route", () => {
     const scopes = authUrl.searchParams.get("scope")?.split(" ") ?? [];
 
     expect(scopes).toEqual([
-      "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/drive.file",
       "https://www.googleapis.com/auth/calendar.events",
       "https://www.googleapis.com/auth/calendar.freebusy",
       "https://www.googleapis.com/auth/gmail.readonly",
       "https://www.googleapis.com/auth/gmail.send",
     ]);
+    expect(scopes).not.toContain(
+      "https://www.googleapis.com/auth/drive.readonly",
+    );
+    expect(scopes).not.toContain("https://www.googleapis.com/auth/drive.file");
   });
 
   it("mints a CSRF state bound to a cookie", async () => {
