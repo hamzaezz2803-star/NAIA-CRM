@@ -8,7 +8,10 @@ import {
   isSupabaseConfigured,
 } from "@/platform/auth/config";
 
-const PUBLIC_PATH_PREFIXES = ["/login", "/auth"];
+// /api/whatsapp/webhook is called by Meta without a Supabase session; the
+// route authenticates every request itself (verify token on GET, timing-safe
+// X-Hub-Signature-256 HMAC on POST) and never executes without an approval.
+const PUBLIC_PATH_PREFIXES = ["/login", "/auth", "/api/whatsapp/webhook"];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
