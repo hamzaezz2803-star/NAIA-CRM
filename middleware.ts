@@ -8,7 +8,16 @@ import {
   isSupabaseConfigured,
 } from "@/platform/auth/config";
 
-const PUBLIC_PATH_PREFIXES = ["/login", "/auth"];
+// /api/slack/events and /api/slack/interactions are called by Slack without
+// a Supabase session; both routes authenticate every request themselves
+// (timing-safe X-Slack-Signature v0 HMAC + 5 minute replay window) and never
+// execute an action without a verified human approval token.
+const PUBLIC_PATH_PREFIXES = [
+  "/login",
+  "/auth",
+  "/api/slack/events",
+  "/api/slack/interactions",
+];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
