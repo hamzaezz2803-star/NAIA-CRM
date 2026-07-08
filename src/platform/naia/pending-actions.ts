@@ -1,17 +1,22 @@
 import "server-only";
 
-import type { NaiaActionDraft } from "@/features/naia/orchestrator";
 import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 
 // Durable storage for NAIA action drafts awaiting approval on channels whose
-// buttons cannot carry the serialized draft (WhatsApp reply-button ids are
-// capped at 256 characters). The draft {action, approvalToken, command} is
-// parked in the service-role-only `naia_pending_actions` table and the button
-// only references the row uuid. Unlike the Slack in-memory fallback, this
-// survives serverless instances and deploys. Claims are single-use and
-// scoped to the profile that owns the draft; expired rows are purged on read.
+// buttons cannot carry the inline draft (WhatsApp reply-button ids are capped
+// at 256 characters, versus Slack's 2000-character button values). The draft
+// {actionId, actionLabel, approvalToken, command} is parked in the
+// service-role-only `naia_pending_actions` table and the button only
+// references the row uuid, so it survives serverless instances and deploys.
+//
+// The two single-use layers are complementary: this claim is the UX layer
+// (a tapped WhatsApp button stops working immediately, scoped to the owning
+// profile), while the security layer is the HMAC approval token — it embeds
+// the exact approved action and is itself claimed single-use in
+// naia_consumed_action_tokens by executeBridgeAction before any side effect.
 export type NaiaPendingDraft = {
-  action: NaiaActionDraft;
+  actionId: string;
+  actionLabel: string;
   approvalToken: string;
   command: string;
 };
@@ -96,11 +101,9 @@ function isPendingDraft(value: unknown): value is NaiaPendingDraft {
   const draft = value as Partial<NaiaPendingDraft>;
 
   return (
+    typeof draft.actionId === "string" &&
+    typeof draft.actionLabel === "string" &&
     typeof draft.approvalToken === "string" &&
-    typeof draft.command === "string" &&
-    Boolean(draft.action) &&
-    typeof draft.action === "object" &&
-    typeof (draft.action as { id?: unknown }).id === "string" &&
-    typeof (draft.action as { kind?: unknown }).kind === "string"
+    typeof draft.command === "string"
   );
 }

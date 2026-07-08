@@ -18,16 +18,8 @@ import {
 const DRAFT_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
 const pendingDraft: NaiaPendingDraft = {
-  action: {
-    agentId: "integrations",
-    approvalRequired: true,
-    description: "Lina lira les derniers messages Gmail autorises.",
-    id: "gmail-list-abc",
-    kind: "google.gmail.listMessages",
-    label: "Lire Gmail",
-    payload: { maxResults: 10, unreadOnly: true },
-    risk: "low",
-  },
+  actionId: "gmail-list-abc",
+  actionLabel: "Lire Gmail",
   approvalToken: "payload.signature",
   command: "lis mes emails gmail non lus",
 };

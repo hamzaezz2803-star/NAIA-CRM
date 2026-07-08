@@ -70,8 +70,11 @@ const gmailAction = {
   risk: "low",
 };
 
+// The HMAC approval token embeds the approved action; the stored draft only
+// carries the reference plus a label for confirmation messages.
 const pendingDraft = {
-  action: gmailAction,
+  actionId: gmailAction.id,
+  actionLabel: gmailAction.label,
   approvalToken: "payload.signature",
   command: "lis mes emails gmail non lus",
 };
@@ -344,10 +347,11 @@ describe("WhatsApp webhook (POST)", () => {
       id: DRAFT_ID,
       profileId: "profile-ali",
     });
-    expect(mocks.executeBridgeAction).toHaveBeenCalledWith(
-      bridgeUser,
-      pendingDraft,
-    );
+    expect(mocks.executeBridgeAction).toHaveBeenCalledWith(bridgeUser, {
+      actionId: gmailAction.id,
+      approvalToken: "payload.signature",
+      command: "lis mes emails gmail non lus",
+    });
 
     const resultMessage = mocks.sendWhatsAppText.mock.calls[0][0];
     expect(resultMessage.to).toBe(KNOWN_PHONE);

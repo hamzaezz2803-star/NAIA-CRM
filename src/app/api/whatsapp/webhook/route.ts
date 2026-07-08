@@ -193,10 +193,17 @@ async function handleTextCommand(
   const plan = await planBridgeCommand(user, command);
   await sendWhatsAppText({ body: plan.response, to });
 
-  for (const signedAction of plan.actions) {
-    const { approvalToken, ...action } = signedAction;
+  for (const action of plan.actions) {
+    // The HMAC token embeds the full approved action; the stored draft only
+    // needs the reference {actionId, approvalToken, command} plus a label
+    // for the confirmation messages.
     const draftId = await storePendingAction({
-      draft: { action, approvalToken, command: plan.command },
+      draft: {
+        actionId: action.id,
+        actionLabel: action.label,
+        approvalToken: action.approvalToken,
+        command: plan.command,
+      },
       organizationId: user.organizationId,
       profileId: user.profileId,
     });
@@ -233,7 +240,7 @@ async function handleButtonReply(
 
     await sendWhatsAppText({
       body: draft
-        ? `❌ Action "${draft.action.label}" ignorée.`
+        ? `❌ Action "${draft.actionLabel}" ignorée.`
         : "Cette action a déjà été traitée ou a expiré.",
       to,
     });
@@ -242,8 +249,8 @@ async function handleButtonReply(
 
   if (!buttonId.startsWith(APPROVE_PREFIX)) return;
 
-  // The claim deletes the row (single-use), checks the draft belongs to the
-  // profile resolved from this phone number, and rejects expired drafts.
+  // The claim deletes the row (single-use tap), checks the draft belongs to
+  // the profile resolved from this phone number, and rejects expired drafts.
   const draft = await claimPendingAction({
     id: buttonId.slice(APPROVE_PREFIX.length),
     profileId: user.profileId,
@@ -257,7 +264,14 @@ async function handleButtonReply(
     return;
   }
 
-  const result = await executeBridgeAction(user, draft);
+  // executeBridgeAction verifies the HMAC token (which embeds the approved
+  // action), claims it single-use in naia_consumed_action_tokens before any
+  // side effect, and runs the decoded action.
+  const result = await executeBridgeAction(user, {
+    actionId: draft.actionId,
+    approvalToken: draft.approvalToken,
+    command: draft.command,
+  });
   const lines = [
     result.success ? `✅ ${result.message}` : `⚠️ ${result.message}`,
     ...(result.details ?? []),
