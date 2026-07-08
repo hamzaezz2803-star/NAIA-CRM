@@ -76,15 +76,32 @@ export async function fetchSlackUserProfile(
   };
 
   if (!response.ok || !payload.ok || !payload.user) {
+    // Fail closed (callers treat null as "unknown user"), but leave a trace:
+    // this usually means a revoked token or a missing users:read scope.
+    console.error(
+      `Slack users.info failed for ${userId}:`,
+      payload.error ?? `HTTP ${response.status}`,
+    );
     return null;
   }
 
-  return {
+  const profile: SlackUserProfile = {
     displayName:
       payload.user.profile?.display_name || payload.user.real_name || undefined,
     email: payload.user.profile?.email,
     isBot: Boolean(payload.user.is_bot),
   };
+
+  if (!profile.isBot && !profile.email) {
+    // Without an email the bridge cannot map the Slack user to a Qarizmi OS
+    // profile: access stays denied (fail closed). The most common cause is a
+    // Slack app installed without the users:read.email scope.
+    console.warn(
+      `Slack users.info returned no email for non-bot user ${userId}; check the users:read.email scope on the Slack app.`,
+    );
+  }
+
+  return profile;
 }
 
 export async function postSlackMessage({

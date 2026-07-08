@@ -42,15 +42,22 @@ function slackRequest(
   body: string,
   {
     retryNum,
+    retryReason,
     timestamp = String(Math.floor(Date.now() / 1000)),
     signature,
-  }: { retryNum?: string; signature?: string; timestamp?: string } = {},
+  }: {
+    retryNum?: string;
+    retryReason?: string;
+    signature?: string;
+    timestamp?: string;
+  } = {},
 ) {
   return new Request("http://localhost/api/slack/events", {
     body,
     headers: {
       "content-type": "application/json",
       ...(retryNum ? { "x-slack-retry-num": retryNum } : {}),
+      ...(retryReason ? { "x-slack-retry-reason": retryReason } : {}),
       "x-slack-request-timestamp": timestamp,
       "x-slack-signature":
         signature ??
@@ -159,14 +166,33 @@ describe("Slack events route", () => {
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
   });
 
-  it("acknowledges Slack retries without reprocessing", async () => {
+  it("acknowledges http_timeout retries without reprocessing", async () => {
     const body = messageImEvent("lis mes emails gmail non lus");
-    const response = await POST(slackRequest(body, { retryNum: "1" }));
+    const response = await POST(
+      slackRequest(body, { retryNum: "1", retryReason: "http_timeout" }),
+    );
 
     await flushAfterTasks();
 
     expect(response.status).toBe(200);
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+  });
+
+  it("processes retries whose reason is not http_timeout", async () => {
+    const body = messageImEvent("lis mes emails gmail non lus");
+    const response = await POST(
+      slackRequest(body, { retryNum: "1", retryReason: "connection_failed" }),
+    );
+
+    await flushAfterTasks();
+
+    expect(response.status).toBe(200);
+    // The first delivery was never processed on Slack's side, so this retry
+    // must go through the full pipeline.
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "lis mes emails gmail non lus",
+    );
   });
 
   it("ignores bot messages", async () => {
@@ -222,7 +248,7 @@ describe("Slack events route", () => {
 
     const draft = decodeSlackApprovalValue(approveButton.value);
     expect(draft).not.toBeNull();
-    expect(draft?.action.id).toBe("gmail-list-abc");
+    expect(draft?.actionId).toBe("gmail-list-abc");
     expect(draft?.approvalToken).toBe("payload.signature");
     expect(draft?.command).toBe("lis mes emails gmail non lus");
   });

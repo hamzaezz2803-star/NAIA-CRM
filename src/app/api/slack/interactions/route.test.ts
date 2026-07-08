@@ -36,19 +36,10 @@ import { POST } from "./route";
 
 const SIGNING_SECRET = "test-signing-secret";
 
-const gmailAction = {
-  agentId: "integrations",
-  approvalRequired: true,
-  description: "Lina lira les derniers messages Gmail autorises.",
-  id: "gmail-list-abc",
-  kind: "google.gmail.listMessages",
-  label: "Lire Gmail",
-  payload: { maxResults: 10, unreadOnly: true },
-  risk: "low",
-};
+const draftActionId = "gmail-list-abc";
 
 const approvalDraft = {
-  action: gmailAction,
+  actionId: draftActionId,
   approvalToken: "payload.signature",
   command: "lis mes emails gmail non lus",
 };
@@ -62,8 +53,8 @@ const bridgeUser = {
 };
 
 function buildInteractionPayload({
-  actionId = `naia_approve:${gmailAction.id}`,
-  value = JSON.stringify({ d: approvalDraft, v: 1 }),
+  actionId = `naia_approve:${draftActionId}`,
+  value = JSON.stringify({ d: approvalDraft, v: 2 }),
 }: { actionId?: string; value?: string } = {}) {
   return {
     actions: [{ action_id: actionId, value }],
@@ -75,7 +66,7 @@ function buildInteractionPayload({
           type: "section",
         },
         {
-          block_id: `naia_action_buttons:${gmailAction.id}`,
+          block_id: `naia_action_buttons:${draftActionId}`,
           elements: [],
           type: "actions",
         },
@@ -152,7 +143,7 @@ describe("Slack interactions route", () => {
     expect(mocks.executeBridgeAction).not.toHaveBeenCalled();
   });
 
-  it("executes an approved action and updates the original message", async () => {
+  it("shows a pending state, executes, and updates the shared message with the status only", async () => {
     const response = await POST(interactionRequest(buildInteractionPayload()));
 
     expect(response.status).toBe(200);
@@ -166,22 +157,32 @@ describe("Slack interactions route", () => {
       approvalDraft,
     );
 
-    const [responseUrl, update] = mocks.respondToSlackInteraction.mock.calls[0];
-    expect(responseUrl).toBe("https://hooks.slack.com/actions/T000/response");
-    expect(update.replace_original).toBe(true);
-    expect(update.text).toContain("Validée par Ali");
-    expect(update.text).toContain("Lina a lu 1 message(s)");
+    expect(mocks.respondToSlackInteraction).toHaveBeenCalledTimes(3);
 
-    const resultBlock = update.blocks.find(
+    const [pendingUrl, pendingUpdate] =
+      mocks.respondToSlackInteraction.mock.calls[0];
+    expect(pendingUrl).toBe("https://hooks.slack.com/actions/T000/response");
+    expect(pendingUpdate.replace_original).toBe(true);
+    expect(pendingUpdate.text).toContain("Validation en cours");
+
+    const [, finalUpdate] = mocks.respondToSlackInteraction.mock.calls[1];
+    expect(finalUpdate.replace_original).toBe(true);
+    expect(finalUpdate.text).toContain("Validée par Ali");
+    expect(finalUpdate.text).toContain("Lina a lu 1 message(s)");
+    // Confidentiality: result details never land in the shared message.
+    expect(finalUpdate.text).not.toContain("Demo client");
+    expect(JSON.stringify(finalUpdate.blocks)).not.toContain("Demo client");
+
+    const resultBlock = finalUpdate.blocks.find(
       (block: { block_id?: string }) =>
-        block.block_id === `naia_action_result:${gmailAction.id}`,
+        block.block_id === `naia_action_result:${draftActionId}`,
     );
     expect(resultBlock).toBeDefined();
-    const detailsBlock = update.blocks.find(
-      (block: { block_id?: string }) =>
-        block.block_id === `naia_action_details:${gmailAction.id}`,
-    );
-    expect(detailsBlock.text.text).toContain("Demo client");
+
+    const [, ephemeral] = mocks.respondToSlackInteraction.mock.calls[2];
+    expect(ephemeral.replace_original).toBe(false);
+    expect(ephemeral.response_type).toBe("ephemeral");
+    expect(ephemeral.text).toContain("Demo client");
   });
 
   it("never executes for an unrecognized Slack account", async () => {
@@ -194,6 +195,7 @@ describe("Slack interactions route", () => {
     await flushAfterTasks();
 
     expect(mocks.executeBridgeAction).not.toHaveBeenCalled();
+    expect(mocks.respondToSlackInteraction).toHaveBeenCalledTimes(1);
     expect(mocks.respondToSlackInteraction).toHaveBeenCalledWith(
       "https://hooks.slack.com/actions/T000/response",
       expect.objectContaining({
@@ -203,12 +205,27 @@ describe("Slack interactions route", () => {
     );
   });
 
+  it("reports an already-consumed token without duplicating side effects", async () => {
+    mocks.executeBridgeAction.mockResolvedValue({
+      message: "Cette action a déjà été validée.",
+      success: false,
+    });
+
+    await POST(interactionRequest(buildInteractionPayload()));
+    await flushAfterTasks();
+
+    const [, finalUpdate] = mocks.respondToSlackInteraction.mock.calls[1];
+    expect(finalUpdate.text).toContain("Cette action a déjà été validée.");
+    // No details: no ephemeral follow-up beyond pending + final updates.
+    expect(mocks.respondToSlackInteraction).toHaveBeenCalledTimes(2);
+  });
+
   it("marks a dismissed action without executing anything", async () => {
     const response = await POST(
       interactionRequest(
         buildInteractionPayload({
-          actionId: `naia_dismiss:${gmailAction.id}`,
-          value: JSON.stringify({ actionId: gmailAction.id }),
+          actionId: `naia_dismiss:${draftActionId}`,
+          value: JSON.stringify({ actionId: draftActionId }),
         }),
       ),
     );
@@ -218,6 +235,7 @@ describe("Slack interactions route", () => {
     await flushAfterTasks();
 
     expect(mocks.executeBridgeAction).not.toHaveBeenCalled();
+    expect(mocks.respondToSlackInteraction).toHaveBeenCalledTimes(1);
 
     const [, update] = mocks.respondToSlackInteraction.mock.calls[0];
     expect(update.replace_original).toBe(true);

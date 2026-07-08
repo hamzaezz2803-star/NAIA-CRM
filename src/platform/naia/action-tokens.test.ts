@@ -28,47 +28,60 @@ describe("NAIA action approval tokens", () => {
     vi.useRealTimers();
   });
 
-  it("signs an action and verifies it for the same command", () => {
+  it("signs an action and returns the embedded action on verification", () => {
     const command = "NAIA lis mes emails non lus";
     const signed = signAction(gmailAction, command);
 
     expect(signed.approvalToken).toContain(".");
-    expect(
-      verifyApprovalToken(signed.approvalToken, gmailAction, command),
-    ).toBe(true);
+
+    const decoded = verifyApprovalToken(
+      signed.approvalToken,
+      gmailAction.id,
+      command,
+    );
+
+    expect(decoded).toEqual(gmailAction);
   });
 
-  it("survives a JSON round trip of the action (Slack button value)", () => {
+  it("rejects the token for a different action id", () => {
     const command = "NAIA lis mes emails non lus";
     const signed = signAction(gmailAction, command);
-    const roundTripped = JSON.parse(
-      JSON.stringify(gmailAction),
-    ) as NaiaActionDraft;
 
     expect(
-      verifyApprovalToken(signed.approvalToken, roundTripped, command),
-    ).toBe(true);
+      verifyApprovalToken(signed.approvalToken, "another-action-id", command),
+    ).toBeNull();
   });
 
   it("rejects the token for a different command", () => {
     const signed = signAction(gmailAction, "commande originale");
 
     expect(
-      verifyApprovalToken(signed.approvalToken, gmailAction, "autre commande"),
-    ).toBe(false);
+      verifyApprovalToken(
+        signed.approvalToken,
+        gmailAction.id,
+        "autre commande",
+      ),
+    ).toBeNull();
   });
 
-  it("rejects the token for a tampered action payload", () => {
+  it("rejects a token whose payload was tampered with", () => {
     const command = "NAIA lis mes emails non lus";
     const signed = signAction(gmailAction, command);
-    const tampered = {
-      ...gmailAction,
+    const [encodedPayload, signature] = signed.approvalToken.split(".");
+    const payload = JSON.parse(
+      Buffer.from(encodedPayload, "base64url").toString("utf8"),
+    ) as { action: NaiaActionDraft; expiresAt: number };
+
+    payload.action = {
+      ...payload.action,
       payload: { maxResults: 500, unreadOnly: false },
     } as NaiaActionDraft;
 
-    expect(verifyApprovalToken(signed.approvalToken, tampered, command)).toBe(
-      false,
-    );
+    const forgedToken = `${Buffer.from(JSON.stringify(payload)).toString("base64url")}.${signature}`;
+
+    expect(
+      verifyApprovalToken(forgedToken, gmailAction.id, command),
+    ).toBeNull();
   });
 
   it("rejects an expired token", () => {
@@ -81,7 +94,7 @@ describe("NAIA action approval tokens", () => {
     vi.setSystemTime(new Date("2026-07-08T10:06:00.000Z"));
 
     expect(
-      verifyApprovalToken(signed.approvalToken, gmailAction, command),
-    ).toBe(false);
+      verifyApprovalToken(signed.approvalToken, gmailAction.id, command),
+    ).toBeNull();
   });
 });

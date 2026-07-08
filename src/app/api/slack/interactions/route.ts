@@ -11,8 +11,11 @@ import { decodeSlackApprovalValue } from "@/platform/naia/slack-approval";
 // Slack interactivity endpoint: handles the "✅ Valider" / "❌ Ignorer"
 // buttons posted by /api/slack/events. Every click re-verifies the Slack
 // signature, re-resolves the Slack user by email (an unresolved user never
-// executes anything), re-verifies the HMAC approval token inside
-// executeBridgeAction, then updates the original message via response_url.
+// executes anything), then executeBridgeAction re-verifies the HMAC approval
+// token (which embeds the approved action) and claims it as single-use before
+// running. The original message is updated via response_url with the status
+// line only; sensitive result details (emails, agenda) are sent as an
+// ephemeral reply visible only to the clicking user.
 
 type SlackBlock = {
   block_id?: string;
@@ -139,19 +142,37 @@ async function handleInteraction({
       return;
     }
 
+    // Immediate feedback in the shared message before the (possibly slow)
+    // execution; the single-use token claim still guards double submits.
+    await updateOriginalMessage({
+      draftActionId,
+      payload,
+      responseUrl,
+      statusText: "⏳ Validation en cours…",
+    });
+
     const result = await executeBridgeAction(user, draft);
     const approverLabel = profile?.displayName || user.email;
     const statusText = result.success
       ? `✅ Validée par ${approverLabel} — ${result.message}`
       : `⚠️ ${result.message}`;
 
+    // The shared message only carries the status line; details (emails,
+    // agenda entries) stay private to the clicking user.
     await updateOriginalMessage({
-      details: result.details,
       draftActionId,
       payload,
       responseUrl,
       statusText,
     });
+
+    if (result.details && result.details.length > 0) {
+      await respondToSlackInteraction(responseUrl, {
+        replace_original: false,
+        response_type: "ephemeral",
+        text: result.details.join("\n").slice(0, 2900),
+      });
+    }
   } catch (error) {
     console.error("Slack NAIA interaction processing failed:", error);
     try {
@@ -166,16 +187,15 @@ async function handleInteraction({
   }
 }
 
-// Rebuilds the original message: the clicked action's buttons are replaced by
-// a status line, and optional result details are appended.
+// Rebuilds the original message from the blocks Slack sent with the click:
+// the clicked action's buttons are replaced by a status line. Details are
+// deliberately never injected into the shared message.
 async function updateOriginalMessage({
-  details,
   draftActionId,
   payload,
   responseUrl,
   statusText,
 }: {
-  details?: string[];
   draftActionId: string;
   payload: SlackInteractionPayload;
   responseUrl: string;
@@ -186,13 +206,14 @@ async function updateOriginalMessage({
   if (!originalBlocks || originalBlocks.length === 0) {
     await respondToSlackInteraction(responseUrl, {
       replace_original: false,
-      text: [statusText, ...(details ?? [])].join("\n"),
+      text: statusText,
     });
     return;
   }
 
   const blocks: unknown[] = originalBlocks.map((block) =>
-    block.block_id === `naia_action_buttons:${draftActionId}`
+    block.block_id === `naia_action_buttons:${draftActionId}` ||
+    block.block_id === `naia_action_result:${draftActionId}`
       ? {
           block_id: `naia_action_result:${draftActionId}`,
           elements: [{ text: statusText, type: "mrkdwn" }],
@@ -200,14 +221,6 @@ async function updateOriginalMessage({
         }
       : block,
   );
-
-  if (details && details.length > 0) {
-    blocks.push({
-      block_id: `naia_action_details:${draftActionId}`,
-      text: { text: details.join("\n").slice(0, 2900), type: "mrkdwn" },
-      type: "section",
-    });
-  }
 
   await respondToSlackInteraction(responseUrl, {
     blocks,

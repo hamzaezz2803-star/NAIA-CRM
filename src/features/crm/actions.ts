@@ -898,7 +898,7 @@ export async function updateLeadStatusAction(
   if (!orgId) return { success: false, error: "Not authenticated" };
 
   const nextAction = getStatusDrivenNextAction(status);
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("crm_leads")
     .update({
       ...(nextAction ? { next_action: nextAction } : {}),
@@ -906,9 +906,16 @@ export async function updateLeadStatusAction(
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId)
-    .eq("organization_id", orgId);
+    .eq("organization_id", orgId)
+    .select("id");
 
   if (error) return { success: false, error: error.message };
+
+  // Zero returned rows means the update matched nothing (unknown lead id or
+  // another organization): report a failure instead of a silent no-op.
+  if (!data || data.length === 0) {
+    return { success: false, error: "Lead introuvable" };
+  }
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");

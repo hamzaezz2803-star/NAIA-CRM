@@ -1,60 +1,44 @@
 import "server-only";
 
-import { randomUUID } from "node:crypto";
-
-import type { NaiaActionDraft } from "@/features/naia/orchestrator";
-
 // Strategy for the Slack button `value` (hard Slack limit: 2000 characters).
 //
-// Primary mode: the draft (action + command + HMAC approval token) is
-// serialized inline in the button value. That mode is fully stateless, so it
-// works across serverless instances and deploys; tampering is useless because
-// executeBridgeAction re-verifies the HMAC token against the action and
-// command before doing anything.
+// The HMAC approval token embeds the full approved action (kind + payload +
+// id), so the button only needs to carry {actionId, approvalToken, command}:
+// the command is required to re-verify the token's commandHash, and the
+// action is decoded from the token itself at execution time. This inline
+// encoding is fully stateless, so it works across serverless instances and
+// deploys — there is deliberately no in-memory fallback.
 //
-// Fallback mode: when the serialized draft exceeds the Slack limit (very long
-// commands or CRM drafts), the draft is parked in a module-level Map with a
-// short TTL and the button only carries an opaque reference. This fallback is
-// best-effort on serverless platforms (another instance may not hold the
-// entry); the user is then asked to resend the command, and the 5 minute
-// token TTL bounds the exposure anyway.
+// To keep the inline value under the Slack limit, planBridgeCommand truncates
+// Slack commands to 500 characters (see SLACK_COMMAND_MAX_LENGTH): the token
+// hash is computed on the same truncated string, so verification stays
+// consistent. Pathologically large drafts (long dictated notes expanding the
+// signed payload) make encodeSlackApprovalValue return null and the events
+// route degrades gracefully by pointing to the web cockpit instead of
+// rendering a broken button.
 
 export type SlackApprovalDraft = {
-  action: NaiaActionDraft;
+  actionId: string;
   approvalToken: string;
   command: string;
 };
 
 const SLACK_BUTTON_VALUE_LIMIT = 2000;
-const OVERSIZED_DRAFT_TTL_MS = 10 * 60 * 1000;
 
-const oversizedDrafts = new Map<
-  string,
-  { draft: SlackApprovalDraft; expiresAt: number }
->();
+export function encodeSlackApprovalValue(
+  draft: SlackApprovalDraft,
+): string | null {
+  const inline = JSON.stringify({ d: draft, v: 2 });
 
-export function encodeSlackApprovalValue(draft: SlackApprovalDraft): string {
-  const inline = JSON.stringify({ d: draft, v: 1 });
-  if (inline.length <= SLACK_BUTTON_VALUE_LIMIT) {
-    return inline;
-  }
-
-  pruneOversizedDrafts();
-  const reference = randomUUID();
-  oversizedDrafts.set(reference, {
-    draft,
-    expiresAt: Date.now() + OVERSIZED_DRAFT_TTL_MS,
-  });
-
-  return JSON.stringify({ r: reference, v: 1 });
+  return inline.length <= SLACK_BUTTON_VALUE_LIMIT ? inline : null;
 }
 
 export function decodeSlackApprovalValue(
   value: string,
 ): SlackApprovalDraft | null {
-  let parsed: { d?: SlackApprovalDraft; r?: string; v?: number };
+  let parsed: { d?: SlackApprovalDraft };
   try {
-    parsed = JSON.parse(value) as { d?: SlackApprovalDraft; r?: string };
+    parsed = JSON.parse(value) as { d?: SlackApprovalDraft };
   } catch {
     return null;
   }
@@ -62,26 +46,16 @@ export function decodeSlackApprovalValue(
   if (
     parsed.d &&
     typeof parsed.d === "object" &&
-    parsed.d.action &&
+    typeof parsed.d.actionId === "string" &&
     typeof parsed.d.approvalToken === "string" &&
     typeof parsed.d.command === "string"
   ) {
-    return parsed.d;
-  }
-
-  if (typeof parsed.r === "string") {
-    pruneOversizedDrafts();
-    return oversizedDrafts.get(parsed.r)?.draft ?? null;
+    return {
+      actionId: parsed.d.actionId,
+      approvalToken: parsed.d.approvalToken,
+      command: parsed.d.command,
+    };
   }
 
   return null;
-}
-
-function pruneOversizedDrafts() {
-  const now = Date.now();
-  for (const [reference, entry] of oversizedDrafts) {
-    if (entry.expiresAt <= now) {
-      oversizedDrafts.delete(reference);
-    }
-  }
 }

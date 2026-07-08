@@ -8,10 +8,18 @@ import {
   isSupabaseConfigured,
 } from "@/platform/auth/config";
 
-// /api/whatsapp/webhook is called by Meta without a Supabase session; the
-// route authenticates every request itself (verify token on GET, timing-safe
-// X-Hub-Signature-256 HMAC on POST) and never executes without an approval.
-const PUBLIC_PATH_PREFIXES = ["/login", "/auth", "/api/whatsapp/webhook"];
+// /api/slack/events, /api/slack/interactions, and /api/whatsapp/webhook are
+// called by Slack/Meta without a Supabase session; each route authenticates
+// every request itself (timing-safe X-Slack-Signature v0 HMAC + replay window
+// for Slack; verify token on GET and timing-safe X-Hub-Signature-256 HMAC on
+// POST for WhatsApp) and never executes without a verified human approval.
+const PUBLIC_PATH_PREFIXES = [
+  "/login",
+  "/auth",
+  "/api/slack/events",
+  "/api/slack/interactions",
+  "/api/whatsapp/webhook",
+];
 
 export async function middleware(request: NextRequest) {
   const { pathname } = request.nextUrl;
