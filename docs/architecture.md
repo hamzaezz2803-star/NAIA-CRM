@@ -77,7 +77,19 @@ Maya Pitch Generator V1 lives in `src/features/maya` and is cofounder-only by de
 
 The draft generator starts from the latest `Qarizmi_Introduction_Service as a software_Generic.pptx`, removes credential slides Maya did not select, appends editable preliminary diagnostic/use-case slides from CRM context, and writes `maya-generation-manifest.json` next to the PPTX. When `MAYA_OPENAI_API_KEY` is configured, only Maya's cofounder-gated draft action calls OpenAI to enrich the credential selection, diagnostic outline, follow-up questions, and use-case bullets before PPTX generation; otherwise it falls back to deterministic planning. Nabil's final `*_vF.pptx` files remain the learning source: Maya compares draft vs final text to record slide additions/removals/copy changes without storing full raw deck contents.
 
-Integration readiness is centralized in `src/platform/integrations/readiness.ts`. Google Drive, Calendar event creation, and Calendar FreeBusy checks have OAuth and CRM actions today; Gmail API, Slack, WhatsApp, and Microsoft 365 must show as non-implemented or guarded until their runtime routes, scopes, tokens, sync jobs, and audit trails exist.
+Integration readiness is centralized in `src/platform/integrations/readiness.ts`. Google Drive, Calendar event creation, and Calendar FreeBusy checks have OAuth and CRM actions today; Slack now has an inbound NAIA bridge (see below); Gmail API sending, WhatsApp, and Microsoft 365 must show as non-implemented or guarded until their runtime routes, scopes, tokens, sync jobs, and audit trails exist.
+
+## NAIA on Slack
+
+Team members can talk to NAIA from Slack (DM to the bot or `@NAIA` mention) without opening the site. The flow keeps the exact same human-approval contract as the web cockpit:
+
+1. `POST /api/slack/events` receives `message.im` and `app_mention` events. Every request is verified against `SLACK_SIGNING_SECRET` (Slack `v0` HMAC SHA-256 signature plus a 5-minute timestamp tolerance against replays); retries (`X-Slack-Retry-Num`) and bot messages are acknowledged without reprocessing. The route acks Slack in under 3 seconds and schedules the real work with Next `after()`.
+2. The Slack user is mapped to a Qarizmi OS account by email: `users.info` (bot token, `users:read.email` scope) gives the Slack profile email, and `resolveBridgeUser` in `src/platform/naia/bridge.ts` matches it against `profiles` + `organization_memberships` through the server-only service-role Supabase client (`createServiceRoleSupabaseClient`). Unknown emails get a "compte non reconnu" reply and nothing else runs.
+3. `planBridgeCommand` reuses the pure orchestrator (`orchestrateNaiaCommand`) with the real org-scoped CRM leads and signs every proposed action with the same HMAC approval tokens as the web route (`src/platform/naia/action-tokens.ts`, `NAIA_ACTION_APPROVAL_SECRET`, 5-minute TTL). NAIA answers in Slack with its analysis plus one "✅ Valider" (primary) / "❌ Ignorer" button pair per action (Block Kit).
+4. Button values carry the serialized `{action, command, approvalToken}` draft inline when it fits Slack's 2000-character value limit (stateless, serverless-safe); oversized drafts fall back to a module-level map with a 10-minute TTL and an opaque reference. Tampering is pointless either way because execution re-verifies the HMAC token against the action and command.
+5. `POST /api/slack/interactions` verifies the same signature, re-resolves the clicking user by email on every click (an unresolved account never executes), checks the role with `hasPermission` for CRM writes, then executes through `executeBridgeAction` and rewrites the original message via `response_url` with the result (calendar/Gmail summaries, CRM confirmations, or the error).
+
+Executable actions from Slack are limited to `google.calendar.listEvents`, `google.gmail.listMessages` (per-user Google connections, resolved through an injected service-role context instead of cookies), `crm.updateLeadStatus`, and `crm.createLead`. Other drafted kinds (Maya pitch, dev spec, follow-up drafts, Slack sends) answer with a pointer to the web cockpit. The bridge never sends external communications by itself.
 
 The next durable orchestration step is a universal approval queue backed by `approval_requests`, immutable audit events, and capability packs for Gmail, Slack, Calendar, Drive, and CRM drafts. Provider sends, document sharing, invoices, offers, contracts, migrations, and PR creation should stay behind explicit approval.
 
@@ -90,7 +102,7 @@ The next durable orchestration step is a universal approval queue backed by `app
 
 ## Intentionally Not Built
 
-- Slack, WhatsApp, Microsoft 365, and Gmail API OAuth provider flows.
+- Slack per-user OAuth, WhatsApp, Microsoft 365, and Gmail API OAuth provider flows. The Slack bridge uses a workspace bot token plus signing secret, not per-user OAuth.
 - Rich profile and organization membership synchronization after login.
 - Unbounded autonomous code modification. A future developer agent should create a spec, branch, and review request before implementation, not mutate production code without a human gate.
-- Direct Slack/Gmail/Drive ingestion in NAIA. The integration cards are readiness indicators until provider-specific OAuth, scopes, sync jobs, and audit trails are implemented.
+- Direct Gmail/Drive ingestion in NAIA and Slack channel history ingestion. Beyond the command-driven Slack bridge, the integration cards are readiness indicators until provider-specific OAuth, scopes, sync jobs, and audit trails are implemented.

@@ -1,0 +1,273 @@
+import { createHmac } from "node:crypto";
+
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  afterTasks: [] as Promise<unknown>[],
+  fetchSlackUserProfile: vi.fn(),
+  planBridgeCommand: vi.fn(),
+  postSlackMessage: vi.fn(),
+  resolveBridgeUser: vi.fn(),
+}));
+
+vi.mock("next/server", () => ({
+  after: (task: () => Promise<void>) => {
+    mocks.afterTasks.push(Promise.resolve().then(task));
+  },
+}));
+
+vi.mock("@/platform/naia/bridge", () => ({
+  planBridgeCommand: mocks.planBridgeCommand,
+  resolveBridgeUser: mocks.resolveBridgeUser,
+}));
+
+vi.mock("@/platform/integrations/slack", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("@/platform/integrations/slack")>();
+
+  return {
+    ...actual,
+    fetchSlackUserProfile: mocks.fetchSlackUserProfile,
+    postSlackMessage: mocks.postSlackMessage,
+  };
+});
+
+import { decodeSlackApprovalValue } from "@/platform/naia/slack-approval";
+
+import { POST } from "./route";
+
+const SIGNING_SECRET = "test-signing-secret";
+
+function slackRequest(
+  body: string,
+  {
+    retryNum,
+    timestamp = String(Math.floor(Date.now() / 1000)),
+    signature,
+  }: { retryNum?: string; signature?: string; timestamp?: string } = {},
+) {
+  return new Request("http://localhost/api/slack/events", {
+    body,
+    headers: {
+      "content-type": "application/json",
+      ...(retryNum ? { "x-slack-retry-num": retryNum } : {}),
+      "x-slack-request-timestamp": timestamp,
+      "x-slack-signature":
+        signature ??
+        `v0=${createHmac("sha256", SIGNING_SECRET)
+          .update(`v0:${timestamp}:${body}`)
+          .digest("hex")}`,
+    },
+    method: "POST",
+  });
+}
+
+const bridgeUser = {
+  email: "ali@qarizmi.com",
+  fullName: "Ali",
+  organizationId: "org-1",
+  profileId: "profile-ali",
+  role: "owner",
+};
+
+const gmailAction = {
+  agentId: "integrations",
+  approvalRequired: true,
+  description: "Lina lira les derniers messages Gmail autorises.",
+  id: "gmail-list-abc",
+  kind: "google.gmail.listMessages",
+  label: "Lire Gmail",
+  payload: { maxResults: 10, unreadOnly: true },
+  risk: "low",
+};
+
+function messageImEvent(text: string) {
+  return JSON.stringify({
+    event: {
+      channel: "D0123456789",
+      channel_type: "im",
+      text,
+      ts: "1234.5678",
+      type: "message",
+      user: "U0123456789",
+    },
+    type: "event_callback",
+  });
+}
+
+async function flushAfterTasks() {
+  await Promise.all(mocks.afterTasks);
+}
+
+describe("Slack events route", () => {
+  beforeEach(() => {
+    vi.stubEnv("SLACK_SIGNING_SECRET", SIGNING_SECRET);
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    mocks.afterTasks = [];
+    mocks.fetchSlackUserProfile.mockResolvedValue({
+      displayName: "Ali",
+      email: "ali@qarizmi.com",
+      isBot: false,
+    });
+    mocks.resolveBridgeUser.mockResolvedValue(bridgeUser);
+    mocks.planBridgeCommand.mockResolvedValue({
+      actions: [{ ...gmailAction, approvalToken: "payload.signature" }],
+      agentName: "Lina",
+      command: "lis mes emails gmail non lus",
+      response: "Lina prend le relais integrations.",
+    });
+    mocks.postSlackMessage.mockResolvedValue({ channel: "D0123456789" });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.clearAllMocks();
+  });
+
+  it("answers the url_verification challenge", async () => {
+    const body = JSON.stringify({
+      challenge: "challenge-token-123",
+      type: "url_verification",
+    });
+    const response = await POST(slackRequest(body));
+
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ challenge: "challenge-token-123" });
+  });
+
+  it("rejects an invalid signature", async () => {
+    const body = messageImEvent("lis mes emails gmail non lus");
+    const response = await POST(
+      slackRequest(body, { signature: "v0=deadbeef" }),
+    );
+
+    await flushAfterTasks();
+
+    expect(response.status).toBe(401);
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.postSlackMessage).not.toHaveBeenCalled();
+  });
+
+  it("rejects a stale timestamp", async () => {
+    const body = messageImEvent("lis mes emails gmail non lus");
+    const staleTimestamp = String(Math.floor(Date.now() / 1000) - 6 * 60);
+    const response = await POST(
+      slackRequest(body, { timestamp: staleTimestamp }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+  });
+
+  it("acknowledges Slack retries without reprocessing", async () => {
+    const body = messageImEvent("lis mes emails gmail non lus");
+    const response = await POST(slackRequest(body, { retryNum: "1" }));
+
+    await flushAfterTasks();
+
+    expect(response.status).toBe(200);
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+  });
+
+  it("ignores bot messages", async () => {
+    const body = JSON.stringify({
+      event: {
+        bot_id: "B0123",
+        channel: "D0123456789",
+        channel_type: "im",
+        text: "echo",
+        type: "message",
+        user: "U0123456789",
+      },
+      type: "event_callback",
+    });
+    const response = await POST(slackRequest(body));
+
+    await flushAfterTasks();
+
+    expect(response.status).toBe(200);
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+  });
+
+  it("plans a DM command and posts approval buttons", async () => {
+    const body = messageImEvent("lis mes emails gmail non lus");
+    const response = await POST(slackRequest(body));
+
+    expect(response.status).toBe(200);
+
+    await flushAfterTasks();
+
+    expect(mocks.fetchSlackUserProfile).toHaveBeenCalledWith("U0123456789");
+    expect(mocks.resolveBridgeUser).toHaveBeenCalledWith("ali@qarizmi.com");
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "lis mes emails gmail non lus",
+    );
+
+    const message = mocks.postSlackMessage.mock.calls[0][0];
+    expect(message.channel).toBe("D0123456789");
+    expect(message.text).toBe("Lina prend le relais integrations.");
+
+    const approveButton = message.blocks
+      .filter((block: { type: string }) => block.type === "actions")
+      .flatMap(
+        (block: { elements: Array<{ action_id: string }> }) => block.elements,
+      )
+      .find((element: { action_id: string }) =>
+        element.action_id.startsWith("naia_approve:"),
+      );
+
+    expect(approveButton).toBeDefined();
+    expect(approveButton.style).toBe("primary");
+
+    const draft = decodeSlackApprovalValue(approveButton.value);
+    expect(draft).not.toBeNull();
+    expect(draft?.action.id).toBe("gmail-list-abc");
+    expect(draft?.approvalToken).toBe("payload.signature");
+    expect(draft?.command).toBe("lis mes emails gmail non lus");
+  });
+
+  it("strips the bot mention before planning an app_mention command", async () => {
+    const body = JSON.stringify({
+      event: {
+        channel: "C0123456789",
+        text: "<@U0BOT> passe le lead HPS en meeting booked",
+        ts: "1234.5678",
+        type: "app_mention",
+        user: "U0123456789",
+      },
+      type: "event_callback",
+    });
+    const response = await POST(slackRequest(body));
+
+    expect(response.status).toBe(200);
+
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "passe le lead HPS en meeting booked",
+    );
+    expect(mocks.postSlackMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "C0123456789",
+        threadTs: "1234.5678",
+      }),
+    );
+  });
+
+  it("answers unknown accounts without planning anything", async () => {
+    mocks.resolveBridgeUser.mockResolvedValue(null);
+
+    const body = messageImEvent("lis mes emails gmail non lus");
+    await POST(slackRequest(body));
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.postSlackMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("Compte non reconnu"),
+      }),
+    );
+  });
+});
