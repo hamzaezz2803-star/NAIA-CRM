@@ -49,6 +49,7 @@ import {
 import {
   createVoiceSilenceDetector,
   playElevenLabsVoice,
+  primeVoicePlayback,
   type VoicePlaybackHandle,
   VOICE_RECORDING_MAX_MS,
 } from "./voice-client";
@@ -291,6 +292,7 @@ export function NaiaExperience({
   };
 
   const startVoiceControl = () => {
+    primeVoicePlayback();
     if (canRecordAudio && !forceBrowserSpeech) {
       void startMediaRecorderControl();
       return;
@@ -574,6 +576,7 @@ export function NaiaExperience({
   };
 
   const speakCurrentAnswer = async () => {
+    primeVoicePlayback();
     speakText(assistantOutput);
   };
 

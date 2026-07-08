@@ -38,6 +38,7 @@ import {
   buildNaiaVoiceUrl,
   createVoiceSilenceDetector,
   playElevenLabsVoice,
+  primeVoicePlayback,
   VOICE_RECORDING_MAX_MS,
   type VoicePlaybackHandle,
 } from "./voice-client";
@@ -496,6 +497,7 @@ export function NaiaCommandCenter() {
   };
 
   const startVoiceControl = () => {
+    primeVoicePlayback();
     if (canRecordAudio && !forceBrowserSpeech) {
       void startMediaRecorderControl();
       return;
@@ -768,6 +770,7 @@ export function NaiaCommandCenter() {
   };
 
   const speakCurrentAnswer = async () => {
+    primeVoicePlayback();
     speakText(result?.response ?? "NAIA est en ligne.");
   };
 

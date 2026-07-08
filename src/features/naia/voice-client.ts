@@ -4,6 +4,9 @@ export const VOICE_MIN_RECORDING_MS = 700;
 export const VOICE_SPEECH_START_THRESHOLD = 0.018;
 export const VOICE_SILENCE_THRESHOLD = 0.012;
 export const VOICE_TEXT_MAX_LENGTH = 1200;
+// Shared speech speed for both ElevenLabs playback (audio.playbackRate) and
+// the browser speechSynthesis fallback (utterance.rate).
+export const VOICE_PLAYBACK_RATE = 1.25;
 
 type VoiceSilenceDetectorOptions = {
   onSilence: () => void;
@@ -18,8 +21,16 @@ type VoiceSilenceDetector = {
 declare global {
   interface Window {
     __naiaCurrentAudio?: VoicePlaybackHandle;
+    __naiaPrimedAudio?: HTMLAudioElement;
+    __naiaVoicePrimed?: boolean;
   }
 }
+
+// Tiny silent WAV (16-bit mono PCM, 8 samples). Playing it inside the user
+// gesture "blesses" the reusable audio element so WebKit/Safari later allows
+// programmatic playback once the ElevenLabs fetch resolves.
+const SILENT_AUDIO_DATA_URL =
+  "data:audio/wav;base64,UklGRjQAAABXQVZFZm10IBAAAAABAAEAQB8AAIA+AAACABAAZGF0YRAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 type BrowserVoicePayload = {
   code?: string;
@@ -118,6 +129,52 @@ function getRmsLevel(samples: Uint8Array) {
   return Math.sqrt(sum / samples.length);
 }
 
+/**
+ * Must be called synchronously from a user gesture (click on Parler, Lancer,
+ * Audio...). It creates the session-wide audio element and plays a short
+ * silent clip so Safari/WebKit unlocks it for the asynchronous ElevenLabs
+ * playback that happens after transcription + orchestration + TTS fetches,
+ * long after the gesture's transient activation has expired.
+ */
+export function primeVoicePlayback() {
+  if (typeof window === "undefined" || typeof Audio === "undefined") return;
+  if (window.__naiaVoicePrimed) return;
+
+  const audio = window.__naiaPrimedAudio ?? new Audio();
+  window.__naiaPrimedAudio = audio;
+
+  // Never interrupt an ongoing NAIA playback with the silent unlock clip.
+  if (!audio.paused) return;
+
+  window.__naiaVoicePrimed = true;
+  audio.onended = null;
+  audio.onerror = null;
+  audio.muted = true;
+  audio.src = SILENT_AUDIO_DATA_URL;
+
+  try {
+    const playAttempt = audio.play();
+    void playAttempt
+      ?.then(() => {
+        if (audio.src === SILENT_AUDIO_DATA_URL) {
+          audio.pause();
+        }
+      })
+      .catch(() => {
+        window.__naiaVoicePrimed = false;
+      });
+  } catch {
+    window.__naiaVoicePrimed = false;
+  }
+}
+
+function getReusableVoiceAudioElement() {
+  const audio = window.__naiaPrimedAudio ?? new Audio();
+  // Keep the element session-wide so any later user gesture unlocks it.
+  window.__naiaPrimedAudio = audio;
+  return audio;
+}
+
 export function buildNaiaVoiceUrl(text: string, voiceId?: string) {
   const params = new URLSearchParams({
     text: text.replace(/\s+/g, " ").slice(0, VOICE_TEXT_MAX_LENGTH),
@@ -188,7 +245,7 @@ export function playElevenLabsVoice({
   };
 
   const fallbackToBrowserVoice = (message: string) => {
-    if (isCancelled) return;
+    if (isCancelled || hasEnded) return;
 
     if (!("speechSynthesis" in window)) {
       onBlocked(message);
@@ -200,7 +257,7 @@ export function playElevenLabsVoice({
     window.speechSynthesis.cancel();
     const utterance = new SpeechSynthesisUtterance(text);
     utterance.lang = "fr-FR";
-    utterance.rate = 0.98;
+    utterance.rate = VOICE_PLAYBACK_RATE;
     utterance.pitch = 1;
     utterance.volume = 1;
     utterance.onstart = start;
@@ -218,8 +275,12 @@ export function playElevenLabsVoice({
     if (isCancelled) return;
 
     objectUrl = URL.createObjectURL(blob);
-    audio = new Audio(objectUrl);
+    audio = getReusableVoiceAudioElement();
+    audio.muted = false;
     audio.preload = "auto";
+    audio.src = objectUrl;
+    audio.defaultPlaybackRate = VOICE_PLAYBACK_RATE;
+    audio.playbackRate = VOICE_PLAYBACK_RATE;
     audio.onended = finish;
     audio.onerror = () => {
       fallbackToBrowserVoice(
