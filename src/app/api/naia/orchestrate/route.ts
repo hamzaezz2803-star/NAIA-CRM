@@ -63,23 +63,18 @@ export async function POST(request: Request) {
   }
 
   const command = parseCommand(payload.command);
-  const crmLeads = await fetchLeadsAction();
-  const localResult = orchestrateNaiaCommand({ command, crmLeads });
 
   if (payload.execute) {
-    const hydratedLocalResult = await hydrateCrmLeadDrafts({
-      command,
-      result: localResult,
-    });
-
     return executeAction({
       actionId: payload.actionId,
       approvalToken: payload.approvalToken,
       command,
       leadInput: payload.leadInput,
-      serverActions: hydratedLocalResult.actions,
     });
   }
+
+  const crmLeads = await fetchLeadsAction();
+  const localResult = orchestrateNaiaCommand({ command, crmLeads });
 
   const { mode, result } = await enhanceWithGroqOrchestrator({
     command,
@@ -251,7 +246,6 @@ async function executeAction({
   approvalToken,
   command,
   leadInput,
-  serverActions,
 }: {
   actionId?: string;
   approvalToken?: string;
@@ -262,18 +256,18 @@ async function executeAction({
       createGoogleCalendar?: boolean;
     }
   >;
-  serverActions: NaiaActionDraft[];
 }) {
   if (!actionId || !approvalToken) {
     return Response.json({ error: "Missing approval token" }, { status: 400 });
   }
 
-  const action = serverActions.find((candidate) => candidate.id === actionId);
+  // The HMAC-signed approval token is the source of truth: it carries the
+  // exact action (kind + payload) the user approved. Executing from the token
+  // keeps validation idempotent even when the CRM state, the clock, or the AI
+  // extraction changed between plan and execute, so we never re-derive the
+  // action list server-side here.
+  const action = verifyApprovalToken(approvalToken, actionId, command);
   if (!action) {
-    return Response.json({ error: "Action not found" }, { status: 404 });
-  }
-
-  if (!verifyApprovalToken(approvalToken, action, command)) {
     return Response.json(
       { error: "Invalid or expired approval token" },
       { status: 403 },
@@ -796,12 +790,12 @@ function parseCommand(command: unknown) {
 }
 
 function signAction(action: NaiaActionDraft, command: string): SignedAction {
-  const expiresAt = Date.now() + APPROVAL_TTL_MS;
+  // The token embeds the full approved action so the execute phase can run it
+  // as-is after signature verification, without re-deriving the action list.
   const payload = {
-    actionHash: actionHash(action),
-    actionId: action.id,
+    action,
     commandHash: hashValue(command),
-    expiresAt,
+    expiresAt: Date.now() + APPROVAL_TTL_MS,
   };
   const encodedPayload = Buffer.from(JSON.stringify(payload)).toString(
     "base64url",
@@ -816,49 +810,44 @@ function signAction(action: NaiaActionDraft, command: string): SignedAction {
 
 function verifyApprovalToken(
   approvalToken: string,
-  action: NaiaActionDraft,
+  actionId: string,
   command: string,
-) {
+): NaiaActionDraft | null {
   const [encodedPayload, signature] = approvalToken.split(".");
-  if (!encodedPayload || !signature) return false;
+  if (!encodedPayload || !signature) return null;
 
   const expected = hmac(encodedPayload);
-  if (!safeEqual(signature, expected)) return false;
+  if (!safeEqual(signature, expected)) return null;
 
   try {
     const payload = JSON.parse(
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
     ) as {
-      actionHash?: string;
-      actionId?: string;
+      action?: NaiaActionDraft;
       commandHash?: string;
       expiresAt?: number;
     };
+    const action = payload.action;
 
-    return (
-      payload.actionId === action.id &&
-      payload.commandHash === hashValue(command) &&
-      payload.actionHash === actionHash(action) &&
-      typeof payload.expiresAt === "number" &&
-      payload.expiresAt >= Date.now()
-    );
+    if (
+      !action ||
+      typeof action !== "object" ||
+      typeof action.id !== "string" ||
+      typeof action.kind !== "string" ||
+      typeof action.payload !== "object" ||
+      action.payload === null ||
+      action.id !== actionId ||
+      payload.commandHash !== hashValue(command) ||
+      typeof payload.expiresAt !== "number" ||
+      payload.expiresAt < Date.now()
+    ) {
+      return null;
+    }
+
+    return action;
   } catch {
-    return false;
+    return null;
   }
-}
-
-function actionHash(action: NaiaActionDraft) {
-  if (action.kind === "crm.createLead") {
-    return hashValue(
-      JSON.stringify({
-        agentId: action.agentId,
-        id: action.id,
-        kind: action.kind,
-      }),
-    );
-  }
-
-  return hashValue(JSON.stringify(action));
 }
 
 function hashValue(value: string) {
