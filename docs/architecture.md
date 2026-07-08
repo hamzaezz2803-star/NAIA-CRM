@@ -79,7 +79,7 @@ Maya Pitch Generator V1 lives in `src/features/maya` and is cofounder-only by de
 
 The draft generator starts from the latest `Qarizmi_Introduction_Service as a software_Generic.pptx`, removes credential slides Maya did not select, appends editable preliminary diagnostic/use-case slides from CRM context, and writes `maya-generation-manifest.json` next to the PPTX. When `MAYA_OPENAI_API_KEY` is configured, only Maya's cofounder-gated draft action calls OpenAI to enrich the credential selection, diagnostic outline, follow-up questions, and use-case bullets before PPTX generation; otherwise it falls back to deterministic planning. Nabil's final `*_vF.pptx` files remain the learning source: Maya compares draft vs final text to record slide additions/removals/copy changes without storing full raw deck contents.
 
-Integration readiness is centralized in `src/platform/integrations/readiness.ts`. Google Drive, Calendar event creation, and Calendar FreeBusy checks have OAuth and CRM actions today; Slack now has an inbound NAIA bridge (see below); Gmail API sending, WhatsApp, and Microsoft 365 must show as non-implemented or guarded until their runtime routes, scopes, tokens, sync jobs, and audit trails exist.
+Integration readiness is centralized in `src/platform/integrations/readiness.ts`. Google Drive, Calendar event creation, and Calendar FreeBusy checks have OAuth and CRM actions today; Slack and WhatsApp now have inbound NAIA bridges (see below); Gmail API sending and Microsoft 365 must show as non-implemented or guarded until their runtime routes, scopes, tokens, sync jobs, and audit trails exist.
 
 ## NAIA on Slack
 
@@ -95,6 +95,18 @@ Executable actions from Slack are limited to `google.calendar.listEvents`, `goog
 
 The next durable orchestration step is a universal approval queue backed by `approval_requests`, immutable audit events, and capability packs for Gmail, Slack, Calendar, Drive, and CRM drafts. Provider sends, document sharing, invoices, offers, contracts, migrations, and PR creation should stay behind explicit approval.
 
+## NAIA on WhatsApp
+
+Team members can also talk to NAIA over WhatsApp through the Meta WhatsApp Business Cloud API. The flow mirrors the Slack bridge and keeps the same human-approval contract:
+
+1. `GET /api/whatsapp/webhook` answers Meta's verification handshake: `hub.mode=subscribe` plus a matching `hub.verify_token` (`WHATSAPP_VERIFY_TOKEN`) echoes `hub.challenge` as plain text; anything else gets 403. `POST` deliveries are verified against `WHATSAPP_APP_SECRET` with the `X-Hub-Signature-256` header (timing-safe HMAC SHA-256 of the raw body, read as text before any JSON.parse); invalid signatures get 401. The route acks fast and schedules the real work with Next `after()`. Delivery/read receipts (`value.statuses`) are acked without processing, and Meta's at-least-once redeliveries are deduplicated by `wamid` through the service-role-only `naia_processed_messages` table (migration `20260708170000`, 7-day retention, fail-open on transient errors so a command is never silently dropped). The path is listed in the middleware public prefixes because Meta calls it without a Supabase session; the route authenticates every request itself.
+2. Identity is the admin-controlled `WHATSAPP_USER_MAP` env map (`"212661234567:ali@qarizmi.com,33612345678:nabil@qarizmi.com"`, international digits like the Cloud API `from` field) followed by `resolveBridgeUser` (`src/platform/naia/bridge.ts`) against `profiles` + `organization_memberships` via the service-role client. Unknown numbers or unmatched emails get a refusal reply and nothing else runs.
+3. Text messages go through `planBridgeCommand` (same orchestrator and HMAC approval tokens as web and Slack) with the full 2000-character command budget — WhatsApp drafts live in the database, so Slack's 500-character button-value constraint does not apply. NAIA replies with a text message plus one interactive reply-button message per drafted action ("✅ Valider" / "❌ Ignorer"); each action is delivered independently so one failed send never swallows the remaining actions.
+4. WhatsApp reply-button ids are capped at 256 characters, far too small for the inline `{actionId, approvalToken, command}` value that Slack buttons carry. Drafts `{actionId, actionLabel, approvalToken, command}` are therefore parked in the service-role-only `naia_pending_actions` table (migration `20260708160000_naia_pending_actions.sql`: RLS enabled with no policies, grants revoked, `expires_at` TTL of 10 minutes) and the button id only carries `naia_approve:<uuid>` / `naia_dismiss:<uuid>`, durable across serverless instances and deploys.
+5. A "Valider" tap claims the draft with a single-use delete filtered on the row id, the tapping profile, and a live expiry (expired rows are also purged on every read) — that is the UX layer: a tapped button stops working immediately. The security layer is `executeBridgeAction`, which re-verifies the 5-minute HMAC approval token, decodes the approved action from it, claims the token as single-use in `naia_consumed_action_tokens` before any side effect, and checks `hasPermission` for CRM writes; the formatted result or error is sent back as text. "Ignorer" deletes the draft and confirms the abandon. The executable action kinds are the same as Slack; everything else points back to the web cockpit.
+
+Note: Meta only lets the business reply for 24 hours after the user's last message (customer-service window); NAIA is always reactive here, so replies stay inside the window opened by the incoming command.
+
 ## Current Trade-offs
 
 - Auth user creation can happen through Google sign-in (with trigger-based provisioning) or remain manual in the Supabase dashboard; role upgrades stay manual.
@@ -104,7 +116,7 @@ The next durable orchestration step is a universal approval queue backed by `app
 
 ## Intentionally Not Built
 
-- Slack per-user OAuth, WhatsApp, Microsoft 365, and Gmail API OAuth provider flows. The Slack bridge uses a workspace bot token plus signing secret, not per-user OAuth.
+- Slack and WhatsApp per-user OAuth, Microsoft 365, and Gmail API OAuth provider flows. The Slack bridge uses a workspace bot token plus signing secret; the WhatsApp bridge uses one Cloud API token plus the `WHATSAPP_USER_MAP` phone→email env map, not per-user OAuth.
 - Rich profile and organization membership synchronization after login.
 - Unbounded autonomous code modification. A future developer agent should create a spec, branch, and review request before implementation, not mutate production code without a human gate.
-- Direct Gmail/Drive ingestion in NAIA and Slack channel history ingestion. Beyond the command-driven Slack bridge, the integration cards are readiness indicators until provider-specific OAuth, scopes, sync jobs, and audit trails are implemented.
+- Direct Gmail/Drive ingestion in NAIA and Slack channel history ingestion. Beyond the command-driven Slack and WhatsApp bridges, the integration cards are readiness indicators until provider-specific OAuth, scopes, sync jobs, and audit trails are implemented.
