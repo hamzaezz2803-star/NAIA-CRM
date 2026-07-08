@@ -172,6 +172,8 @@ describe("NAIA orchestrate route", () => {
     expect(body.response).toContain("modele de langage");
     expect(systemPrompt).toContain("question generale");
     expect(systemPrompt).toContain("sans pretendre avoir execute");
+    expect(systemPrompt).toContain("realGoogleCalendar");
+    expect(systemPrompt).toContain("priment");
     expect(userPrompt.operatingContext.cashFlow).toContain("Oct.");
     expect(userPrompt.operatingContext.pipeline).toContain("Atlas Process");
     expect(userPrompt.operatingContext.projects).toContain("Sahara Logistics");
@@ -179,6 +181,55 @@ describe("NAIA orchestrate route", () => {
       "Full-stack Next.js",
     );
     expect(userPrompt.operatingContext.followUps).toContain("Medina Health");
+    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith({
+      daysAhead: 7,
+      maxResults: 15,
+    });
+    expect(userPrompt.realGoogleCalendar).toContain(
+      "Agenda Google réel de l'utilisateur",
+    );
+    expect(userPrompt.realGoogleCalendar).toContain("Point client");
+  });
+
+  it("keeps Groq orchestration working when the user has no Google connection", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    mocks.listGoogleCalendarEvents.mockRejectedValue(
+      new Error("Google Workspace is not connected for this user."),
+    );
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "naia",
+                confidence: 0.8,
+                response: "Reponse generale sans agenda.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          command: "c'est quoi un LLM ?",
+        }),
+        method: "POST",
+      }),
+    );
+    const body = await response.json();
+    const userPrompt = JSON.parse(
+      JSON.parse(fetchMock.mock.calls[0][1].body).messages[1].content,
+    );
+
+    expect(body.mode).toBe("groq-orchestrated");
+    expect(body.agent.id).toBe("naia");
+    expect(userPrompt.realGoogleCalendar).toBeUndefined();
   });
 
   it("returns accented French wording after validating a CRM lead", async () => {

@@ -24,14 +24,19 @@ import {
   syncLeadToGoogleCalendarAction,
 } from "@/features/crm/actions";
 import type { CrmLeadSummary } from "@/features/crm/contracts";
+import type { GoogleCalendarEventSummary } from "@/platform/integrations/google-workspace";
 
 type MeetingsDashboardProps = {
   initialLeads: CrmLeadSummary[];
   userName: string;
   googleConnected: boolean;
+  googleEvents?: GoogleCalendarEventSummary[];
 };
 
-export function MeetingsDashboard({ initialLeads }: MeetingsDashboardProps) {
+export function MeetingsDashboard({
+  initialLeads,
+  googleEvents,
+}: MeetingsDashboardProps) {
   const [leads, setLeads] = useState<CrmLeadSummary[]>(initialLeads);
   const [activeTab, setActiveTab] = useState<"list" | "calendar">("list");
   const [filterType, setFilterType] = useState<"upcoming" | "past">("upcoming");
@@ -139,6 +144,38 @@ export function MeetingsDashboard({ initialLeads }: MeetingsDashboardProps) {
       ).length,
     };
   }, [meetings, leads]);
+
+  // Google events already synced from a CRM lead carry their event ID/link
+  // as `[Google Calendar Event ID: ...]` / `[Google Calendar Event Link: ...]`
+  // markers in the lead notes: hide them to avoid showing the same meeting
+  // twice. `undefined` means the user has no Google connection (panel hidden).
+  const agendaEvents = useMemo(() => {
+    if (!googleEvents) return undefined;
+
+    const syncedEventIds = new Set<string>();
+    const syncedEventLinks = new Set<string>();
+
+    for (const lead of leads) {
+      if (!lead.notes) continue;
+      const idMatch = lead.notes.match(
+        /\[Google Calendar Event ID:\s*([^\]]+)\]/,
+      );
+      if (idMatch) syncedEventIds.add(idMatch[1].trim());
+      const linkMatch = lead.notes.match(
+        /\[Google Calendar Event Link:\s*([^\]]+)\]/,
+      );
+      if (linkMatch) syncedEventLinks.add(linkMatch[1].trim());
+    }
+
+    return googleEvents.filter((event) => {
+      // Recurring instances expose ids like `<eventId>_20260712T090000Z`.
+      const baseEventId = event.id.split("_")[0];
+      if (syncedEventIds.has(event.id) || syncedEventIds.has(baseEventId)) {
+        return false;
+      }
+      return !event.htmlLink || !syncedEventLinks.has(event.htmlLink);
+    });
+  }, [googleEvents, leads]);
 
   // Calculate week days for Calendar Tab
   const weekDays = useMemo(() => {
@@ -324,6 +361,29 @@ export function MeetingsDashboard({ initialLeads }: MeetingsDashboardProps) {
   const formatMeetingDate = (dateStr?: string) => {
     if (!dateStr) return "Non planifié";
     const date = new Date(dateStr);
+    return date.toLocaleDateString("fr-FR", {
+      weekday: "long",
+      day: "numeric",
+      month: "long",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  };
+
+  // Google events use dateTime for timed events and date for all-day events.
+  const formatGoogleEventDate = (start?: string) => {
+    if (!start) return "Date non précisée";
+    const date = new Date(start);
+    if (Number.isNaN(date.getTime())) return "Date non précisée";
+
+    if (!start.includes("T")) {
+      return `${date.toLocaleDateString("fr-FR", {
+        weekday: "long",
+        day: "numeric",
+        month: "long",
+      })} · Journée entière`;
+    }
+
     return date.toLocaleDateString("fr-FR", {
       weekday: "long",
       day: "numeric",
@@ -658,6 +718,64 @@ export function MeetingsDashboard({ initialLeads }: MeetingsDashboardProps) {
 
         {/* Right Column: Sidebar */}
         <div className="space-y-4">
+          {/* Mon agenda Google Panel (real user events, deduplicated from CRM) */}
+          {agendaEvents !== undefined && (
+            <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+              <div className="flex items-center justify-between border-b border-stone-100 pb-3 dark:border-stone-800">
+                <div className="flex items-center gap-2">
+                  <CalendarDays className="h-4 w-4 text-blue-600 dark:text-blue-400" />
+                  <h3 className="text-sm font-bold text-stone-950 dark:text-stone-50">
+                    Mon agenda Google
+                  </h3>
+                </div>
+                <span className="rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-bold text-blue-700 dark:bg-blue-950/40 dark:text-blue-400">
+                  {agendaEvents.length}
+                </span>
+              </div>
+
+              <div className="mt-4 max-h-[320px] space-y-3 overflow-y-auto pr-1 scrollbar-thin">
+                {agendaEvents.length === 0 ? (
+                  <p className="py-6 text-center text-xs text-stone-500 dark:text-stone-400">
+                    Aucun événement Google Agenda sur les 14 prochains jours.
+                  </p>
+                ) : (
+                  agendaEvents.map((event) => (
+                    <div
+                      key={event.id}
+                      className="rounded-lg border border-stone-150 bg-stone-50/30 p-3 transition hover:border-stone-300 dark:border-stone-850 dark:bg-stone-900/10 dark:hover:border-stone-750"
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <h4 className="text-xs font-semibold text-stone-900 dark:text-stone-100 line-clamp-2">
+                          {event.title}
+                        </h4>
+                        <span className="inline-flex shrink-0 items-center rounded border border-blue-100 bg-blue-50/50 px-1.5 py-0.5 text-[10px] font-semibold text-blue-700 dark:border-blue-900/30 dark:bg-blue-950/20 dark:text-blue-400">
+                          Google Agenda
+                        </span>
+                      </div>
+                      <div className="mt-2 flex items-center gap-1.5 text-[11px] text-stone-500 dark:text-stone-400">
+                        <Clock className="h-3.5 w-3.5 shrink-0 text-stone-400" />
+                        <span>{formatGoogleEventDate(event.start)}</span>
+                      </div>
+                      {event.htmlLink && (
+                        <div className="mt-3 flex justify-end border-t border-stone-100/50 pt-2 dark:border-stone-800/50">
+                          <a
+                            href={event.htmlLink}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="inline-flex items-center gap-1 rounded border border-stone-200 bg-white px-2 py-1 text-[10px] font-bold text-stone-700 transition hover:bg-stone-50 dark:border-stone-850 dark:bg-stone-900 dark:text-stone-300 dark:hover:bg-stone-800"
+                          >
+                            <ExternalLink className="h-3 w-3" />
+                            Ouvrir dans Agenda
+                          </a>
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Réunions Terminées Panel */}
           <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950 flex flex-col max-h-[700px]">
             <div className="flex items-center justify-between border-b border-stone-100 pb-3 dark:border-stone-800">
