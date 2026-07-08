@@ -18,6 +18,11 @@ const DEFAULT_ELEVENLABS_VOICE_ID = "a5n9pJUnAhX4fn7lx3uo";
 const DEFAULT_FREE_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
 const MAX_VOICE_TEXT_LENGTH = 1200;
 
+// Voices ElevenLabs already refused for plan/availability reasons in this
+// server instance. Short-circuiting them avoids a doomed upstream call (and
+// the resulting double latency) on every single voice response.
+const knownRestrictedVoiceIds = new Set<string>();
+
 export async function GET(request: Request) {
   const url = new URL(request.url);
   return createVoiceResponse({
@@ -61,6 +66,10 @@ async function createVoiceResponse({
     sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID) ??
     DEFAULT_ELEVENLABS_VOICE_ID;
   const voiceId = requestedCleanVoiceId ?? configuredVoiceId;
+  const effectiveVoiceId =
+    knownRestrictedVoiceIds.has(voiceId) && fallbackVoiceId !== voiceId
+      ? fallbackVoiceId
+      : voiceId;
 
   if (!text) {
     return browserVoiceFallback("missing-text", { status: 400 });
@@ -76,15 +85,16 @@ async function createVoiceResponse({
     const elevenResponse = await requestElevenLabsSpeech({
       apiKey,
       text: addVoiceWarmupPause(text),
-      voiceId,
+      voiceId: effectiveVoiceId,
     });
 
     if (!elevenResponse.ok) {
       const error = await readElevenLabsError(elevenResponse);
       if (
-        fallbackVoiceId !== voiceId &&
+        fallbackVoiceId !== effectiveVoiceId &&
         shouldTryFallbackVoice(error, elevenResponse.status)
       ) {
+        knownRestrictedVoiceIds.add(effectiveVoiceId);
         const fallbackResponse = await requestElevenLabsSpeech({
           apiKey,
           text: addVoiceWarmupPause(text),
@@ -110,7 +120,7 @@ async function createVoiceResponse({
 
     return createAudioResponse({
       response: elevenResponse,
-      voiceId,
+      voiceId: effectiveVoiceId,
     });
   } catch {
     return browserVoiceFallback("elevenlabs-network-error", { status: 502 });

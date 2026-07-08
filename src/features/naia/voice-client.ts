@@ -215,13 +215,17 @@ export function playElevenLabsVoice({
   const handle: VoicePlaybackHandle = {
     pause: () => {
       if (hasEnded) return;
+
+      hasEnded = true;
       isCancelled = true;
       audio?.pause();
       if ("speechSynthesis" in window) {
         window.speechSynthesis.cancel();
       }
       cleanup();
-      window.__naiaCurrentAudio = undefined;
+      if (window.__naiaCurrentAudio === handle) {
+        window.__naiaCurrentAudio = undefined;
+      }
       onEnded();
     },
   };
@@ -263,6 +267,10 @@ export function playElevenLabsVoice({
     utterance.onstart = start;
     utterance.onend = finish;
     utterance.onerror = () => {
+      // Cancelling the fallback (handle.pause) also fires onerror; a real
+      // synthesis failure only matters while this playback is still live.
+      if (isCancelled || hasEnded) return;
+
       onBlocked(
         `${getBrowserName()} a bloque la lecture audio. Clique sur Audio ou Parler pour relancer.`,
       );

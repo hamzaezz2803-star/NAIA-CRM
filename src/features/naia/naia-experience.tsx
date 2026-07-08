@@ -743,7 +743,10 @@ export function NaiaExperience({
                   <button
                     className="flex min-h-11 items-start gap-2 rounded-md border border-stone-200 bg-white px-3 py-2 text-left text-sm leading-5 text-stone-700 transition hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:border-stone-800"
                     key={command}
-                    onClick={() => void handleVoiceCommand(command)}
+                    onClick={() => {
+                      primeVoicePlayback();
+                      void handleVoiceCommand(command);
+                    }}
                     type="button"
                   >
                     <Play

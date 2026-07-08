@@ -125,6 +125,58 @@ describe("NAIA voice client", () => {
     expect(onBlocked).not.toHaveBeenCalled();
   });
 
+  it("ignores stale pause() calls once a newer playback took over", async () => {
+    vi.stubGlobal("Audio", FakeAudio);
+    stubObjectUrls();
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        new Response(new Blob(["audio-bytes"], { type: "audio/mpeg" }), {
+          headers: { "Content-Type": "audio/mpeg" },
+          status: 200,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const firstEnded = vi.fn();
+    const firstStarted = vi.fn();
+    const firstHandle = playElevenLabsVoice({
+      onBlocked: vi.fn(),
+      onEnded: firstEnded,
+      onStarted: firstStarted,
+      text: "Premiere reponse",
+    });
+    await vi.waitFor(() => expect(firstStarted).toHaveBeenCalledOnce());
+
+    const secondEnded = vi.fn();
+    const secondStarted = vi.fn();
+    const secondHandle = playElevenLabsVoice({
+      onBlocked: vi.fn(),
+      onEnded: secondEnded,
+      onStarted: secondStarted,
+      text: "Deuxieme reponse",
+    });
+
+    // Starting the next playback releases the first one (isSpeaking resets).
+    expect(firstEnded).toHaveBeenCalledOnce();
+    await vi.waitFor(() => expect(secondStarted).toHaveBeenCalledOnce());
+
+    const shared = window.__naiaPrimedAudio as unknown as FakeAudio;
+    shared.pause.mockClear();
+
+    // A stale pause must neither stop the shared element nor unregister the
+    // newer handle nor fire onEnded a second time.
+    firstHandle.pause();
+    expect(shared.pause).not.toHaveBeenCalled();
+    expect(firstEnded).toHaveBeenCalledOnce();
+    expect(secondEnded).not.toHaveBeenCalled();
+    expect(window.__naiaCurrentAudio).toBe(secondHandle);
+
+    secondHandle.pause();
+    expect(secondEnded).toHaveBeenCalledOnce();
+    expect(window.__naiaCurrentAudio).toBeUndefined();
+  });
+
   it("keeps the browser fallback rate aligned with the shared playback rate", async () => {
     class FakeUtterance {
       lang = "";

@@ -104,4 +104,50 @@ describe("NAIA voice route", () => {
     expect(fetchMock.mock.calls[0][0]).toContain("a5n9pJUnAhX4fn7lx3uo");
     expect(fetchMock.mock.calls[1][0]).toContain("freeVoice456");
   });
+
+  it("short-circuits a known restricted voice on subsequent requests", async () => {
+    vi.stubEnv("ELEVENLABS_VOICE_ID", "restrictedVoice789");
+
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json(
+          { detail: { code: "paid_plan_required" } },
+          { status: 402 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response("audio-bytes", {
+          headers: { "Content-Type": "audio/mpeg" },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response("audio-bytes", {
+          headers: { "Content-Type": "audio/mpeg" },
+          status: 200,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const first = await GET(
+      new Request("http://localhost/api/naia/voice?text=Bonjour%20Ali"),
+    );
+
+    expect(first.status).toBe(200);
+    expect(first.headers.get("X-NAIA-Voice-Id")).toBe("freeVoice456");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[0][0]).toContain("restrictedVoice789");
+
+    const second = await GET(
+      new Request("http://localhost/api/naia/voice?text=Encore%20Ali"),
+    );
+
+    expect(second.status).toBe(200);
+    expect(second.headers.get("X-NAIA-Voice-Id")).toBe("freeVoice456");
+    // The restricted voice is memoized: one direct call to the fallback voice.
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[2][0]).toContain("freeVoice456");
+    expect(second.headers.get("X-NAIA-Voice-Fallback")).toBeNull();
+  });
 });
