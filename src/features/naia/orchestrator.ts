@@ -901,10 +901,10 @@ function buildResponse(
     if (
       actions.some((action) => action.kind === "google.calendar.listEvents")
     ) {
-      return `${agent.name} prend le relais agenda. J'ai prepare une lecture Google Calendar pour verifier tes evenements et disponibilites avant toute creation.`;
+      return `${agent.name} prend le relais agenda. J'ai prepare une lecture Google Calendar a valider: je n'affiche aucun evenement tant que tu n'as pas approuve cette action, ensuite je liste tes vrais creneaux et conflits.`;
     }
 
-    return `${agent.name} prend le relais meetings: agenda, comptes rendus, decisions et suivis CRM.`;
+    return `${agent.name} prend le relais meetings. Ici je ne vois que les meetings issus du CRM; pour tes vrais evenements Google Calendar, demande-moi de lire ton agenda et valide l'action de lecture.`;
   }
 
   if (agentId === "leads") {

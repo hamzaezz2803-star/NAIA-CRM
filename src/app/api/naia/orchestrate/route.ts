@@ -119,6 +119,7 @@ async function enhanceWithGroqOrchestrator({
   }
 
   const operatingContext = buildNaiaOperatingContext();
+  const realGoogleCalendar = await buildRealGoogleCalendarContext();
 
   try {
     const groqResponse = await fetch(
@@ -129,7 +130,7 @@ async function enhanceWithGroqOrchestrator({
           messages: [
             {
               content:
-                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. Utilise operatingContext pour toute analyse operationnelle: cash flow, pipeline, projets, staffing, relances et risques. Si la demande est une question generale hors contexte Qarizmi, choisis "naia" et reponds comme un assistant LLM normal, sans pretendre avoir execute une action externe. Si la demande mentionne un rendez-vous, call ou meeting avec un prospect/client potentiel, choisis toujours "crm" pour que Salma cree ou mette a jour le lead; Adam intervient ensuite pour le calendrier. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
+                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. Utilise operatingContext pour toute analyse operationnelle: cash flow, pipeline, projets, staffing, relances et risques. Si "realGoogleCalendar" est present, ce sont les VRAIS evenements du Google Calendar de l\'utilisateur: ces donnees agenda sont reelles et priment sur toute donnee d\'exemple du operatingContext pour les questions d\'agenda, de disponibilites ou de reunions. Si la demande est une question generale hors contexte Qarizmi, choisis "naia" et reponds comme un assistant LLM normal, sans pretendre avoir execute une action externe. Si la demande mentionne un rendez-vous, call ou meeting avec un prospect/client potentiel, choisis toujours "crm" pour que Salma cree ou mette a jour le lead; Adam intervient ensuite pour le calendrier. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
               role: "system",
             },
             {
@@ -158,6 +159,7 @@ async function enhanceWithGroqOrchestrator({
                   response: localResult.response,
                 },
                 operatingContext,
+                realGoogleCalendar: realGoogleCalendar ?? undefined,
               }),
               role: "user",
             },
@@ -200,6 +202,80 @@ async function enhanceWithGroqOrchestrator({
   } catch {
     return { mode: "local-orchestrated", result: localResult };
   }
+}
+
+const REAL_CALENDAR_DAYS_AHEAD = 7;
+const REAL_CALENDAR_MAX_EVENTS = 15;
+const REAL_CALENDAR_TIME_ZONE = "Africa/Casablanca";
+const REAL_CALENDAR_CONTEXT_TIMEOUT_MS = 2500;
+
+// Reads the acting user's real Google Calendar (per-user connection) and
+// returns a compact French summary for the Groq context. Returns null when
+// the user has no connected Google account, the provider call fails, or the
+// deadline expires (the provider fetches carry no AbortSignal, so a stalled
+// Google endpoint must not block the whole NAIA command); the orchestration
+// then falls back to CRM-only context. Note: event titles are sent to Groq
+// when GROQ_API_KEY is configured.
+async function buildRealGoogleCalendarContext(): Promise<string | null> {
+  try {
+    const events = await withDeadline(
+      listGoogleCalendarEvents({
+        daysAhead: REAL_CALENDAR_DAYS_AHEAD,
+        maxResults: REAL_CALENDAR_MAX_EVENTS,
+      }),
+      REAL_CALENDAR_CONTEXT_TIMEOUT_MS,
+    );
+
+    if (events.length === 0) {
+      return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours) : aucun événement.`;
+    }
+
+    const summary = events
+      .map((event) => `${event.title} — ${formatRealCalendarDate(event.start)}`)
+      .join(" ; ");
+
+    return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours) : ${summary}`;
+  } catch {
+    return null;
+  }
+}
+
+function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
+      timeoutMs,
+    );
+  });
+
+  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
+}
+
+function formatRealCalendarDate(start?: string) {
+  if (!start) return "date non précisée";
+
+  const date = new Date(start);
+  if (Number.isNaN(date.getTime())) return "date non précisée";
+
+  // All-day events expose a date without time component.
+  if (!start.includes("T")) {
+    return new Intl.DateTimeFormat("fr-FR", {
+      day: "numeric",
+      month: "long",
+      timeZone: REAL_CALENDAR_TIME_ZONE,
+      weekday: "long",
+    }).format(date);
+  }
+
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "long",
+    timeZone: REAL_CALENDAR_TIME_ZONE,
+    weekday: "long",
+  }).format(date);
 }
 
 function parseGroqDecision(content: string | undefined) {

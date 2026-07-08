@@ -6,13 +6,30 @@ import { StatusBadge } from "@/components/ui/status-badge";
 import { fetchLeadsAction } from "@/features/crm/actions";
 import { MeetingsDashboard } from "@/features/meetings/meetings-dashboard";
 import { getAppSession } from "@/platform/auth/session";
+import {
+  listGoogleCalendarEvents,
+  type GoogleCalendarEventSummary,
+} from "@/platform/integrations/google-workspace";
 import { getIntegrationReadiness } from "@/platform/integrations/readiness";
 
+async function fetchGoogleCalendarEvents(): Promise<
+  GoogleCalendarEventSummary[] | undefined
+> {
+  try {
+    return await listGoogleCalendarEvents({ daysAhead: 14, maxResults: 25 });
+  } catch {
+    // No per-user Google connection (or provider error): the page still
+    // renders with CRM meetings only.
+    return undefined;
+  }
+}
+
 export default async function MeetingsPage() {
-  const [leads, integrations, session] = await Promise.all([
+  const [leads, integrations, session, googleEvents] = await Promise.all([
     fetchLeadsAction(),
     getIntegrationReadiness(),
     getAppSession(),
+    fetchGoogleCalendarEvents(),
   ]);
 
   const google = integrations.find(
@@ -72,6 +89,7 @@ export default async function MeetingsPage() {
         initialLeads={leads}
         userName={userName}
         googleConnected={isGoogleConnected}
+        googleEvents={googleEvents}
       />
     </div>
   );
