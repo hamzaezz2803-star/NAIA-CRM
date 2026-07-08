@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   indexMayaDeck: vi.fn(),
   listMayaDriveDeckFiles: vi.fn(),
   listMayaDeckFiles: vi.fn(),
+  requireMayaPitchGenerationAccess: vi.fn(),
   requireMayaPitchGeneratorAccess: vi.fn(),
   uploadMayaDriveDraftArtifacts: vi.fn(),
 }));
@@ -31,6 +32,7 @@ vi.mock("@/features/crm/actions", () => ({
 }));
 
 vi.mock("./access", () => ({
+  requireMayaPitchGenerationAccess: mocks.requireMayaPitchGenerationAccess,
   requireMayaPitchGeneratorAccess: mocks.requireMayaPitchGeneratorAccess,
 }));
 
@@ -63,6 +65,7 @@ import { generateMayaPitchDraftForLeadAction } from "./actions";
 describe("Maya actions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.requireMayaPitchGenerationAccess.mockResolvedValue(undefined);
     mocks.requireMayaPitchGeneratorAccess.mockResolvedValue(undefined);
     mocks.hasMayaDriveFolderConfig.mockReturnValue(false);
     mocks.getMayaDriveConfigFromEnv.mockReturnValue({
@@ -131,6 +134,19 @@ describe("Maya actions", () => {
         }),
       }),
     );
+  });
+
+  it("refuses to generate anything when the owner-only gate rejects", async () => {
+    mocks.requireMayaPitchGenerationAccess.mockRejectedValue(
+      new Error("La génération de pitch Maya est réservée au rôle owner."),
+    );
+
+    await expect(generateMayaPitchDraftForLeadAction("lead-1")).rejects.toThrow(
+      "réservée au rôle owner",
+    );
+    expect(mocks.enhanceMayaDeckPlanWithOpenAI).not.toHaveBeenCalled();
+    expect(mocks.generateMayaPitchDraft).not.toHaveBeenCalled();
+    expect(mocks.uploadMayaDriveDraftArtifacts).not.toHaveBeenCalled();
   });
 
   it("cleans up the temporary Drive deck folder after draft generation", async () => {
