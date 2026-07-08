@@ -4,10 +4,14 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 
 import { isAuthorizedUser } from "@/platform/auth/access";
-import { isAuthorizedEmail } from "@/platform/auth/access";
+import {
+  getAllowedAuthDomain,
+  isAuthorizedEmail,
+} from "@/platform/auth/access";
 import { getAppBaseUrl } from "@/platform/auth/config";
 import { sanitizeRedirectPath } from "@/platform/auth/safe-redirect";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import { GOOGLE_USER_SCOPE } from "@/platform/integrations/google-workspace-scopes";
 
 export async function requestMagicLinkAction(formData: FormData) {
   const email = String(formData.get("email") ?? "")
@@ -45,6 +49,56 @@ export async function requestMagicLinkAction(formData: FormData) {
   }
 
   redirectToLogin("sent", redirectedFrom);
+}
+
+export async function signInWithGoogleAction(formData: FormData) {
+  const redirectedFrom = sanitizeRedirectPath(formData.get("redirectedFrom"));
+
+  const supabase = await createServerSupabaseClient();
+
+  if (!supabase) {
+    redirectToLogin("config", redirectedFrom);
+  }
+
+  const callbackUrl = new URL("/auth/callback", await getRequestBaseUrl());
+  callbackUrl.searchParams.set("next", redirectedFrom);
+
+  // access_type=offline + prompt=consent make Google return a refresh token,
+  // which the auth callback persists as the user's Workspace connection. The
+  // hd hint preselects the Qarizmi domain; real enforcement stays server-side
+  // via the allowlist in the callback and middleware.
+  const { data, error } = await supabase.auth.signInWithOAuth({
+    options: {
+      queryParams: {
+        access_type: "offline",
+        hd: getAllowedAuthDomain(),
+        prompt: "consent",
+      },
+      redirectTo: callbackUrl.toString(),
+      scopes: GOOGLE_USER_SCOPE,
+    },
+    provider: "google",
+  });
+
+  if (error || !data?.url) {
+    redirectToLogin("google", redirectedFrom);
+  }
+
+  // GoTrue answers with a redirect to Google when the provider is enabled; a
+  // 4xx here means the Supabase Google provider is not configured yet.
+  let providerReady = true;
+  try {
+    const probe = await fetch(data.url, { redirect: "manual" });
+    providerReady = probe.status < 400;
+  } catch {
+    providerReady = false;
+  }
+
+  if (!providerReady) {
+    redirectToLogin("google", redirectedFrom);
+  }
+
+  redirect(data.url);
 }
 
 export async function signInWithPasswordAction(formData: FormData) {

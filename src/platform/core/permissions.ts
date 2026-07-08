@@ -20,6 +20,7 @@ export const rolePermissions: Record<OrganizationRole, Permission[]> = {
     { module: "platform", action: "manage" },
     { module: "settings", action: "manage" },
     { module: "crm", action: "manage" },
+    { module: "proposals", action: "manage" },
     { module: "automations", action: "approve" },
   ],
   admin: [
@@ -48,4 +49,22 @@ export function hasPermission(
       (permission.action === requiredPermission.action ||
         permission.action === "manage"),
   );
+}
+
+// Modules gated behind a permission. Every other module stays visible to all
+// members. Docs Generator (Maya) outputs land in the cofounders-only shared
+// drive, so the module itself is owner-only to protect client IP.
+export const moduleAccessRequirements: Partial<
+  Record<PlatformModuleId, Permission>
+> = {
+  proposals: { module: "proposals", action: "read" },
+};
+
+export function canAccessModule(
+  role: OrganizationRole,
+  moduleId: PlatformModuleId,
+) {
+  const requirement = moduleAccessRequirements[moduleId];
+
+  return requirement ? hasPermission(role, requirement) : true;
 }

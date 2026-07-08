@@ -7,7 +7,7 @@ import {
   type IntegrationHealth,
   plannedIntegrationProviders,
 } from "./contracts";
-import { GOOGLE_WORKSPACE_SCOPES } from "./google-workspace-scopes";
+import { GOOGLE_USER_SCOPES } from "./google-workspace-scopes";
 
 type IntegrationConnectionRow = {
   encrypted_token_reference: string | null;
@@ -30,7 +30,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
     const scopes = connection?.scopes ?? [];
     const missingRequiredScopes =
       provider.provider === "google"
-        ? GOOGLE_WORKSPACE_SCOPES.filter((scope) => !scopes.includes(scope))
+        ? GOOGLE_USER_SCOPES.filter((scope) => !scopes.includes(scope))
         : [];
 
     if (!provider.isImplemented) {
@@ -147,12 +147,15 @@ async function getConnectionRows(): Promise<IntegrationConnectionRow[]> {
 
   if (!membership?.organization_id) return [];
 
+  // Per-user readiness: the settings/integrations pages report the state of
+  // the current user's own connections, not a shared org connection.
   const { data, error } = await supabase
     .from("integration_connections")
     .select(
       "provider,status,external_account_label,scopes,encrypted_token_reference",
     )
-    .eq("organization_id", membership.organization_id);
+    .eq("organization_id", membership.organization_id)
+    .eq("connected_by_profile_id", user.id);
 
   if (error || !data) return [];
 

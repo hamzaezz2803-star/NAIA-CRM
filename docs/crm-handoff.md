@@ -102,8 +102,13 @@ Do not send external communications automatically.
 
 ## Google Drive Folder Structure
 
+One folder per client company (not per lead), created by the organization
+service account inside the cofounders shared-drive `clients` folder
+(`MAYA_DRIVE_OUTPUT_FOLDER_ID`). If a folder with the client's name already
+exists there, it is reused instead of duplicated.
+
 ```text
-Client - Company Name
+Company Name
   01_Pitch
   02_Meeting Notes
   03_Proposal
@@ -111,7 +116,9 @@ Client - Company Name
   05_Delivery
 ```
 
-Store the resulting Drive folder URL on the relevant company or lead.
+Store the resulting Drive folder URL on the relevant company or lead. All
+Drive calls go through `src/platform/integrations/google-drive-service.ts`
+(service account), never through a user's personal token.
 
 ## Database Rules
 
@@ -171,10 +178,12 @@ Safe defaults:
 - Execute status-only updates through `updateLeadStatusAction()` so NAIA does not trigger provider side effects such as Calendar sync from generic lead updates.
 - Treat prospect/client meetings as CRM-first. A command like "j'ai parlé à X de Y, meeting vendredi" should create or update the CRM lead in `meeting-booked`; Adam/Meetings then checks Google Calendar from that validated lead context.
 - For leads with a planned meeting date, Calendar sync must check Google FreeBusy before event creation and return a suggested alternative if the requested slot is busy.
-- Trigger Google Calendar only after an explicit UI validation step, either through `syncLeadToGoogleCalendarAction()` or the validated NAIA lead creation flow.
-- Create Drive client folders under the private Ali/Nabil `Client development > Pitch`
-  parent (`GOOGLE_DRIVE_CLIENT_FOLDER_PARENT_ID`), not the earlier shared
-  Hamza folder. Keep pitch and proposal IP scoped to co-founder access.
+- Trigger Google Calendar only after an explicit UI validation step, either through `syncLeadToGoogleCalendarAction()` or the validated NAIA lead creation flow. Calendar and Gmail always use the acting user's own per-user connection (`connected_by_profile_id`), never a shared org token.
+- Create Drive client folders through the organization service account under
+  the cofounders shared-drive `clients` folder (`MAYA_DRIVE_OUTPUT_FOLDER_ID`),
+  one folder per client company — not the earlier shared Hamza folder and not
+  per-lead folders. Keep pitch and proposal IP scoped to co-founder access:
+  `/proposals` and `/dashboard/drives` are owner-only.
 - Keep provider actions such as email, WhatsApp, Google Drive, Calendar sync,
   and delete flows behind a human approval foundation.
 - Treat `viewer` as read-only. CRM insert/update policies use

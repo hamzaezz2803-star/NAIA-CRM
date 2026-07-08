@@ -47,15 +47,15 @@ CRM-specific tables should be introduced in a later CRM migration and include `o
 
 ## Authentication And Permissions
 
-Supabase is the authentication provider. The `(app)` route group is protected by middleware and the app layout reads the authenticated Supabase user before rendering internal pages. Client code uses `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, with a legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` fallback for older projects.
+Supabase is the authentication provider. The primary sign-in method is "Sign in with Google" through the Supabase Google provider (`signInWithGoogleAction`): one click authenticates the employee and captures Google Calendar/Gmail provider tokens, which `/auth/callback` persists as that user's own `integration_connections` row. The email magic link remains as a fallback. The `(app)` route group is protected by middleware and the app layout reads the authenticated Supabase user before rendering internal pages. Client code uses `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`, with a legacy `NEXT_PUBLIC_SUPABASE_ANON_KEY` fallback for older projects.
 
-Application access is also checked against `AUTH_ALLOWED_EMAILS` when it is set, otherwise against `AUTH_ALLOWED_EMAIL_DOMAIN`, which defaults to `qarizmi.com`. Production should keep public signup disabled in Supabase and invite users explicitly.
+Application access is also checked against `AUTH_ALLOWED_EMAILS` when it is set, otherwise against `AUTH_ALLOWED_EMAIL_DOMAIN`, which defaults to `qarizmi.com`. The Google Cloud OAuth consent screen should be set to Internal so only the qarizmi.com Workspace can authenticate; the `handle_new_user` trigger (migration `20260708120000`) auto-provisions a profile and a `member` membership for new `@qarizmi.com` sign-ins (cofounder emails become `owner`).
 
 The current hosted Supabase project ref is `juqhonvapkrlylvseolu`.
 
 The current production application URL is `https://os.qarizmi.com`.
 
-Roles are modeled as `owner`, `admin`, `member`, and `viewer` in `src/platform/core/permissions.ts` and in the initial database migration.
+Roles are modeled as `owner`, `admin`, `member`, and `viewer` in `src/platform/core/permissions.ts` and in the initial database migration. `getAppSession` resolves the real role from `organization_memberships` (unknown users fall back to `viewer`). Module access can be gated by role through `moduleAccessRequirements`/`canAccessModule`: the Docs Generator module (`/proposals`) and the CRM Drive folders page (`/dashboard/drives`) are owner-only (cofounders), enforced server-side in the pages and hidden from the navigation for other roles.
 
 CRM write access is restricted to contributors (`owner`, `admin`, `member`) by the `public.is_org_contributor` helper and CRM RLS policies. `viewer` can keep read access through membership policies but cannot create or update CRM records.
 
@@ -69,7 +69,7 @@ NAIA can prepare internal CRM actions through `/api/naia/orchestrate`. CRM reads
 
 NAIA voice uses `/api/naia/transcribe` for Groq Whisper input and `/api/naia/voice` for ElevenLabs output. Groq Whisper runs without a forced language so French/English mixed commands keep their original language, with a short business-context transcription prompt. Provider secrets remain server-only. If ElevenLabs is missing, blocked by the selected voice, or unreachable, the client surfaces the reason and falls back to browser speech synthesis instead of failing silently.
 
-Client IP documents live in the private Ali/Nabil Drive tree `Client development` (`1_2ZTPDoGMhNVn3G9H95v4tXpDHuBbXzs`). CRM-created client folders default to the `Pitch` subfolder (`1PEC-tzzZLstp_97IwO4sGipoeY-CUk49`) through `GOOGLE_DRIVE_CLIENT_FOLDER_PARENT_ID`. This replaces the earlier Hamza-created Drive target for pitch/proposal work.
+Google access is split into two lanes. Personal data (each employee's Calendar and Gmail) uses per-user OAuth tokens stored in `integration_connections`, unique per `(organization, provider, connected_by_profile_id)` with self-service RLS: a member can only read and manage their own connection, so NAIA agents always act on the acting user's own account. Organizational client IP uses a Google service account (`GOOGLE_SERVICE_ACCOUNT_KEY`, `src/platform/integrations/google-drive-service.ts`) that is a member of the cofounders-only shared drive: CRM client folders (one folder per client company, with the standard `01_Pitch` … `05_Delivery` subfolders) are created under the `clients` folder (`MAYA_DRIVE_OUTPUT_FOLDER_ID`), and Maya reads the pitch library from `MAYA_DRIVE_SOURCE_FOLDER_ID`. Google itself enforces the cofounder boundary through shared-drive membership. This replaces the earlier Hamza-created Drive target (`NAIA'S-INFOS`) and the per-lead folder naming.
 
 The former Proposals module is now Docs Generator. Maya owns pitch generation when a lead reaches `meeting-booked` and proposal drafting after meeting completion, while CRM remains the source of lead status and customer context.
 
@@ -83,7 +83,8 @@ The next durable orchestration step is a universal approval queue backed by `app
 
 ## Current Trade-offs
 
-- Auth user creation and invite policy still live in the Supabase dashboard.
+- Auth user creation can happen through Google sign-in (with trigger-based provisioning) or remain manual in the Supabase dashboard; role upgrades stay manual.
+- Legacy org-shared Google connections were revoked by migration `20260708120000`; each user reconnects by signing in with Google once. Client folders created before the per-client layout remain in the old Drive location and can be moved manually.
 - The Dashboard shows foundation state only, not synthetic operational metrics.
 - `npm audit` currently reports a moderate PostCSS advisory through Next.js 16.2.9's nested dependency. The latest stable Next release is already installed, and `npm audit fix --force` proposes a breaking downgrade, so this should be revisited when Next publishes a stable patched release.
 

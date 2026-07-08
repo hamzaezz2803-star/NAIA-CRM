@@ -18,6 +18,7 @@ import {
   KeyRound,
 } from "lucide-react";
 import { type IntegrationHealth } from "@/platform/integrations/contracts";
+import { isDriveServiceConfigured } from "@/platform/integrations/google-drive-service";
 import { getIntegrationReadiness } from "@/platform/integrations/readiness";
 
 type SystemIntegrationStatus =
@@ -78,24 +79,25 @@ function getSystemIntegrations(
         : "GROQ_API_KEY manquant dans .env.local",
     },
     {
-      id: "google-drive",
-      name: "Google Drive / Calendar",
+      id: "google-workspace",
+      name: "Google Calendar / Gmail (connexion personnelle)",
       description:
-        "Création de dossiers clients et synchronisation Calendar déclenchées depuis des actions CRM.",
+        "Connexion Google par utilisateur, capturée au login : synchronisation Calendar et lectures Gmail des agents NAIA sur ton propre compte.",
       status: google?.status ?? "not-configured",
-      icon: <FolderOpen className="h-5 w-5" />,
+      icon: <Mail className="h-5 w-5" />,
       detail:
         google?.detail ?? "GOOGLE_CLIENT_ID ou GOOGLE_CLIENT_SECRET manquant",
     },
     {
-      id: "gmail",
-      name: "Gmail",
+      id: "google-drive-service",
+      name: "Google Drive (service account)",
       description:
-        "Brouillons de relance prêts à ouvrir dans Gmail. Aucun envoi Gmail API n'est fait par NAIA pour l'instant.",
-      status: "not-implemented",
-      icon: <Mail className="h-5 w-5" />,
-      detail:
-        "Le scope Gmail et la route d'envoi ne sont pas encore implémentés.",
+        "Dossiers clients et documents Maya créés dans le Drive partagé cofondateurs par le compte de service de l'organisation.",
+      status: isDriveServiceConfigured() ? "connected" : "not-configured",
+      icon: <FolderOpen className="h-5 w-5" />,
+      detail: isDriveServiceConfigured()
+        ? "Compte de service actif — dossiers clients créés dans le Drive partagé (clients)."
+        : "GOOGLE_SERVICE_ACCOUNT_KEY ou MAYA_DRIVE_OUTPUT_FOLDER_ID manquant — création de dossiers clients désactivée.",
     },
     {
       id: "slack",

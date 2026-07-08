@@ -259,6 +259,8 @@ async function getGoogleWorkspaceConnection(): Promise<GoogleConnectionRow> {
     throw new Error("Google Workspace requires an organization membership.");
   }
 
+  // Per-user connection: each member's Calendar/Gmail actions run on their
+  // own Google account, never on a colleague's.
   const { data, error } = await supabase
     .from("integration_connections")
     .select(
@@ -266,8 +268,8 @@ async function getGoogleWorkspaceConnection(): Promise<GoogleConnectionRow> {
     )
     .eq("organization_id", membership.organization_id)
     .eq("provider", "google")
-    .eq("status", "connected")
     .eq("connected_by_profile_id", user.id)
+    .eq("status", "connected")
     .order("connected_at", { ascending: false })
     .limit(1)
     .maybeSingle();

@@ -5,6 +5,10 @@
 import { revalidatePath } from "next/cache";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { getAppBaseUrl } from "@/platform/auth/config";
+import {
+  ensureClientDriveFolder,
+  isDriveServiceConfigured,
+} from "@/platform/integrations/google-drive-service";
 import { createSystemNotification } from "@/platform/notifications/actions";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -640,25 +644,26 @@ export async function createLeadAction(input: {
   // Sync Todo task
   await syncLeadTask(supabase, orgId, row.id, user?.id ?? null);
 
-  // Auto-create Google Drive folder inside NAIA'S-INFOS if not skipped
+  // Auto-create the client folder in the cofounders shared drive if not
+  // skipped. Folders are named after the client company: without a resolved
+  // company there is nothing to create (a topic-named folder is never a
+  // client folder).
   if (!input.skipGoogleDriveCreate) {
     try {
-      const companyName = input.companyId
-        ? ((
-            await supabase
-              .from("crm_companies")
-              .select("name")
-              .eq("id", input.companyId)
-              .single()
-          ).data?.name ?? input.topic)
-        : input.topic;
-      await createLeadDriveFolderIfConnected(
-        supabase,
-        orgId,
-        row.id,
-        companyName,
-        input.topic,
-      );
+      const companyName =
+        company ||
+        (companyId
+          ? ((
+              await supabase
+                .from("crm_companies")
+                .select("name")
+                .eq("id", companyId)
+                .single()
+            ).data?.name ?? null)
+          : null);
+      if (companyName) {
+        await createLeadDriveFolderIfConfigured(supabase, row.id, companyName);
+      }
     } catch (driveErr) {
       // Non-blocking — Drive failure must not block lead creation
       console.error("Drive folder auto-create error:", driveErr);
@@ -1130,13 +1135,35 @@ export async function deleteLeadAction(
     const eventId = eventIdMatch ? eventIdMatch[1].trim() : null;
 
     if (eventId) {
-      const { data: connection } = await supabase
-        .from("integration_connections")
-        .select("*")
-        .eq("organization_id", orgId)
-        .eq("provider", "google")
-        .limit(1)
-        .maybeSingle();
+      const eventOwnerMatch = lead.notes.match(
+        /\[Google Calendar Event Owner:\s*([^\]]+)\]/,
+      );
+      const eventOwner = eventOwnerMatch ? eventOwnerMatch[1].trim() : null;
+
+      const {
+        data: { user: actingUser },
+      } = await supabase.auth.getUser();
+
+      // Per-user RLS only exposes the caller's own connection; an event
+      // created by another member stays on their calendar (logged below).
+      const { data: connection } =
+        actingUser && (!eventOwner || eventOwner === actingUser.id)
+          ? await supabase
+              .from("integration_connections")
+              .select("*")
+              .eq("organization_id", orgId)
+              .eq("provider", "google")
+              .eq("connected_by_profile_id", actingUser.id)
+              .limit(1)
+              .maybeSingle()
+          : { data: null };
+
+      if (!connection) {
+        console.warn(
+          "Calendar event not removed during lead deletion (owned by another member or no connection):",
+          eventId,
+        );
+      }
 
       if (connection && connection.status === "connected") {
         const accessToken = await getOrRefreshGoogleToken(
@@ -1146,7 +1173,7 @@ export async function deleteLeadAction(
         );
         if (accessToken) {
           try {
-            await fetch(
+            const delRes = await fetch(
               `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
               {
                 method: "DELETE",
@@ -1155,6 +1182,12 @@ export async function deleteLeadAction(
                 },
               },
             );
+            if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
+              console.error(
+                "Google Calendar event delete failed during lead deletion:",
+                await delRes.text(),
+              );
+            }
           } catch (err) {
             console.error(
               "Failed to delete Google Calendar event during lead deletion:",
@@ -1879,9 +1912,6 @@ Retourne UNIQUEMENT un JSON valide:
 // GOOGLE DRIVE INTEGRATION ACTIONS
 // ────────────────────────────────────────────────────────────
 
-// ID of the parent "NAIA'S-INFOS" folder on Drive (hamza@qarizmi.com)
-const NAIAS_INFOS_FOLDER_ID = "14GE31ZqlrmH6_1OoRHZEjSfEjQ9oF0tF";
-
 export async function checkGoogleAuthAction(): Promise<boolean> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return false;
@@ -1889,11 +1919,17 @@ export async function checkGoogleAuthAction(): Promise<boolean> {
   const orgId = await getOrgId();
   if (!orgId) return false;
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return false;
+
   const { data, error } = await supabase
     .from("integration_connections")
     .select("status")
     .eq("organization_id", orgId)
     .eq("provider", "google")
+    .eq("connected_by_profile_id", user.id)
     .limit(1)
     .maybeSingle();
 
@@ -1912,11 +1948,19 @@ export async function disconnectGoogleAuthAction(): Promise<{
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) return { success: false, error: "Not authenticated" };
+
+  // Only the caller's own connection: one click must never disconnect a
+  // colleague's Google account.
   const { error } = await supabase
     .from("integration_connections")
     .delete()
     .eq("organization_id", orgId)
-    .eq("provider", "google");
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", user.id);
 
   if (error) return { success: false, error: error.message };
 
@@ -1944,37 +1988,18 @@ export async function createGoogleDriveFolderAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  // Fetch google connection details
-  const { data: connection, error: connError } = await supabase
-    .from("integration_connections")
-    .select("*")
-    .eq("organization_id", orgId)
-    .eq("provider", "google")
-    .limit(1)
-    .maybeSingle();
-
-  if (connError || !connection || connection.status !== "connected") {
-    return { success: false, error: "Google integration not connected" };
-  }
-
-  // Get active access token
-  const accessToken = await getOrRefreshGoogleToken(
-    supabase,
-    orgId,
-    connection,
-  );
-  if (!accessToken) {
+  if (!isDriveServiceConfigured()) {
     return {
       success: false,
-      error: "Failed to authenticate with Google APIs",
+      error:
+        "Drive service account non configuré (GOOGLE_SERVICE_ACCOUNT_KEY / MAYA_DRIVE_OUTPUT_FOLDER_ID).",
     };
   }
 
   try {
-    // Fetch lead topic for folder naming
     const { data: leadRow } = await supabase
       .from("crm_leads")
-      .select("topic, drive_folder_url")
+      .select("company_id, drive_folder_url")
       .eq("id", leadId)
       .single();
 
@@ -1983,61 +2008,30 @@ export async function createGoogleDriveFolderAction(
       return { success: true, folderLink: leadRow.drive_folder_url };
     }
 
-    const folderName = `${companyName} - ${leadRow?.topic ?? "Lead"}`;
-
-    // Create folder inside NAIA'S-INFOS
-    const createRes = await fetch(
-      "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          name: folderName,
-          mimeType: "application/vnd.google-apps.folder",
-          parents: [NAIAS_INFOS_FOLDER_ID],
-        }),
-      },
-    );
-
-    if (!createRes.ok) {
-      const errText = await createRes.text();
-      return { success: false, error: `Google Drive API error: ${errText}` };
+    // The company's stored folder wins over a name lookup (client renames
+    // must not spawn a second folder).
+    let folderLink: string | null = null;
+    let folderReused = false;
+    if (leadRow?.company_id) {
+      const { data: companyRow } = await supabase
+        .from("crm_companies")
+        .select("drive_folder_url")
+        .eq("id", leadRow.company_id)
+        .maybeSingle();
+      if (companyRow?.drive_folder_url) {
+        folderLink = companyRow.drive_folder_url;
+        folderReused = true;
+      }
     }
 
-    const folder = await createRes.json();
-    const folderId = folder.id;
-    const folderLink = `https://drive.google.com/drive/folders/${folderId}`;
-
-    // Create subfolders
-    const subfolders = [
-      "01_Pitch",
-      "02_Meeting Notes",
-      "03_Proposal",
-      "04_Contract",
-      "05_Delivery",
-    ];
-    for (const subName of subfolders) {
-      await fetch(
-        "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
-        {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            name: subName,
-            mimeType: "application/vnd.google-apps.folder",
-            parents: [folderId],
-          }),
-        },
-      );
+    // One folder per client (not per lead), created by the org service
+    // account inside the cofounders-only "clients" shared-drive folder.
+    if (!folderLink) {
+      const clientFolder = await ensureClientDriveFolder(companyName);
+      folderLink = clientFolder.folderUrl;
+      folderReused = !clientFolder.created;
     }
 
-    // Store folder URL directly on the lead
     await supabase
       .from("crm_leads")
       .update({
@@ -2046,22 +2040,14 @@ export async function createGoogleDriveFolderAction(
       })
       .eq("id", leadId);
 
-    // Also update company drive_folder_url if exists
-    if (leadRow) {
-      const { data: lead } = await supabase
-        .from("crm_leads")
-        .select("company_id")
-        .eq("id", leadId)
-        .single();
-      if (lead?.company_id) {
-        await supabase
-          .from("crm_companies")
-          .update({
-            drive_folder_url: folderLink,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", lead.company_id);
-      }
+    if (leadRow?.company_id) {
+      await supabase
+        .from("crm_companies")
+        .update({
+          drive_folder_url: folderLink,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", leadRow.company_id);
     }
 
     revalidatePath("/crm");
@@ -2069,8 +2055,10 @@ export async function createGoogleDriveFolderAction(
     revalidatePath("/dashboard/documents");
 
     await createSystemNotification({
-      title: "Dossier Drive créé",
-      description: `Le dossier "${folderName}" a été créé dans NAIA'S-INFOS sur Google Drive le ${new Date().toLocaleString("fr-FR")}.`,
+      title: folderReused
+        ? "Dossier client Drive retrouvé"
+        : "Dossier client Drive créé",
+      description: `Le dossier client "${companyName.trim()}" est disponible dans le Drive partagé Qarizmi (clients) depuis le ${new Date().toLocaleString("fr-FR")}.`,
       type: "success",
       link_url: folderLink,
     });
@@ -2083,86 +2071,60 @@ export async function createGoogleDriveFolderAction(
 }
 
 /** Non-blocking helper called during createLeadAction */
-async function createLeadDriveFolderIfConnected(
+async function createLeadDriveFolderIfConfigured(
   supabase: any,
-  orgId: string,
   leadId: string,
   companyName: string,
-  topic: string,
 ): Promise<void> {
-  // Check if Google is connected
-  const { data: connection } = await supabase
-    .from("integration_connections")
-    .select("*")
-    .eq("organization_id", orgId)
-    .eq("provider", "google")
-    .limit(1)
-    .maybeSingle();
-
-  if (!connection || connection.status !== "connected") return;
-
-  const accessToken = await getOrRefreshGoogleToken(
-    supabase,
-    orgId,
-    connection,
-  );
-  if (!accessToken) return;
-
-  const folderName = `${companyName} - ${topic}`;
-
-  const createRes = await fetch(
-    "https://www.googleapis.com/drive/v3/files?supportsAllDrives=true",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: folderName,
-        mimeType: "application/vnd.google-apps.folder",
-        parents: [NAIAS_INFOS_FOLDER_ID],
-      }),
-    },
-  );
-
-  if (!createRes.ok) return;
-
-  const folder = await createRes.json();
-  const folderId = folder.id;
-  const folderLink = `https://drive.google.com/drive/folders/${folderId}`;
-
-  // Create subfolders in background (no await needed)
-  const subfolders = [
-    "01_Pitch",
-    "02_Meeting Notes",
-    "03_Proposal",
-    "04_Contract",
-    "05_Delivery",
-  ];
-  for (const subName of subfolders) {
-    fetch("https://www.googleapis.com/drive/v3/files?supportsAllDrives=true", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        name: subName,
-        mimeType: "application/vnd.google-apps.folder",
-        parents: [folderId],
-      }),
-    }).catch(() => {});
+  if (!isDriveServiceConfigured()) {
+    console.warn(
+      "Drive service account not configured; skipping client folder for lead",
+      leadId,
+    );
+    return;
   }
 
-  // Store on lead
+  const { data: lead } = await supabase
+    .from("crm_leads")
+    .select("company_id")
+    .eq("id", leadId)
+    .single();
+
+  // The company's stored folder wins over a name lookup (client renames
+  // must not spawn a second folder).
+  let folderUrl: string | null = null;
+  if (lead?.company_id) {
+    const { data: companyRow } = await supabase
+      .from("crm_companies")
+      .select("drive_folder_url")
+      .eq("id", lead.company_id)
+      .maybeSingle();
+    folderUrl = companyRow?.drive_folder_url ?? null;
+  }
+
+  if (!folderUrl) {
+    const clientFolder = await ensureClientDriveFolder(companyName);
+    folderUrl = clientFolder.folderUrl;
+  }
+
+  // Store the client folder on the lead (and its company when linked).
   await supabase
     .from("crm_leads")
     .update({
-      drive_folder_url: folderLink,
+      drive_folder_url: folderUrl,
       updated_at: new Date().toISOString(),
     })
     .eq("id", leadId);
+
+  if (lead?.company_id) {
+    await supabase
+      .from("crm_companies")
+      .update({
+        drive_folder_url: folderUrl,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", lead.company_id);
+  }
 }
 
 async function getOrRefreshGoogleToken(
@@ -2451,14 +2413,22 @@ async function syncLeadToGoogleCalendar(
     );
     const existingEventId = eventIdMatch ? eventIdMatch[1].trim() : null;
 
-    // Fetch google connection
-    const { data: connection } = await supabase
-      .from("integration_connections")
-      .select("*")
-      .eq("organization_id", orgId)
-      .eq("provider", "google")
-      .limit(1)
-      .maybeSingle();
+    // Fetch the acting user's own google connection: calendar events are
+    // created on the calendar of whoever triggers the sync.
+    const {
+      data: { user: actingUser },
+    } = await supabase.auth.getUser();
+
+    const { data: connection } = actingUser
+      ? await supabase
+          .from("integration_connections")
+          .select("*")
+          .eq("organization_id", orgId)
+          .eq("provider", "google")
+          .eq("connected_by_profile_id", actingUser.id)
+          .limit(1)
+          .maybeSingle()
+      : { data: null };
 
     if (!connection || connection.status !== "connected") {
       return {
@@ -2481,10 +2451,31 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
+    // Calendar events are calendar-scoped: only the member who created the
+    // event can update or delete it. Legacy events without an owner tag are
+    // assumed to belong to the acting user; a 404 falls back to re-creation.
+    const eventOwnerMatch = notesStr.match(
+      /\[Google Calendar Event Owner:\s*([^\]]+)\]/,
+    );
+    const existingEventOwner = eventOwnerMatch
+      ? eventOwnerMatch[1].trim()
+      : null;
+    const actingUserOwnsEvent =
+      !existingEventOwner || existingEventOwner === actingUser?.id;
+
     // If lead_date is not set, delete existing event if any
     const finalLeadDate = lead.lead_date ?? lead.next_action_date;
     if (!finalLeadDate) {
       if (existingEventId) {
+        if (!actingUserOwnsEvent) {
+          // Never touch (or untag) an event that lives on a colleague's
+          // calendar: they clear or resync it from their own account.
+          return {
+            success: false,
+            error:
+              "L'événement Calendar de ce lead appartient à un autre membre : il doit le resynchroniser (ou le supprimer) depuis son compte.",
+          };
+        }
         try {
           const delRes = await fetch(
             `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
@@ -2496,14 +2487,15 @@ async function syncLeadToGoogleCalendar(
             },
           );
 
-          if (!delRes.ok) {
+          if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
             const errText = await delRes.text();
             console.error("Google Calendar delete failed:", errText);
           }
 
-          // Remove the event ID and link tags from notes
+          // Remove the event ID, owner, and link tags from notes
           const updatedNotes = notesStr
             .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/, "")
+            .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/, "")
             .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/, "")
             .trim();
 
@@ -2533,6 +2525,7 @@ async function syncLeadToGoogleCalendar(
       leadDateStr.endsWith(" 00:00:00");
     const cleanNotes = notesStr
       .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]/g, "")
+      .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]/g, "")
       .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]/g, "")
       .trim();
 
@@ -2640,6 +2633,16 @@ async function syncLeadToGoogleCalendar(
       }
     }
 
+    if (existingEventId && !actingUserOwnsEvent) {
+      // No-op instead of creating a duplicate event on this user's calendar:
+      // the original stays valid on its owner's calendar and keeps its tags.
+      return {
+        success: false,
+        error:
+          "L'événement Calendar de ce lead a été créé par un autre membre : lui seul peut le mettre à jour, en resynchronisant depuis son compte.",
+      };
+    }
+
     if (existingEventId) {
       const updateRes = await fetch(
         `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}?sendUpdates=all`,
@@ -2674,13 +2677,16 @@ async function syncLeadToGoogleCalendar(
             .eq("id", leadId);
         }
         return { success: true };
-      } else {
+      }
+
+      if (updateRes.status !== 404 && updateRes.status !== 410) {
         const errText = await updateRes.text();
         return {
           success: false,
           error: parseGoogleError(errText),
         };
       }
+      // The event vanished from this calendar: fall through and recreate it.
     }
 
     const createRes = await fetch(
@@ -2702,12 +2708,14 @@ async function syncLeadToGoogleCalendar(
 
       const cleanIdNotes = notesStr
         .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/g, "")
+        .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/g, "")
         .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
         .trim();
 
+      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUser?.id ?? "unknown"}]\n[Google Calendar Event Link: ${htmlLink}]`;
       const updatedNotes = cleanIdNotes
-        ? `${cleanIdNotes}\n[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Link: ${htmlLink}]`
-        : `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Link: ${htmlLink}]`;
+        ? `${cleanIdNotes}\n${eventTags}`
+        : eventTags;
 
       await supabase
         .from("crm_leads")

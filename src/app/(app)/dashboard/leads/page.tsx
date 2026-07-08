@@ -1255,14 +1255,8 @@ export default function LeadsPage() {
     setModalError(null);
     setDriveLink(null);
 
-    if (!isGoogleConnected) {
-      const errMsg =
-        "Veuillez d'abord connecter votre compte Google. Ouverture de la fenetre...";
-      setModalError(errMsg);
-      toast.error(errMsg);
-      handleConnectGoogle();
-      return;
-    }
+    // Client folders are created by the org service account, not the user's
+    // personal Google connection — no connect gate needed here.
 
     // If already has a Drive folder, just open it
     const existingLink =
@@ -1298,7 +1292,7 @@ export default function LeadsPage() {
       setSelectedLead(updatedLead);
       setLeads(leads.map((l) => (l.id === lead.id ? updatedLead : l)));
 
-      toast.success("Dossier cree dans NAIA'S-INFOS !", {
+      toast.success("Dossier client cree dans le Drive partage Qarizmi !", {
         id: driveToastId,
       });
       window.open(res.folderLink, "_blank");

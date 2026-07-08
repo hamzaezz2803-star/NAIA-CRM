@@ -3,8 +3,18 @@ import { redirect } from "next/navigation";
 
 import { isAuthorizedUser } from "@/platform/auth/access";
 import { isSupabaseConfigured } from "@/platform/auth/config";
-import { getCurrentSupabaseUser } from "@/platform/auth/supabase-server";
+import {
+  createServerSupabaseClient,
+  getCurrentSupabaseUser,
+} from "@/platform/auth/supabase-server";
 import type { OrganizationRole } from "@/platform/core/permissions";
+
+const ORGANIZATION_ROLES: readonly OrganizationRole[] = [
+  "owner",
+  "admin",
+  "member",
+  "viewer",
+];
 
 export type AppSession = {
   authMode: "supabase";
@@ -68,18 +78,53 @@ export async function getAppSession(): Promise<AppSession> {
     redirect("/login?error=unauthorized");
   }
 
+  const membership = await getMembershipContext(user.id);
+
   return {
     authMode: "supabase",
     isSupabaseConfigured: configured,
     user: {
       name: getDisplayName(user),
       email: user.email ?? "unknown@qarizmi.com",
-      role: "owner",
+      // Real role from organization_memberships; unknown users are viewers.
+      role: membership?.role ?? "viewer",
     },
-    organization: {
+    organization: membership?.organization ?? {
       name: "NAIA-os",
       slug: "naia-os",
     },
+  };
+}
+
+async function getMembershipContext(profileId: string): Promise<{
+  organization: { name: string; slug: string };
+  role: OrganizationRole;
+} | null> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return null;
+
+  const { data } = await supabase
+    .from("organization_memberships")
+    .select("role, organization:organizations(name, slug)")
+    .eq("profile_id", profileId)
+    .limit(1)
+    .maybeSingle();
+
+  if (!data) return null;
+
+  const role = ORGANIZATION_ROLES.includes(data.role as OrganizationRole)
+    ? (data.role as OrganizationRole)
+    : "viewer";
+  const organization = Array.isArray(data.organization)
+    ? data.organization[0]
+    : data.organization;
+
+  return {
+    organization: {
+      name: organization?.name ?? "NAIA-os",
+      slug: organization?.slug ?? "naia-os",
+    },
+    role,
   };
 }
 

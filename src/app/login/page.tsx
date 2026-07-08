@@ -4,7 +4,10 @@ import { redirect } from "next/navigation";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
-import { requestMagicLinkAction } from "@/platform/auth/actions";
+import {
+  requestMagicLinkAction,
+  signInWithGoogleAction,
+} from "@/platform/auth/actions";
 import { isAuthorizedUser } from "@/platform/auth/access";
 import { isSupabaseConfigured } from "@/platform/auth/config";
 import { sanitizeRedirectPath } from "@/platform/auth/safe-redirect";
@@ -72,6 +75,53 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
           <div className="mt-8 grid gap-6 md:grid-cols-[minmax(0,1fr)_18rem]">
             <div className="space-y-4">
               <form
+                action={signInWithGoogleAction}
+                className="rounded-lg border border-stone-200 p-5"
+              >
+                <input
+                  name="redirectedFrom"
+                  type="hidden"
+                  value={redirectedFrom}
+                />
+                <svg
+                  aria-hidden
+                  className="h-5 w-5"
+                  viewBox="0 0 24 24"
+                  xmlns="http://www.w3.org/2000/svg"
+                >
+                  <path
+                    d="M23.52 12.27c0-.85-.08-1.66-.22-2.45H12v4.64h6.46a5.52 5.52 0 0 1-2.4 3.62v3h3.88c2.27-2.09 3.58-5.17 3.58-8.81Z"
+                    fill="#4285F4"
+                  />
+                  <path
+                    d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.88-3c-1.08.72-2.45 1.14-4.06 1.14-3.13 0-5.78-2.11-6.72-4.95H1.27v3.1A12 12 0 0 0 12 24Z"
+                    fill="#34A853"
+                  />
+                  <path
+                    d="M5.28 14.28A7.2 7.2 0 0 1 4.9 12c0-.79.14-1.56.38-2.28v-3.1H1.27a12 12 0 0 0 0 10.76l4.01-3.1Z"
+                    fill="#FBBC05"
+                  />
+                  <path
+                    d="M12 4.77c1.77 0 3.35.61 4.6 1.8l3.44-3.44A11.98 11.98 0 0 0 12 0 12 12 0 0 0 1.27 6.62l4.01 3.1C6.22 6.88 8.87 4.77 12 4.77Z"
+                    fill="#EA4335"
+                  />
+                </svg>
+                <h2 className="mt-4 text-base font-semibold text-stone-950">
+                  Continue with Google
+                </h2>
+                <p className="mt-2 text-sm leading-6 text-stone-600">
+                  One click signs you in with your Qarizmi account and connects
+                  your own Calendar and Gmail for the NAIA agents.
+                </p>
+                <button
+                  className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-semibold text-white transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:bg-stone-300"
+                  disabled={!configured}
+                  type="submit"
+                >
+                  Sign in with Google
+                </button>
+              </form>
+              <form
                 action={requestMagicLinkAction}
                 className="rounded-lg border border-stone-200 p-5"
               >
@@ -123,11 +173,12 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             <div className="rounded-lg border border-stone-200 p-5">
               <LockKeyhole className="h-5 w-5 text-teal-700" />
               <h2 className="mt-4 text-base font-semibold text-stone-950">
-                Invite-only access
+                Qarizmi-only access
               </h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                Accounts are created in Supabase Auth by an admin. Public signup
-                is not exposed in NAIA-os.
+                Google sign-in is reserved for @qarizmi.com accounts. New
+                teammates are provisioned automatically as members; roles are
+                managed by the cofounders.
               </p>
               <ShieldCheck className="h-5 w-5 text-emerald-700" />
               <h2 className="mt-4 text-base font-semibold text-stone-950">
@@ -157,6 +208,10 @@ function getLoginErrorMessage(error: string | undefined) {
       return "Enter your NAIA-os email.";
     case "magic-link":
       return "A sign-in link could not be sent for that email.";
+    case "google":
+      return "Google sign-in could not be started. Check the Supabase Google provider configuration.";
+    case "google-signin":
+      return "Google sign-in was cancelled or failed. Please try again.";
     case "invalid-link":
       return "That sign-in link is invalid or expired.";
     case "unauthorized":

@@ -51,6 +51,7 @@ import { NaiaFloatingAssistant } from "@/features/naia/naia-floating-assistant";
 import { cn } from "@/lib/cn";
 import type { AppSession } from "@/platform/auth/session";
 import type { PlatformModule, PlatformModuleId } from "@/platform/core/modules";
+import { hasPermission } from "@/platform/core/permissions";
 
 const moduleIcons: Record<
   PlatformModuleId,
@@ -79,6 +80,12 @@ export function AppShell({
   session: AppSession;
 }) {
   const pathname = usePathname();
+  // Drive folders live in the cofounders-only shared drive; hide the entry
+  // for roles without Docs Generator access.
+  const canSeeDriveFolders = hasPermission(session.user.role, {
+    module: "proposals",
+    action: "read",
+  });
   const [pipelineCount, setPipelineCount] = useState<number | null>(null);
   const [drivesCount, setDrivesCount] = useState<number | null>(null);
   const [followUpsCount, setFollowUpsCount] = useState<number | null>(null);
@@ -178,6 +185,7 @@ export function AppShell({
             pathname={pathname}
             isCollapsed={isCollapsed}
             onToggleCollapse={() => setIsCollapsed(!isCollapsed)}
+            showDriveFolders={canSeeDriveFolders}
             crmCounts={{
               pipeline: pipelineCount,
               drives: drivesCount,
@@ -221,6 +229,7 @@ export function AppShell({
               pathname={pathname}
               showBrand={false}
               isCollapsed={false}
+              showDriveFolders={canSeeDriveFolders}
               crmCounts={{
                 pipeline: pipelineCount,
                 drives: drivesCount,
@@ -361,12 +370,14 @@ function ShellSidebar({
   showBrand = true,
   isCollapsed = false,
   onToggleCollapse,
+  showDriveFolders = true,
   crmCounts,
 }: {
   modules: PlatformModule[];
   pathname: string;
   onNavigate?: () => void;
   showBrand?: boolean;
+  showDriveFolders?: boolean;
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
   crmCounts?: {
@@ -466,12 +477,16 @@ function ShellSidebar({
                         icon: Activity,
                         count: crmCounts?.pipeline,
                       },
-                      {
-                        href: "/dashboard/drives",
-                        label: "Dossiers Drive",
-                        icon: FolderOpen,
-                        count: crmCounts?.drives,
-                      },
+                      ...(showDriveFolders
+                        ? [
+                            {
+                              href: "/dashboard/drives",
+                              label: "Dossiers Drive",
+                              icon: FolderOpen,
+                              count: crmCounts?.drives,
+                            },
+                          ]
+                        : []),
                       {
                         href: "/dashboard/follow-ups",
                         label: "Suivi des relances",
