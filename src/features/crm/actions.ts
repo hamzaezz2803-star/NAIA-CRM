@@ -874,6 +874,10 @@ export async function updateLeadStatusAction(
 
   if (error) return { success: false, error: error.message };
 
+  if (status === "meeting-booked") {
+    await createMeetingBookedLeadDriveFolder(supabase, leadId);
+  }
+
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
   return { success: true };
@@ -1019,6 +1023,10 @@ export async function updateLeadAction(
     .eq("organization_id", orgId);
 
   if (error) return { success: false, error: error.message };
+
+  if (updates.status === "meeting-booked") {
+    await createMeetingBookedLeadDriveFolder(supabase, leadId);
+  }
 
   // Sync tags if provided
   if (updates.tagIds !== undefined) {
@@ -2067,6 +2075,36 @@ export async function createGoogleDriveFolderAction(
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
+  }
+}
+
+/**
+ * Non-blocking helper called when a lead transitions to meeting-booked: the
+ * client folder must exist before Maya writes the pitch draft into it. Skips
+ * leads that already have a folder or have no resolvable company name.
+ */
+async function createMeetingBookedLeadDriveFolder(
+  supabase: any,
+  leadId: string,
+): Promise<void> {
+  try {
+    const { data: lead } = await supabase
+      .from("crm_leads")
+      .select("company_id, drive_folder_url, notes, company:company_id(name)")
+      .eq("id", leadId)
+      .maybeSingle();
+
+    if (!lead || lead.drive_folder_url) return;
+
+    const companyName =
+      lead.company?.name?.trim() ||
+      parseContactInfoFromNotes(lead.notes).company;
+    if (!companyName) return;
+
+    await createLeadDriveFolderIfConfigured(supabase, leadId, companyName);
+  } catch (driveErr) {
+    // Non-blocking — Drive failure must not block the status change
+    console.error("Drive folder auto-create error:", driveErr);
   }
 }
 
