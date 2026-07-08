@@ -99,6 +99,29 @@ describe("Maya Drive configuration", () => {
     });
   });
 
+  it("lists native Google Slides decks and names their pptx export", async () => {
+    driveServiceMocks.listDriveFolderFiles.mockResolvedValue([
+      {
+        id: "slides-deck",
+        mimeType: "application/vnd.google-apps.presentation",
+        modifiedTime: "2026-07-08T09:00:00.000Z",
+        name: "Qarizmi Generic Pitch",
+        webViewLink: "https://docs.google.com/presentation/d/slides-deck",
+      },
+    ]);
+
+    const decks = await listMayaDriveDeckFiles({
+      sourceFolderId: "pitch-library-id",
+    });
+
+    expect(decks).toHaveLength(1);
+    expect(decks[0]).toMatchObject({
+      driveFileId: "slides-deck",
+      fileName: "Qarizmi Generic Pitch.pptx",
+      kind: "generic",
+    });
+  });
+
   it("uploads Maya drafts into the client 01_Pitch folder through the service account", async () => {
     driveServiceMocks.ensureClientDriveFolder.mockResolvedValue({
       created: false,

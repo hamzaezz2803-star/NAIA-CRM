@@ -16,6 +16,7 @@ import { isNabilFinalPitchFileName } from "./storage";
 
 const PITCH_SUBFOLDER_NAME = "01_Pitch";
 const GOOGLE_FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+const GOOGLE_SLIDES_MIME_TYPE = "application/vnd.google-apps.presentation";
 const PPTX_MIME_TYPE =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
 
@@ -199,7 +200,13 @@ async function findClientPitchFolderId(clientFolderId: string) {
 }
 
 function toMayaDriveDeckFile(file: DriveFileSummary): MayaDriveDeckFile {
-  const fileName = file.name ?? "Untitled.pptx";
+  // Native Google Slides decks are exported to pptx on download, so their
+  // local file name keeps the .pptx extension.
+  const rawFileName = file.name ?? "Untitled.pptx";
+  const fileName =
+    file.mimeType === GOOGLE_SLIDES_MIME_TYPE && !/\.pptx$/i.test(rawFileName)
+      ? `${rawFileName}.pptx`
+      : rawFileName;
 
   return {
     driveFileId: file.id ?? "",
@@ -231,5 +238,9 @@ function compareGoogleDriveModifiedDesc(
 }
 
 function isPptxDriveFile(file: DriveFileSummary) {
-  return file.mimeType === PPTX_MIME_TYPE || /\.pptx$/i.test(file.name ?? "");
+  return (
+    file.mimeType === PPTX_MIME_TYPE ||
+    file.mimeType === GOOGLE_SLIDES_MIME_TYPE ||
+    /\.pptx$/i.test(file.name ?? "")
+  );
 }

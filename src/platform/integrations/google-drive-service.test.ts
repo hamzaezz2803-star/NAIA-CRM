@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CLIENT_DRIVE_SUBFOLDERS,
+  downloadDriveFile,
   ensureClientDriveFolder,
   getClientsRootFolderId,
   getPitchSourceFolderId,
@@ -129,5 +130,119 @@ describe("google-drive-service", () => {
     await ensureClientDriveFolder("L'Oréal");
 
     expect(searchQueries[0]).toContain("name = 'L\\'Oréal'");
+  });
+
+  it("downloads binary files with alt=media", async () => {
+    const downloadUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://oauth2.googleapis.com/token")) {
+        return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+      }
+      if (url.includes("fields=mimeType")) {
+        return jsonResponse({
+          mimeType:
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        });
+      }
+      downloadUrls.push(url);
+      return new Response(new Uint8Array([80, 75, 3, 4]), { status: 200 });
+    });
+
+    const content = await downloadDriveFile("pptx-file-id");
+
+    expect(new Uint8Array(content)).toEqual(new Uint8Array([80, 75, 3, 4]));
+    expect(downloadUrls).toHaveLength(1);
+    expect(downloadUrls[0]).toContain("alt=media");
+    expect(downloadUrls[0]).toContain("supportsAllDrives=true");
+    expect(downloadUrls[0]).not.toContain("/export");
+  });
+
+  it("exports Google Slides files to pptx instead of alt=media", async () => {
+    const downloadUrls: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://oauth2.googleapis.com/token")) {
+        return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+      }
+      if (url.includes("fields=mimeType")) {
+        return jsonResponse({
+          mimeType: "application/vnd.google-apps.presentation",
+        });
+      }
+      downloadUrls.push(url);
+      return new Response(new Uint8Array([80, 75]), { status: 200 });
+    });
+
+    const content = await downloadDriveFile("slides-file-id");
+
+    expect(new Uint8Array(content)).toEqual(new Uint8Array([80, 75]));
+    expect(downloadUrls).toHaveLength(1);
+    expect(downloadUrls[0]).toContain("/files/slides-file-id/export");
+    expect(downloadUrls[0]).toContain(
+      "mimeType=application%2Fvnd.openxmlformats-officedocument.presentationml.presentation",
+    );
+    expect(downloadUrls[0]).toContain("supportsAllDrives=true");
+    expect(downloadUrls[0]).not.toContain("alt=media");
+  });
+
+  it("turns 403 cannotDownloadFile into an actionable message", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://oauth2.googleapis.com/token")) {
+        return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+      }
+      if (url.includes("fields=mimeType")) {
+        return jsonResponse({
+          mimeType:
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            errors: [
+              {
+                reason: "cannotDownloadFile",
+                message: "This file cannot be downloaded by the user.",
+              },
+            ],
+          },
+        }),
+        { status: 403 },
+      );
+    });
+
+    await expect(downloadDriveFile("restricted-file-id")).rejects.toThrow(
+      "Le service account ne peut pas télécharger ce fichier : passe-le en Éditeur sur le dossier, ou désactive la restriction de téléchargement pour les lecteurs du Drive partagé, ou stocke le deck en .pptx natif.",
+    );
+  });
+
+  it("turns export size overflows into a native-pptx suggestion", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.startsWith("https://oauth2.googleapis.com/token")) {
+        return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+      }
+      if (url.includes("fields=mimeType")) {
+        return jsonResponse({
+          mimeType: "application/vnd.google-apps.presentation",
+        });
+      }
+      return new Response(
+        JSON.stringify({
+          error: {
+            code: 403,
+            errors: [{ reason: "exportSizeLimitExceeded" }],
+          },
+        }),
+        { status: 403 },
+      );
+    });
+
+    await expect(downloadDriveFile("huge-slides-id")).rejects.toThrow(
+      "L'export Google Drive est plafonné à 10 Mo",
+    );
   });
 });
