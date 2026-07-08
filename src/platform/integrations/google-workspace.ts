@@ -11,6 +11,7 @@ type GoogleTokenReference = {
 };
 
 type GoogleConnectionRow = {
+  connected_by_profile_id?: string | null;
   encrypted_token_reference: string | null;
   external_account_label: string | null;
   id: string;
@@ -34,6 +35,25 @@ export type GmailMessageSummary = {
   subject?: string;
   threadId?: string;
 };
+
+export async function getGoogleWorkspaceAccessToken({
+  requiredScopes = [],
+}: {
+  requiredScopes?: string[];
+} = {}) {
+  const connection = await getGoogleWorkspaceConnection();
+  const missingScopes = requiredScopes.filter(
+    (scope) => !(connection.scopes ?? []).includes(scope),
+  );
+
+  if (missingScopes.length > 0) {
+    throw new Error(
+      `Google Workspace must be reconnected with additional scopes: ${missingScopes.join(", ")}`,
+    );
+  }
+
+  return getGoogleAccessToken(connection);
+}
 
 export async function listGoogleCalendarEvents({
   calendarId = "primary",
@@ -242,17 +262,18 @@ async function getGoogleWorkspaceConnection(): Promise<GoogleConnectionRow> {
   const { data, error } = await supabase
     .from("integration_connections")
     .select(
-      "id,organization_id,external_account_label,scopes,encrypted_token_reference",
+      "id,organization_id,external_account_label,scopes,encrypted_token_reference,connected_by_profile_id",
     )
     .eq("organization_id", membership.organization_id)
     .eq("provider", "google")
     .eq("status", "connected")
+    .eq("connected_by_profile_id", user.id)
     .order("connected_at", { ascending: false })
     .limit(1)
     .maybeSingle();
 
   if (error || !data) {
-    throw new Error("Google Workspace is not connected.");
+    throw new Error("Google Workspace is not connected for this user.");
   }
 
   return data as GoogleConnectionRow;

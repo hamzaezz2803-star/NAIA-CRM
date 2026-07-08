@@ -1,4 +1,5 @@
 export const GOOGLE_WORKSPACE_SCOPES = [
+  "https://www.googleapis.com/auth/drive.readonly",
   "https://www.googleapis.com/auth/drive.file",
   "https://www.googleapis.com/auth/calendar.events",
   "https://www.googleapis.com/auth/calendar.freebusy",

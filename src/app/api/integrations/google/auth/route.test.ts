@@ -21,6 +21,7 @@ describe("Google integration auth route", () => {
 
     expect(scopes).toEqual(
       expect.arrayContaining([
+        "https://www.googleapis.com/auth/drive.readonly",
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/calendar.events",
         "https://www.googleapis.com/auth/calendar.freebusy",

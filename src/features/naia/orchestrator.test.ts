@@ -29,13 +29,53 @@ describe("NAIA orchestrator", () => {
 
     expect(result.agent.id).toBe("crm");
     expect(result.agent.name).toBe("Salma");
-    expect(result.actions).toHaveLength(1);
+    expect(result.actions).toHaveLength(2);
     expect(result.actions[0]).toMatchObject({
       approvalRequired: true,
       kind: "crm.updateLeadStatus",
       payload: {
         leadId: "lead-atlas",
         status: "meeting-booked",
+      },
+    });
+    expect(result.actions[1]).toMatchObject({
+      agentId: "proposals",
+      approvalRequired: true,
+      kind: "pitch.generateDraft",
+      payload: {
+        leadId: "lead-atlas",
+      },
+    });
+  });
+
+  it("routes explicit pitch generation to Maya with a CRM-backed lead", () => {
+    const result = orchestrateNaiaCommand({
+      command: "Maya prépare le pitch pour HPS",
+      crmLeads: [
+        ...crmLeads,
+        {
+          companyName: "HPS",
+          contactName: "Abdeslam El-Alawi",
+          createdAt: "2026-07-02T10:00:00.000Z",
+          id: "lead-hps",
+          notes: "Besoin IA autour du LLM de Mistral.",
+          organizationId: "org-1",
+          status: "meeting-booked",
+          topic: "HPS - LLM local",
+          updatedAt: "2026-07-02T10:00:00.000Z",
+        },
+      ],
+    });
+
+    expect(result.agent.id).toBe("proposals");
+    expect(result.agent.name).toBe("Maya");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "pitch.generateDraft",
+      payload: {
+        clientName: "HPS",
+        leadId: "lead-hps",
       },
     });
   });

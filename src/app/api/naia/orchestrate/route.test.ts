@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   extractLeadFromNaturalTextAction: vi.fn(),
   fetchLeadsAction: vi.fn(),
   fetchTagsAction: vi.fn(),
+  generateMayaPitchDraftForLeadAction: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   updateLeadStatusAction: vi.fn(),
@@ -22,6 +23,11 @@ vi.mock("@/features/crm/actions", () => ({
 
 vi.mock("@/platform/auth/supabase-server", () => ({
   createServerSupabaseClient: vi.fn(),
+}));
+
+vi.mock("@/features/maya/actions", () => ({
+  generateMayaPitchDraftForLeadAction:
+    mocks.generateMayaPitchDraftForLeadAction,
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
@@ -52,6 +58,14 @@ describe("NAIA orchestrate route", () => {
     mocks.fetchTagsAction.mockResolvedValue([
       { color: "teal", id: "tag-crm", name: "CRM", organizationId: "org" },
     ]);
+    mocks.generateMayaPitchDraftForLeadAction.mockResolvedValue({
+      draftFileName:
+        "20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
+      draftFilePath:
+        "/tmp/HPS/Pitch/20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
+      manifestPath: "/tmp/HPS/Pitch/maya-generation-manifest.json",
+      success: true,
+    });
     mocks.createTagAction.mockImplementation(async (name: string) => ({
       success: true,
       tag: { color: "blue", id: `tag-${name.toLowerCase()}`, name },
@@ -317,5 +331,52 @@ describe("NAIA orchestrate route", () => {
     });
     expect(executeBody.execution).toBe("applied");
     expect(executeBody.providerResult.events).toHaveLength(1);
+  });
+
+  it("executes an approved Maya pitch draft action", async () => {
+    mocks.fetchLeadsAction.mockResolvedValue([
+      {
+        companyName: "HPS",
+        contactName: "Abdeslam El-Alawi",
+        createdAt: "2026-07-02T10:00:00.000Z",
+        id: "lead-hps",
+        notes: "Besoin IA autour du LLM de Mistral.",
+        organizationId: "org-1",
+        status: "meeting-booked",
+        topic: "HPS - LLM local",
+        updatedAt: "2026-07-02T10:00:00.000Z",
+      },
+    ]);
+    const command = "Maya prépare le pitch pour HPS";
+    const draftResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command }),
+        method: "POST",
+      }),
+    );
+    const draftBody = await draftResponse.json();
+    const pitchAction = draftBody.actions.find(
+      (action: { kind: string }) => action.kind === "pitch.generateDraft",
+    );
+
+    const executeResponse = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          actionId: pitchAction.id,
+          approvalToken: pitchAction.approvalToken,
+          command,
+          execute: true,
+        }),
+        method: "POST",
+      }),
+    );
+    const executeBody = await executeResponse.json();
+
+    expect(mocks.generateMayaPitchDraftForLeadAction).toHaveBeenCalledWith(
+      "lead-hps",
+    );
+    expect(executeBody.execution).toBe("applied");
+    expect(executeBody.message).toContain("Pitch Maya généré");
+    expect(executeBody.providerResult.draftFileName).toContain("HPS");
   });
 });

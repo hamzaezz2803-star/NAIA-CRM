@@ -122,6 +122,22 @@ export type NaiaActionDraft =
         companyName?: string;
       };
       risk: NaiaActionRisk;
+    }
+  | {
+      agentId: "proposals";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "pitch.generateDraft";
+      label: string;
+      payload: {
+        clientName?: string;
+        contactName?: string;
+        leadId: string;
+        leadLabel: string;
+        notes?: string;
+      };
+      risk: NaiaActionRisk;
     };
 
 export type NaiaOrchestrationResult = {
@@ -182,7 +198,11 @@ export function orchestrateNaiaCommand({
     ? "crm"
     : (agentIdOverride ?? localAgentId);
   const agent = getNaiaAgent(agentId);
-  const workspaceActions = buildWorkspaceActions(cleanCommand, localAgentId);
+  const workspaceActions = buildWorkspaceActions(
+    cleanCommand,
+    localAgentId,
+    crmLeads,
+  );
   const actions =
     agentId === "crm" || localAgentId === "crm"
       ? buildCrmActions(cleanCommand, crmLeads)
@@ -246,6 +266,22 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
   }
 
   if (
+    isPitchGenerationIntent(normalized) &&
+    !includesAny(normalized, [
+      "meeting booked",
+      "meeting fixe",
+      "rdv fixe",
+      "rendez vous fixe",
+      "rendez-vous fixe",
+      "passe",
+      "mets",
+      "met ",
+    ])
+  ) {
+    return "proposals";
+  }
+
+  if (
     includesAny(normalized, [
       "crm",
       "lead",
@@ -254,7 +290,6 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
       "meeting fixe",
       "propale",
       "proposition",
-      "pitch",
       "contacte",
       "relance",
       "relancer",
@@ -336,6 +371,7 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
   }
 
   if (
+    isPitchGenerationIntent(normalized) ||
     includesAny(normalized, ["proposal", "proposition", "propale", "offre"])
   ) {
     return "proposals";
@@ -596,7 +632,7 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
             ? "Preparer une relance commerciale personnalisee"
             : undefined;
 
-    return [
+    const actions: NaiaActionDraft[] = [
       {
         agentId: "crm",
         approvalRequired: true,
@@ -617,6 +653,12 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
         risk: "medium",
       } satisfies NaiaActionDraft,
     ];
+
+    if (status === "meeting-booked") {
+      actions.push(buildPitchDraftAction(command, matchedLead));
+    }
+
+    return actions;
   }
 
   return [];
@@ -642,8 +684,14 @@ function buildDeveloperAction(command: string): NaiaActionDraft {
 function buildWorkspaceActions(
   command: string,
   localAgentId: NaiaAgentId,
+  crmLeads: CrmLeadSummary[],
 ): NaiaActionDraft[] {
   const normalized = normalize(command);
+
+  if (localAgentId === "proposals" && isPitchGenerationIntent(normalized)) {
+    const matchedLead = findBestLeadMatch(command, crmLeads);
+    return matchedLead ? [buildPitchDraftAction(command, matchedLead)] : [];
+  }
 
   if (wantsGmailRead(normalized)) {
     return [
@@ -707,6 +755,29 @@ function buildWorkspaceActions(
   return [];
 }
 
+function buildPitchDraftAction(
+  command: string,
+  lead: CrmLeadSummary,
+): NaiaActionDraft {
+  return {
+    agentId: "proposals",
+    approvalRequired: true,
+    description:
+      "Maya generera un draft PPTX dans le dossier Drive prive du client, a partir du dernier deck generique, du contexte CRM et des questions de cadrage disponibles.",
+    id: `pitch-draft-${lead.id}-${stableActionSuffix(command)}`,
+    kind: "pitch.generateDraft",
+    label: "Generer le pitch Maya",
+    payload: {
+      clientName: lead.companyName,
+      contactName: lead.contactName,
+      leadId: lead.id,
+      leadLabel: lead.topic,
+      notes: command,
+    },
+    risk: "medium",
+  };
+}
+
 function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
   const normalizedCommand = normalize(command);
   const commandTokens = tokenSet(normalizedCommand);
@@ -738,6 +809,15 @@ function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
 
     if (haystack && normalizedCommand.includes(haystack.slice(0, 18))) {
       score += 3;
+    }
+
+    const companyName = lead.companyName ? normalize(lead.companyName) : "";
+    const contactName = lead.contactName ? normalize(lead.contactName) : "";
+    if (companyName && normalizedCommand.includes(companyName)) {
+      score += companyName.length <= 4 ? 3 : 4;
+    }
+    if (contactName && normalizedCommand.includes(contactName)) {
+      score += 4;
     }
 
     if (score > bestScore) {
@@ -795,6 +875,14 @@ function buildResponse(
 
   if (agentId === "developer") {
     return `${agent.name} peut preparer la mission dev: spec, branche, criteres d'acceptation et revue humaine. NAIA ne modifie pas le code sans validation.`;
+  }
+
+  if (agentId === "proposals") {
+    if (actions.some((action) => action.kind === "pitch.generateDraft")) {
+      return `${agent.name} prend le relais Docs Generator. J'ai prepare la generation du pitch avec validation humaine avant de creer le draft PPTX dans le Drive prive Qarizmi.`;
+    }
+
+    return `${agent.name} prend le relais Docs Generator. Je peux generer un pitch pour un lead meeting booke; indique le client ou passe le lead en meeting booke dans le CRM.`;
   }
 
   if (agentId === "integrations") {
@@ -1121,6 +1209,32 @@ function wantsSlackMessage(normalizedCommand: string) {
       "notification",
     ])
   );
+}
+
+function isPitchGenerationIntent(normalizedCommand: string) {
+  const mentionsPitch = includesAny(normalizedCommand, [
+    "pitch",
+    "deck",
+    "ppt",
+    "pptx",
+    "presentation",
+    "présentation",
+  ]);
+  const asksGenerate = includesAny(normalizedCommand, [
+    "maya",
+    "prepare",
+    "preparer",
+    "genere",
+    "generer",
+    "cree",
+    "creer",
+    "construis",
+    "faire",
+    "draft",
+    "brouillon",
+  ]);
+
+  return mentionsPitch && asksGenerate;
 }
 
 function inferCalendarWindowDays(normalizedCommand: string) {

@@ -466,6 +466,22 @@ export function NaiaCommandCenter() {
         return;
       }
 
+      if (action.kind === "pitch.generateDraft") {
+        setResult((current) =>
+          current
+            ? {
+                ...current,
+                actions: current.actions.filter(
+                  (candidate) => candidate.id !== action.id,
+                ),
+                response: successMessage,
+              }
+            : current,
+        );
+        setNotice(successMessage);
+        return;
+      }
+
       await runCommand(approvedCommand);
       setNotice(successMessage);
     } catch (error) {

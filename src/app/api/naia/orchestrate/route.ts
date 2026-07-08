@@ -32,6 +32,7 @@ import {
   listGmailMessages,
   listGoogleCalendarEvents,
 } from "@/platform/integrations/google-workspace";
+import { generateMayaPitchDraftForLeadAction } from "@/features/maya/actions";
 
 type OrchestratePayload = {
   actionId?: string;
@@ -503,6 +504,28 @@ async function executeAction({
       message:
         "Génération du brouillon de relance préparée. Redirection en cours...",
       success: true,
+    });
+  }
+
+  if (action.kind === "pitch.generateDraft") {
+    const response = await generateMayaPitchDraftForLeadAction(
+      action.payload.leadId,
+    );
+
+    return Response.json({
+      action,
+      execution: response.success ? "applied" : "failed",
+      message: response.success
+        ? `Pitch Maya généré: ${response.draftFileName}`
+        : (response.error ?? "Génération du pitch impossible."),
+      providerResult: response.success
+        ? {
+            draftFileName: response.draftFileName,
+            draftFilePath: response.draftFilePath,
+            manifestPath: response.manifestPath,
+          }
+        : undefined,
+      success: response.success,
     });
   }
 

@@ -186,6 +186,16 @@ through Maya / Docs Generator. When a lead moves to `proposal-sent`, Maya
 prepares the proposal next action. The CRM action itself remains
 organization-scoped through the existing CRM server actions.
 
+Maya pitch generation is implemented in `src/features/maya` and should stay
+outside CRM ownership. CRM provides the lead, company/contact fields, notes,
+status, and meeting context; Maya owns the private pitch library, PPTX deck
+planning, OpenAI-enhanced draft generation, and Nabil final-version learning
+loop. Do not copy pitch source decks into a stagiaire-visible folder, broaden
+Drive sharing for debugging, or reuse `MAYA_OPENAI_API_KEY` outside Maya's
+cofounder-gated draft generation action. If a lead is missing
+website/objective/contact details, Maya should surface smart follow-up questions
+instead of guessing silently.
+
 NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
 client sends only the original command, action id, and approval token. Do not
 reintroduce client-supplied action payload execution.
