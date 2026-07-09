@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   downloadMayaDriveDeckToTemp: vi.fn(),
   enhanceMayaDeckPlanWithOpenAI: vi.fn(),
   fetchLeadsAction: vi.fn(),
+  findMayaDriveDraftForClient: vi.fn(),
+  findMayaDriveFinalForClient: vi.fn(),
   findLatestGenericDeck: vi.fn(),
   getMayaDriveConfigFromEnv: vi.fn(),
   generateMayaPitchDraft: vi.fn(),
@@ -38,8 +40,8 @@ vi.mock("./access", () => ({
 
 vi.mock("./drive", () => ({
   downloadMayaDriveDeckToTemp: mocks.downloadMayaDriveDeckToTemp,
-  findMayaDriveDraftForClient: vi.fn(),
-  findMayaDriveFinalForClient: vi.fn(),
+  findMayaDriveDraftForClient: mocks.findMayaDriveDraftForClient,
+  findMayaDriveFinalForClient: mocks.findMayaDriveFinalForClient,
   getMayaDriveConfigFromEnv: mocks.getMayaDriveConfigFromEnv,
   hasMayaDriveFolderConfig: mocks.hasMayaDriveFolderConfig,
   listMayaDriveDeckFiles: mocks.listMayaDriveDeckFiles,
@@ -60,7 +62,11 @@ vi.mock("./pptx", () => ({
   listMayaDeckFiles: mocks.listMayaDeckFiles,
 }));
 
-import { generateMayaPitchDraftForLeadAction } from "./actions";
+import {
+  fetchMayaPitchQueueAction,
+  generateMayaPitchDraftForLeadAction,
+  generateMayaPitchDraftFormAction,
+} from "./actions";
 
 describe("Maya actions", () => {
   beforeEach(() => {
@@ -77,6 +83,8 @@ describe("Maya actions", () => {
     mocks.listMayaDeckFiles.mockResolvedValue([makeGenericDeckFile()]);
     mocks.findLatestGenericDeck.mockReturnValue(makeGenericDeckFile());
     mocks.downloadMayaDriveDeckToTemp.mockResolvedValue(makeGenericDeckFile());
+    mocks.findMayaDriveDraftForClient.mockResolvedValue(null);
+    mocks.findMayaDriveFinalForClient.mockResolvedValue(null);
     mocks.indexMayaDeck.mockResolvedValue(makeGenericDeck());
     mocks.enhanceMayaDeckPlanWithOpenAI.mockImplementation(
       async ({ basePlan }: { basePlan: MayaDeckPlan }) => ({
@@ -188,6 +196,76 @@ describe("Maya actions", () => {
     } finally {
       await rm(tempDeckRoot, { force: true, recursive: true });
     }
+  });
+
+  it("returns a visible form state after generating a Drive draft", async () => {
+    mocks.hasMayaDriveFolderConfig.mockReturnValue(true);
+    const formData = new FormData();
+    formData.set("leadId", "lead-1");
+    formData.set("websiteUrl", "https://hps-worldwide.com");
+    formData.set(
+      "extraContext",
+      "Le client veut prioriser les cas d'usage LLM local avec Mistral.",
+    );
+
+    const result = await generateMayaPitchDraftFormAction(
+      { status: "idle" },
+      formData,
+    );
+
+    expect(result).toMatchObject({
+      draftFileName:
+        "20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
+      draftFilePath: "gdrive:draft",
+      leadId: "lead-1",
+      message: expect.stringContaining("Draft PPTX généré"),
+      status: "success",
+    });
+    expect(mocks.enhanceMayaDeckPlanWithOpenAI).toHaveBeenCalledWith(
+      expect.objectContaining({
+        basePlan: expect.objectContaining({
+          brief: expect.objectContaining({
+            crmContext: expect.stringContaining("Mistral"),
+            websiteUrl: "https://hps-worldwide.com",
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("asks for the missing pitch context before generating unless explicitly overridden", async () => {
+    const formData = new FormData();
+    formData.set("leadId", "lead-1");
+
+    const result = await generateMayaPitchDraftFormAction(
+      { status: "idle" },
+      formData,
+    );
+
+    expect(result).toEqual({
+      leadId: "lead-1",
+      message:
+        "Complète les questions de contexte ou coche l'option pour générer un draft provisoire.",
+      status: "error",
+    });
+    expect(mocks.generateMayaPitchDraft).not.toHaveBeenCalled();
+  });
+
+  it("keeps the queue visible when Drive draft lookup fails", async () => {
+    mocks.hasMayaDriveFolderConfig.mockReturnValue(true);
+    mocks.findMayaDriveDraftForClient.mockRejectedValue(
+      new Error("Drive scope missing"),
+    );
+
+    const result = await fetchMayaPitchQueueAction();
+
+    expect(result).toMatchObject({
+      authorized: true,
+      items: [expect.objectContaining({ clientName: "HPS" })],
+      sourceWarnings: expect.arrayContaining([
+        expect.stringContaining("Maya n'a pas pu vérifier les drafts"),
+      ]),
+    });
   });
 });
 
