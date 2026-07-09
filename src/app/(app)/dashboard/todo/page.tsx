@@ -1,7 +1,6 @@
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
-import { PageHeader } from "@/components/layout/page-header";
 import {
   Clock,
   Calendar,
@@ -56,16 +55,6 @@ const STATUS_LABELS: Record<string, string> = {
   "proposal-sent": "Propale envoyee",
   won: "Gagne",
   "dead-end": "Clos",
-};
-
-const STATUS_COLORS: Record<string, string> = {
-  "lead-to-contact": "bg-stone-100 text-stone-700 border-stone-200",
-  contacted: "bg-blue-50 text-blue-700 border-blue-200",
-  "to-follow-up": "bg-amber-50 text-amber-700 border-amber-200",
-  "meeting-booked": "bg-purple-50 text-purple-700 border-purple-200",
-  "proposal-sent": "bg-teal-50 text-teal-700 border-teal-200",
-  won: "bg-emerald-50 text-emerald-700 border-emerald-200",
-  "dead-end": "bg-stone-100 text-stone-500 border-stone-200",
 };
 
 function detectActionType(nextAction?: string) {
@@ -214,12 +203,12 @@ function LeadCard({
       draggable
       onDragStart={(e) => onDragStart(e, lead.id)}
       onClick={onClick}
-      className={`group relative rounded-xl border bg-white p-4 shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing select-none ${
-        isDragging
-          ? "opacity-40 scale-95 rotate-1 shadow-lg border-teal-300"
-          : dueInfo?.isOverdue
-            ? "border-red-200 hover:border-red-300"
-            : "border-stone-200 hover:border-stone-300"
+      style={{
+        background: "var(--maison-card)",
+        border: "1px solid var(--maison-border)",
+      }}
+      className={`group relative rounded-xl p-4 shadow-sm hover:shadow-md transition-all cursor-grab active:cursor-grabbing select-none ${
+        isDragging ? "opacity-40 scale-95 rotate-1 shadow-lg" : ""
       }`}
     >
       {dueInfo?.isOverdue && (
@@ -228,18 +217,27 @@ function LeadCard({
           <span>ECHEANCE DEPASSEE</span>
         </div>
       )}
-      <h4 className="font-bold text-stone-900 text-sm leading-snug group-hover:text-teal-700 transition-colors pr-5">
+      <h4
+        className="font-bold text-sm leading-snug transition-colors pr-5"
+        style={{ color: "var(--maison-text-primary)" }}
+      >
         {lead.topic}
       </h4>
       <div className="mt-2 space-y-1">
         {lead.companyName && (
-          <div className="flex items-center gap-1.5 text-xs text-stone-600">
+          <div
+            className="flex items-center gap-1.5 text-xs"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
             <Building2 className="h-3 w-3 text-stone-400 shrink-0" />
             <span className="truncate font-medium">{lead.companyName}</span>
           </div>
         )}
         {lead.contactName && (
-          <div className="flex items-center gap-1.5 text-xs text-stone-500">
+          <div
+            className="flex items-center gap-1.5 text-xs"
+            style={{ color: "var(--maison-text-muted)" }}
+          >
             <User className="h-3 w-3 text-stone-400 shrink-0" />
             <span className="truncate">{lead.contactName}</span>
             {lead.contactJobTitle && (
@@ -281,10 +279,12 @@ function LeadCard({
       )}
       <div className="mt-3 flex items-center justify-between">
         <span
-          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold ${
-            STATUS_COLORS[lead.status] ??
-            "bg-stone-100 text-stone-600 border-stone-200"
-          }`}
+          className={`inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-bold`}
+          style={{
+            background: "var(--maison-page)",
+            borderColor: "var(--maison-border)",
+            color: "var(--maison-text-secondary)",
+          }}
         >
           {STATUS_LABELS[lead.status] ?? lead.status}
         </span>
@@ -300,7 +300,12 @@ function LeadCard({
           {initials ? (
             <div
               title={`Assigne a ${lead.assignedToName}`}
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-teal-100 border border-teal-200 text-[10px] font-bold text-teal-700"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-bold border"
+              style={{
+                background: "var(--maison-brass)",
+                color: "var(--maison-brass-text)",
+                borderColor: "var(--maison-border)",
+              }}
             >
               {initials}
             </div>
@@ -311,7 +316,14 @@ function LeadCard({
           )}
         </div>
       </div>
-      <div className="absolute right-3 top-3.5 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 bg-stone-50 border border-stone-200 rounded text-stone-400 hover:text-teal-600">
+      <div
+        className="absolute right-3 top-3.5 opacity-0 group-hover:opacity-100 transition-opacity p-0.5 border rounded"
+        style={{
+          background: "var(--maison-page)",
+          borderColor: "var(--maison-border)",
+          color: "var(--maison-text-muted)",
+        }}
+      >
         <ExternalLink className="h-3.5 w-3.5" />
       </div>
     </div>
@@ -466,25 +478,60 @@ export default function TodoPage() {
   const doneLeads = leads.filter((l) => STATUS_TO_COLUMN[l.status] === "done");
 
   const selectCls =
-    "flex w-full rounded-lg border border-stone-200 bg-white px-3 py-2 text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-600 transition";
+    "flex w-full rounded-lg border py-2 px-3 text-xs outline-none transition rounded-lg";
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-        <PageHeader
-          eyebrow="CRM - Taches"
-          title="Todo List"
-          description="Vue Kanban des leads - synchronisee automatiquement avec le Pipeline CRM."
-        />
+      {/* Header section matches Pipeline page header exactly */}
+      <div
+        className="flex flex-col gap-2 border-b pb-4 sm:flex-row sm:items-center sm:justify-between"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            CRM - Tâches
+          </p>
+          <h1
+            className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl font-serif"
+            style={{
+              fontFamily: "var(--font-playfair), Georgia, serif",
+              color: "var(--maison-text-primary)",
+            }}
+          >
+            Todo List
+          </h1>
+          <p
+            className="mt-1 text-xs"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            Vue Kanban des leads - synchronisée automatiquement avec le Pipeline
+            CRM.
+          </p>
+        </div>
         <button
           onClick={() => router.push("/dashboard/leads")}
-          className="inline-flex items-center gap-1.5 self-start rounded-lg bg-teal-700 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-teal-800 transition"
+          className="inline-flex items-center gap-1.5 self-start rounded-lg px-4 py-2.5 text-xs font-bold shadow-sm transition"
+          style={{
+            background: "var(--maison-brass)",
+            color: "var(--maison-brass-text)",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--maison-brass-hover)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "var(--maison-brass)";
+          }}
         >
           <ExternalLink className="h-4 w-4" />
-          Gerer les leads
+          Gérer les leads
         </button>
       </div>
-      <div className="grid grid-cols-3 gap-4">
+
+      {/* KPI Cards styled as Maison premium cards */}
+      <div className="grid grid-cols-3 gap-3">
         {[
           {
             label: "Leads actifs",
@@ -494,55 +541,98 @@ export default function TodoPage() {
           {
             label: "En retard",
             value: overdue.length,
-            cls: overdue.length > 0 ? "text-red-600" : "text-stone-900",
+            cls: overdue.length > 0 ? "text-red-650" : "text-stone-900",
           },
           {
-            label: "Termines",
+            label: "Terminés",
             value: doneLeads.length,
             cls: "text-emerald-600",
           },
         ].map((kpi) => (
           <div
             key={kpi.label}
-            className="rounded-xl border border-stone-200 bg-white px-5 py-4 shadow-sm"
+            className="rounded-xl p-4 shadow-sm"
+            style={{
+              background: "var(--maison-card)",
+              border: "1px solid var(--maison-border)",
+            }}
           >
-            <p className="text-xs font-semibold uppercase tracking-wider text-stone-400">
+            <p
+              className="text-[10px] font-bold uppercase tracking-wider"
+              style={{ color: "var(--maison-text-muted)" }}
+            >
               {kpi.label}
             </p>
-            <p className={`mt-1 text-3xl font-black ${kpi.cls}`}>{kpi.value}</p>
+            <p
+              className="mt-1 text-2xl font-black"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              {kpi.value}
+            </p>
           </div>
         ))}
       </div>
-      <div className="rounded-xl border border-stone-200 bg-white p-4 shadow-sm">
+
+      {/* Filters bar styled as Maison card */}
+      <div
+        className="rounded-xl p-4 shadow-sm"
+        style={{
+          background: "var(--maison-card)",
+          border: "1px solid var(--maison-border)",
+        }}
+      >
         <div className="grid gap-3 sm:grid-cols-4">
           <div className="relative">
             <Search className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
             <input
               type="text"
               placeholder="Rechercher un lead..."
-              className="w-full rounded-lg border border-stone-200 bg-white py-2 pl-9 pr-3 text-sm text-stone-800 focus:outline-none focus:ring-2 focus:ring-teal-600/20 focus:border-teal-600 transition"
+              className="w-full rounded-lg border py-2 pl-9 pr-3 text-xs outline-none transition"
+              style={{
+                borderColor: "var(--maison-border)",
+                background: "var(--maison-page)",
+                color: "var(--maison-text-primary)",
+              }}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
             />
           </div>
           <select
             className={selectCls}
+            style={{
+              borderColor: "var(--maison-border)",
+              background: "var(--maison-page)",
+              color: "var(--maison-text-primary)",
+            }}
             value={selectedAssigneeId}
             onChange={(e) => setSelectedAssigneeId(e.target.value)}
           >
-            <option value="">Tous les collaborateurs</option>
+            <option value="" style={{ background: "var(--maison-card)" }}>
+              Tous les collaborateurs
+            </option>
             {team.map((m) => (
-              <option key={m.id} value={m.id}>
+              <option
+                key={m.id}
+                value={m.id}
+                style={{ background: "var(--maison-card)" }}
+              >
                 {m.fullName}
               </option>
             ))}
           </select>
           <select
             className={selectCls}
+            style={{
+              borderColor: "var(--maison-border)",
+              background: "var(--maison-page)",
+              color: "var(--maison-text-primary)",
+            }}
             value={selectedActionType}
             onChange={(e) => setSelectedActionType(e.target.value)}
           >
-            <option value="">Tous les types d action</option>
+            <option value="" style={{ background: "var(--maison-card)" }}>
+              Tous les types d action
+            </option>
             {[
               "Relance",
               "Meeting",
@@ -551,34 +641,56 @@ export default function TodoPage() {
               "Message",
               "Suivi",
             ].map((at) => (
-              <option key={at} value={at}>
+              <option
+                key={at}
+                value={at}
+                style={{ background: "var(--maison-card)" }}
+              >
                 {at}
               </option>
             ))}
           </select>
           <select
             className={selectCls}
+            style={{
+              borderColor: "var(--maison-border)",
+              background: "var(--maison-page)",
+              color: "var(--maison-text-primary)",
+            }}
             value={selectedTagId}
             onChange={(e) => setSelectedTagId(e.target.value)}
           >
-            <option value="">Tous les tags</option>
+            <option value="" style={{ background: "var(--maison-card)" }}>
+              Tous les tags
+            </option>
             {tags.map((tag) => (
-              <option key={tag.id} value={tag.id}>
+              <option
+                key={tag.id}
+                value={tag.id}
+                style={{ background: "var(--maison-card)" }}
+              >
                 {tag.name}
               </option>
             ))}
           </select>
         </div>
       </div>
+
       {isLoading ? (
-        <div className="flex items-center justify-center py-24">
-          <Loader2 className="h-6 w-6 animate-spin text-teal-600" />
-          <span className="ml-3 text-sm text-stone-500">
+        <div className="flex items-center justify-center py-20">
+          <Loader2
+            className="h-5 w-5 animate-spin"
+            style={{ color: "var(--maison-brass)" }}
+          />
+          <span
+            className="ml-3 text-xs"
+            style={{ color: "var(--maison-text-muted)" }}
+          >
             Chargement des leads...
           </span>
         </div>
       ) : (
-        <div className="grid gap-5 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-3">
           {COLUMNS.map((col) => {
             const colLeads = getColumnLeads(col.key);
             const isOver = dragOverColumn === col.key;
@@ -588,29 +700,56 @@ export default function TodoPage() {
                 onDragOver={(e) => handleDragOver(e, col.key)}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, col.key)}
-                className={`flex flex-col min-h-[500px] rounded-xl border p-4 transition-all duration-150 ${
-                  isOver
-                    ? "border-teal-400 border-dashed bg-teal-50/40 shadow-inner"
-                    : "border-stone-200 bg-stone-50/60"
-                }`}
+                className={`flex flex-col min-h-[500px] rounded-xl border p-4 transition-all duration-150`}
+                style={{
+                  background: "var(--maison-page)",
+                  borderColor: isOver
+                    ? "var(--maison-brass)"
+                    : "var(--maison-border)",
+                  borderStyle: isOver ? "dashed" : "solid",
+                }}
               >
                 <div className="flex items-center gap-2 mb-4 px-1">
-                  <span className={`h-2.5 w-2.5 rounded-full ${col.dot}`} />
-                  <h3 className="font-bold text-stone-900 text-sm">
+                  <span className={`h-2 w-2 rounded-full ${col.dot}`} />
+                  <h3
+                    className="font-bold text-xs"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
                     {col.label}
                   </h3>
-                  <span className="ml-auto rounded-full bg-stone-200 px-2 py-0.5 text-xs font-bold text-stone-600">
+                  <span
+                    className="ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold border"
+                    style={{
+                      background: "var(--maison-card)",
+                      borderColor: "var(--maison-border)",
+                      color: "var(--maison-text-secondary)",
+                    }}
+                  >
                     {colLeads.length}
                   </span>
                 </div>
                 <div className="flex-1 space-y-3 overflow-y-auto">
                   {isOver && draggedLeadId && (
-                    <div className="h-16 rounded-xl border-2 border-dashed border-teal-400 bg-teal-50/60 flex items-center justify-center text-teal-600 text-xs font-semibold animate-pulse">
-                      Deposer ici
+                    <div
+                      className="h-16 rounded-xl border border-dashed flex items-center justify-center text-xs font-semibold animate-pulse"
+                      style={{
+                        borderColor: "var(--maison-brass)",
+                        background: "rgba(201,168,76,0.06)",
+                        color: "var(--maison-brass)",
+                      }}
+                    >
+                      Déposer ici
                     </div>
                   )}
                   {colLeads.length === 0 && !isOver ? (
-                    <div className="flex flex-col items-center justify-center py-12 border border-dashed border-stone-200 rounded-xl bg-white/60 text-stone-400 text-xs">
+                    <div
+                      className="flex flex-col items-center justify-center py-12 border border-dashed rounded-xl text-xs"
+                      style={{
+                        background: "var(--maison-card)",
+                        borderColor: "var(--maison-border)",
+                        color: "var(--maison-text-muted)",
+                      }}
+                    >
                       <Briefcase className="h-5 w-5 mb-1.5 opacity-30" />
                       <span>Aucun lead</span>
                     </div>

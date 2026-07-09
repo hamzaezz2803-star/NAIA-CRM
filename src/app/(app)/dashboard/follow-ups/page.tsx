@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from "react";
-import { PageHeader } from "@/components/layout/page-header";
+
 import { Button } from "@/components/ui/button";
 import {
   Clock,
@@ -26,7 +26,8 @@ import type { CrmLeadSummary, CrmLeadFollowUp } from "@/features/crm/contracts";
 import toast from "react-hot-toast";
 
 const inputCls =
-  "flex w-full rounded-md border border-stone-300 bg-white px-3 py-2.5 text-sm text-stone-950 placeholder:text-stone-400 focus:border-teal-650 focus:outline-none focus:ring-2 focus:ring-teal-650/20 transition";
+  "flex w-full rounded-md border px-3 py-2.5 text-sm placeholder:text-stone-400 focus:outline-none transition" +
+  " border-[var(--maison-border)] bg-[var(--maison-page)] text-[var(--maison-text-primary)] focus:border-[var(--maison-brass)] focus:ring-2 focus:ring-[var(--maison-brass)]/20";
 
 function formatTimeAgo(dateStr?: string): string {
   if (!dateStr) return "Jamais";
@@ -194,82 +195,195 @@ export default function FollowUpsPage() {
   };
 
   return (
-    <div className="space-y-8">
-      <PageHeader
-        eyebrow="CRM · Opérations"
-        title="Suivi des relances"
-        description="Conservez l'historique de vos points de contact, enregistrez vos relances et suivez vos prochaines actions commerciales."
-      />
+    <div className="space-y-6">
+      {/* Header section matches Pipeline page header exactly */}
+      <div
+        className="flex flex-col gap-2 border-b pb-4"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            CRM · Opérations
+          </p>
+          <h1
+            className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl font-serif"
+            style={{
+              fontFamily: "var(--font-playfair), Georgia, serif",
+              color: "var(--maison-text-primary)",
+            }}
+          >
+            Suivi des relances
+          </h1>
+          <p
+            className="mt-1 text-xs"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            Conservez l&apos;historique de vos points de contact, enregistrez
+            vos relances et suivez vos prochaines actions commerciales.
+          </p>
+        </div>
+      </div>
 
-      {/* KPI Cards */}
-      <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm flex items-center justify-between">
+      {/* KPI Cards styled as Maison premium cards */}
+      <div className="grid gap-3 sm:grid-cols-3">
+        <div
+          className="rounded-xl p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">
+            <p
+              className="text-[10px] font-bold uppercase tracking-wider"
+              style={{ color: "var(--maison-text-muted)" }}
+            >
               Leads Actifs
             </p>
-            <h3 className="mt-1 text-2xl font-bold text-stone-900">
+            <h3
+              className="mt-1 text-xl font-bold leading-none"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
               {totalActive}
             </h3>
           </div>
-          <div className="h-10 w-10 rounded-lg bg-teal-50 flex items-center justify-center text-teal-700">
-            <User className="h-5 w-5" />
+          <div
+            className="h-9 w-9 rounded-lg flex items-center justify-center"
+            style={{
+              background: "rgba(201, 168, 76, 0.10)",
+              color: "var(--maison-brass)",
+            }}
+          >
+            <User className="h-4 w-4" />
           </div>
         </div>
 
-        <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm flex items-center justify-between">
+        <div
+          className="rounded-xl p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">
+            <p
+              className="text-[10px] font-bold uppercase tracking-wider"
+              style={{ color: "var(--maison-text-muted)" }}
+            >
               Contactés cette semaine
             </p>
-            <h3 className="mt-1 text-2xl font-bold text-stone-900">
+            <h3
+              className="mt-1 text-xl font-bold leading-none"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
               {contactedThisWeek}
             </h3>
           </div>
-          <div className="h-10 w-10 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-700">
-            <CheckCircle2 className="h-5 w-5" />
+          <div
+            className="h-9 w-9 rounded-lg flex items-center justify-center"
+            style={{
+              background: "rgba(201, 168, 76, 0.10)",
+              color: "var(--maison-brass)",
+            }}
+          >
+            <CheckCircle2 className="h-4 w-4" />
           </div>
         </div>
 
-        <div className="rounded-xl border border-stone-200 bg-white p-5 shadow-sm flex items-center justify-between">
+        <div
+          className="rounded-xl p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div>
-            <p className="text-xs font-semibold uppercase tracking-wider text-stone-500">
+            <p
+              className="text-[10px] font-bold uppercase tracking-wider"
+              style={{ color: "var(--maison-text-muted)" }}
+            >
               Relances en retard
             </p>
-            <h3 className="mt-1 text-2xl font-bold text-stone-900">
+            <h3
+              className="mt-1 text-xl font-bold leading-none"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
               {overdueFollowUps}
             </h3>
           </div>
-          <div className="h-10 w-10 rounded-lg bg-amber-50 flex items-center justify-center text-amber-700">
-            <AlertCircle className="h-5 w-5" />
+          <div
+            className="h-9 w-9 rounded-lg flex items-center justify-center"
+            style={{
+              background: "rgba(239, 68, 68, 0.10)",
+              color: "#ef4444",
+            }}
+          >
+            <AlertCircle className="h-4 w-4" />
           </div>
         </div>
       </div>
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-6 w-6 animate-spin text-teal-650" />
-          <span className="ml-3 text-sm text-stone-500">
+        <div className="flex items-center justify-center py-16">
+          <Loader2
+            className="h-5 w-5 animate-spin"
+            style={{ color: "var(--maison-brass)" }}
+          />
+          <span
+            className="ml-3 text-xs"
+            style={{ color: "var(--maison-text-muted)" }}
+          >
             Chargement des dossiers commerciaux...
           </span>
         </div>
       ) : activeLeads.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-stone-300 bg-stone-50 py-16 text-center">
-          <Clock className="h-10 w-10 text-stone-300" />
-          <h3 className="mt-4 text-sm font-semibold text-stone-850">
+        <div
+          className="flex flex-col items-center justify-center rounded-xl border border-dashed py-16 text-center"
+          style={{
+            borderColor: "var(--maison-border)",
+            background: "var(--maison-card)",
+          }}
+        >
+          <Clock
+            className="h-10 w-10"
+            style={{ color: "var(--maison-text-muted)" }}
+          />
+          <h3
+            className="mt-4 text-sm font-semibold"
+            style={{ color: "var(--maison-text-primary)" }}
+          >
             Aucun lead actif à suivre
           </h3>
-          <p className="mt-1 text-xs text-stone-500">
+          <p
+            className="mt-1 text-xs"
+            style={{ color: "var(--maison-text-muted)" }}
+          >
             {
               "Tous vos leads sont gagnés, sans suite ou vous n'avez aucun lead enregistré."
             }
           </p>
         </div>
       ) : (
-        <div className="rounded-xl border border-stone-200 bg-white shadow-sm overflow-hidden">
+        <div
+          className="rounded-xl overflow-hidden shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-sm">
-              <thead className="bg-stone-50/75 border-b border-stone-200 text-xs font-bold text-stone-500 uppercase tracking-wider">
+              <thead
+                className="border-b text-xs font-bold uppercase tracking-wider"
+                style={{
+                  background: "var(--maison-page)",
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-secondary)",
+                }}
+              >
                 <tr>
                   <th className="px-6 py-3.5">Projet / Entreprise</th>
                   <th className="px-6 py-3.5">Statut</th>
@@ -278,7 +392,10 @@ export default function FollowUpsPage() {
                   <th className="px-6 py-3.5 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-stone-150">
+              <tbody
+                className="divide-y"
+                style={{ borderColor: "var(--maison-border)" }}
+              >
                 {activeLeads.map((lead) => {
                   const isExpanded = expandedLeadIds.includes(lead.id);
                   const status = statusConfig[lead.status] || {
@@ -296,13 +413,32 @@ export default function FollowUpsPage() {
 
                   return (
                     <React.Fragment key={lead.id}>
-                      <tr className="hover:bg-stone-50/30 transition-colors">
+                      <tr
+                        className="transition-colors"
+                        style={{
+                          background: "var(--maison-card)",
+                        }}
+                        onMouseEnter={(e) => {
+                          e.currentTarget.style.background =
+                            "var(--maison-page)";
+                        }}
+                        onMouseLeave={(e) => {
+                          e.currentTarget.style.background =
+                            "var(--maison-card)";
+                        }}
+                      >
                         <td className="px-6 py-4.5">
-                          <p className="font-semibold text-stone-900">
+                          <p
+                            className="font-semibold"
+                            style={{ color: "var(--maison-text-primary)" }}
+                          >
                             {lead.topic}
                           </p>
                           {companyLine && (
-                            <p className="flex items-center gap-1 text-[11px] text-stone-500 mt-0.5">
+                            <p
+                              className="flex items-center gap-1 text-[11px] mt-0.5"
+                              style={{ color: "var(--maison-text-secondary)" }}
+                            >
                               <Building2 className="h-3 w-3 flex-shrink-0" />
                               {companyLine}
                             </p>
@@ -315,12 +451,18 @@ export default function FollowUpsPage() {
                             {status.label}
                           </span>
                         </td>
-                        <td className="px-6 py-4.5 text-stone-600">
+                        <td
+                          className="px-6 py-4.5"
+                          style={{ color: "var(--maison-text-secondary)" }}
+                        >
                           <p className="text-xs font-medium">
                             {formatTimeAgo(lead.lastContactedAt)}
                           </p>
                           {lead.lastContactedAt && (
-                            <p className="text-[10px] text-stone-400 mt-0.5">
+                            <p
+                              className="text-[10px] mt-0.5"
+                              style={{ color: "var(--maison-text-muted)" }}
+                            >
                               {new Date(
                                 lead.lastContactedAt,
                               ).toLocaleDateString("fr-FR")}
@@ -330,11 +472,17 @@ export default function FollowUpsPage() {
                         <td className="px-6 py-4.5">
                           {lead.nextAction ? (
                             <div>
-                              <p className="text-xs font-medium text-stone-850 truncate max-w-[180px]">
+                              <p
+                                className="text-xs font-medium truncate max-w-[180px]"
+                                style={{ color: "var(--maison-text-primary)" }}
+                              >
                                 {lead.nextAction}
                               </p>
                               {lead.leadDate && (
-                                <p className="flex items-center gap-1 text-[10px] text-stone-400 mt-0.5">
+                                <p
+                                  className="flex items-center gap-1 text-[10px] mt-0.5"
+                                  style={{ color: "var(--maison-text-muted)" }}
+                                >
                                   <Calendar className="h-3 w-3" />
                                   {new Date(lead.leadDate).toLocaleDateString(
                                     "fr-FR",
@@ -343,7 +491,10 @@ export default function FollowUpsPage() {
                               )}
                             </div>
                           ) : (
-                            <span className="text-xs text-stone-400 italic">
+                            <span
+                              className="text-xs italic"
+                              style={{ color: "var(--maison-text-muted)" }}
+                            >
                               Non planifiée
                             </span>
                           )}
@@ -354,7 +505,8 @@ export default function FollowUpsPage() {
                               type="button"
                               onClick={() => toggleHistory(lead.id)}
                               variant="ghost"
-                              className="h-8 gap-1 px-2.5 text-xs text-stone-600 hover:text-stone-900"
+                              className="h-8 gap-1 px-2.5 text-xs hover:bg-[var(--maison-border-subtle)]"
+                              style={{ color: "var(--maison-text-secondary)" }}
                             >
                               <History className="h-3.5 w-3.5 text-stone-400" />
                               <span>Historique</span>
@@ -367,7 +519,19 @@ export default function FollowUpsPage() {
                             <Button
                               type="button"
                               onClick={() => setSelectedLead(lead)}
-                              className="h-8 gap-1.5 px-3 bg-teal-700 hover:bg-teal-800 text-white text-xs"
+                              className="h-8 gap-1.5 px-3 text-xs"
+                              style={{
+                                background: "var(--maison-brass)",
+                                color: "var(--maison-brass-text)",
+                              }}
+                              onMouseEnter={(e) => {
+                                e.currentTarget.style.background =
+                                  "var(--maison-brass-hover)";
+                              }}
+                              onMouseLeave={(e) => {
+                                e.currentTarget.style.background =
+                                  "var(--maison-brass)";
+                              }}
                             >
                               <Clock className="h-3.5 w-3.5" />
                               <span>Relancer</span>
@@ -381,35 +545,66 @@ export default function FollowUpsPage() {
                         <tr>
                           <td
                             colSpan={5}
-                            className="bg-stone-50/50 px-8 py-4.5 border-t border-b border-stone-150"
+                            className="px-8 py-4.5 border-t border-b"
+                            style={{
+                              background: "var(--maison-page)",
+                              borderColor: "var(--maison-border)",
+                            }}
                           >
                             <div className="space-y-3">
-                              <h5 className="text-[11px] font-bold text-stone-400 uppercase tracking-wider flex items-center gap-1.5 mb-2">
-                                <History className="h-3.5 w-3.5 text-stone-300" />
+                              <h5
+                                className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 mb-2"
+                                style={{ color: "var(--maison-text-muted)" }}
+                              >
+                                <History
+                                  className="h-3.5 w-3.5"
+                                  style={{ color: "var(--maison-brass)" }}
+                                />
                                 Historique des relances
                               </h5>
 
                               {loadingHistoryIds.includes(lead.id) ? (
                                 <div className="flex items-center justify-center py-2">
-                                  <Loader2 className="h-4 w-4 animate-spin text-teal-650" />
+                                  <Loader2
+                                    className="h-4 w-4 animate-spin"
+                                    style={{ color: "var(--maison-brass)" }}
+                                  />
                                 </div>
                               ) : !histories[lead.id] ||
                                 histories[lead.id].length === 0 ? (
-                                <p className="text-xs text-stone-400 italic py-1">
+                                <p
+                                  className="text-xs italic py-1"
+                                  style={{ color: "var(--maison-text-muted)" }}
+                                >
                                   Aucun historique de relance enregistré.
                                   Cliquez sur le bouton &quot;Relancer&quot;
                                   pour noter un contact.
                                 </p>
                               ) : (
-                                <div className="relative border-l border-stone-200 pl-4 ml-2 space-y-3">
+                                <div
+                                  className="relative border-l pl-4 ml-2 space-y-3"
+                                  style={{
+                                    borderColor: "var(--maison-border)",
+                                  }}
+                                >
                                   {histories[lead.id].map((h) => (
                                     <div
                                       key={h.id}
                                       className="relative text-xs"
                                     >
                                       {/* Timeline dot */}
-                                      <span className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full border border-teal-600 bg-white" />
-                                      <div className="flex flex-wrap items-center gap-2 text-stone-450 text-[10px] font-bold uppercase tracking-tight">
+                                      <span
+                                        className="absolute -left-[21px] top-1.5 h-2 w-2 rounded-full border bg-white"
+                                        style={{
+                                          borderColor: "var(--maison-brass)",
+                                        }}
+                                      />
+                                      <div
+                                        className="flex flex-wrap items-center gap-2 text-[10px] font-bold uppercase tracking-tight"
+                                        style={{
+                                          color: "var(--maison-text-muted)",
+                                        }}
+                                      >
                                         <span>
                                           {new Date(
                                             h.contactedAt,
@@ -419,14 +614,30 @@ export default function FollowUpsPage() {
                                           })}
                                         </span>
                                         <span>•</span>
-                                        <span className="text-stone-655 flex items-center gap-0.5">
+                                        <span
+                                          className="flex items-center gap-0.5"
+                                          style={{
+                                            color:
+                                              "var(--maison-text-secondary)",
+                                          }}
+                                        >
                                           <User className="h-3 w-3" />
                                           {h.createdByName || "Membre"}
                                         </span>
                                       </div>
-                                      <p className="mt-1 text-stone-850 whitespace-pre-wrap leading-relaxed">
+                                      <p
+                                        className="mt-1 whitespace-pre-wrap leading-relaxed"
+                                        style={{
+                                          color: "var(--maison-text-primary)",
+                                        }}
+                                      >
                                         {h.comment || (
-                                          <span className="italic text-stone-400">
+                                          <span
+                                            className="italic"
+                                            style={{
+                                              color: "var(--maison-text-muted)",
+                                            }}
+                                          >
                                             Aucun commentaire de relance
                                           </span>
                                         )}
@@ -451,24 +662,51 @@ export default function FollowUpsPage() {
       {/* Log Follow-up Modal */}
       {selectedLead && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+          style={{ background: "rgba(0,0,0,0.4)" }}
           onClick={(e) => {
             if (e.target === e.currentTarget) setSelectedLead(null);
           }}
         >
-          <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
-            <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
+          <div
+            className="w-full max-w-md rounded-2xl border shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-200"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b px-6 py-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
               <div className="min-w-0">
-                <h2 className="text-base font-bold text-stone-900 truncate">
+                <h2
+                  className="text-base font-bold truncate"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Noter une relance commerciale
                 </h2>
-                <p className="text-xs text-stone-500 truncate mt-0.5">
+                <p
+                  className="text-xs truncate mt-0.5"
+                  style={{ color: "var(--maison-text-secondary)" }}
+                >
                   {selectedLead.topic}
                 </p>
               </div>
               <button
                 onClick={() => setSelectedLead(null)}
-                className="rounded-md p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700 transition"
+                className="rounded-md p-1.5 transition"
+                style={{
+                  color: "var(--maison-text-muted)",
+                }}
+                onMouseEnter={(e) => {
+                  e.currentTarget.style.background = "var(--maison-page)";
+                  e.currentTarget.style.color = "var(--maison-text-primary)";
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.background = "transparent";
+                  e.currentTarget.style.color = "var(--maison-text-muted)";
+                }}
                 aria-label="Fermer"
               >
                 <X className="h-5 w-5" />
@@ -477,7 +715,8 @@ export default function FollowUpsPage() {
             <form onSubmit={handleSubmitFollowUp} className="space-y-4 p-6">
               <div className="space-y-1.5">
                 <label
-                  className="text-sm font-medium text-stone-800"
+                  className="text-sm font-medium"
+                  style={{ color: "var(--maison-text-primary)" }}
                   htmlFor="followup-comment"
                 >
                   Commentaire / Contenu de la relance
@@ -491,7 +730,10 @@ export default function FollowUpsPage() {
                   value={comment}
                   onChange={(e) => setComment(e.target.value)}
                 />
-                <p className="text-[10px] text-stone-450 leading-normal">
+                <p
+                  className="text-[10px] leading-normal"
+                  style={{ color: "var(--maison-text-muted)" }}
+                >
                   {
                     "* L'enregistrement va automatiquement mettre à jour la date de dernier contact du lead au jour et à l'heure d'aujourd'hui."
                   }
@@ -508,8 +750,19 @@ export default function FollowUpsPage() {
                 </Button>
                 <Button
                   type="submit"
-                  className="flex-1 gap-2 bg-teal-700 hover:bg-teal-800 text-white"
+                  className="flex-1 gap-2"
+                  style={{
+                    background: "var(--maison-brass)",
+                    color: "var(--maison-brass-text)",
+                  }}
                   disabled={isSubmitting || !comment.trim()}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background =
+                      "var(--maison-brass-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "var(--maison-brass)";
+                  }}
                 >
                   {isSubmitting ? (
                     <Loader2 className="h-4 w-4 animate-spin" />

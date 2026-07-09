@@ -14,6 +14,7 @@ const eslintConfig = defineConfig([
     "next-env.d.ts",
     "check_leads.js",
     "scratch/**",
+    "docs/design/**",
   ]),
 ]);
 

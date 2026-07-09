@@ -125,89 +125,180 @@ export function DrivesDashboard({
   return (
     <div className="space-y-6">
       {/* Summary Statistics Cards */}
-      <div className="grid gap-4 sm:grid-cols-3">
+      {/* Summary Statistics Cards styled as Maison premium cards */}
+      <div className="grid gap-3 sm:grid-cols-3">
         {/* Stat 1: Total */}
-        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+        <div
+          className="rounded-xl p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-md bg-teal-50 text-teal-750 dark:bg-teal-950/50 dark:text-teal-400">
-              <FolderOpen className="h-5 w-5" />
+            <span
+              className="flex h-9 w-9 items-center justify-center rounded-lg"
+              style={{
+                background: "rgba(201, 168, 76, 0.10)",
+                color: "var(--maison-brass)",
+              }}
+            >
+              <FolderOpen className="h-4 w-4" />
             </span>
             <div>
-              <p className="text-2xl font-bold text-stone-950 dark:text-stone-50">
+              <p
+                className="text-xl font-bold leading-none"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {stats.total}
               </p>
-              <p className="text-xs text-stone-500">Dossiers Drive au total</p>
+              <p
+                className="text-[10px] font-semibold mt-0.5"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
+                Dossiers Drive au total
+              </p>
             </div>
           </div>
         </div>
 
         {/* Stat 2: Leads */}
-        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+        <div
+          className="rounded-xl p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-md bg-blue-50 text-blue-600 dark:bg-blue-950/50 dark:text-blue-450">
-              <Briefcase className="h-5 w-5" />
+            <span
+              className="flex h-9 w-9 items-center justify-center rounded-lg"
+              style={{
+                background: "rgba(201, 168, 76, 0.10)",
+                color: "var(--maison-brass)",
+              }}
+            >
+              <Briefcase className="h-4 w-4" />
             </span>
             <div>
-              <p className="text-2xl font-bold text-stone-950 dark:text-stone-50">
+              <p
+                className="text-xl font-bold leading-none"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {stats.leadsCount}
               </p>
-              <p className="text-xs text-stone-500">Dossiers Opportunités</p>
+              <p
+                className="text-[10px] font-semibold mt-0.5"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
+                Dossiers Opportunités
+              </p>
             </div>
           </div>
         </div>
 
         {/* Stat 3: Companies */}
-        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+        <div
+          className="rounded-xl p-4 flex items-center justify-between transition-shadow hover:shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            border: "1px solid var(--maison-border)",
+          }}
+        >
           <div className="flex items-center gap-3">
-            <span className="flex h-10 w-10 items-center justify-center rounded-md bg-indigo-50 text-indigo-650 dark:bg-indigo-950/50 dark:text-indigo-400">
-              <Building2 className="h-5 w-5" />
+            <span
+              className="flex h-9 w-9 items-center justify-center rounded-lg"
+              style={{
+                background: "rgba(201, 168, 76, 0.10)",
+                color: "var(--maison-brass)",
+              }}
+            >
+              <Building2 className="h-4 w-4" />
             </span>
             <div>
-              <p className="text-2xl font-bold text-stone-950 dark:text-stone-50">
+              <p
+                className="text-xl font-bold leading-none"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {stats.companiesCount}
               </p>
-              <p className="text-xs text-stone-500">Dossiers Entreprises</p>
+              <p
+                className="text-[10px] font-semibold mt-0.5"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
+                Dossiers Entreprises
+              </p>
             </div>
           </div>
         </div>
       </div>
 
       {/* Toolbar & Filters Card */}
-      <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950 space-y-4">
+      <div
+        className="rounded-lg p-4 space-y-4"
+        style={{
+          background: "var(--maison-card)",
+          border: "1px solid var(--maison-border)",
+        }}
+      >
         <div className="flex flex-col md:flex-row gap-4 items-center justify-between">
           {/* Tab Selector */}
-          <div className="flex bg-stone-100 p-0.5 rounded-lg dark:bg-stone-900 w-full md:w-auto">
+          <div
+            className="flex p-0.5 rounded-lg w-full md:w-auto"
+            style={{
+              background: "var(--maison-page)",
+              border: "1px solid var(--maison-border)",
+            }}
+          >
             <button
               onClick={() => setActiveTab("all")}
-              className={`flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition ${
+              className={`flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition`}
+              style={
                 activeTab === "all"
-                  ? "bg-white text-stone-950 shadow-sm dark:bg-stone-850 dark:text-stone-50"
-                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white"
-              }`}
+                  ? {
+                      background: "var(--maison-brass)",
+                      color: "var(--maison-brass-text)",
+                    }
+                  : {
+                      color: "var(--maison-text-secondary)",
+                    }
+              }
             >
               <Layers className="h-3.5 w-3.5" />
               Tous
             </button>
             <button
               onClick={() => setActiveTab("leads")}
-              className={`flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition ${
+              className={`flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition`}
+              style={
                 activeTab === "leads"
-                  ? "bg-white text-stone-950 shadow-sm dark:bg-stone-850 dark:text-stone-50"
-                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white"
-              }`}
+                  ? {
+                      background: "var(--maison-brass)",
+                      color: "var(--maison-brass-text)",
+                    }
+                  : {
+                      color: "var(--maison-text-secondary)",
+                    }
+              }
             >
-              <Briefcase className="h-3.5 w-3.5 text-blue-500" />
+              <Briefcase className="h-3.5 w-3.5" />
               Opportunités
             </button>
             <button
               onClick={() => setActiveTab("companies")}
-              className={`flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition ${
+              className={`flex-1 md:flex-initial inline-flex items-center justify-center gap-1.5 rounded-md px-3.5 py-1.5 text-xs font-semibold transition`}
+              style={
                 activeTab === "companies"
-                  ? "bg-white text-stone-950 shadow-sm dark:bg-stone-850 dark:text-stone-50"
-                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-white"
-              }`}
+                  ? {
+                      background: "var(--maison-brass)",
+                      color: "var(--maison-brass-text)",
+                    }
+                  : {
+                      color: "var(--maison-text-secondary)",
+                    }
+              }
             >
-              <Building2 className="h-3.5 w-3.5 text-indigo-500" />
+              <Building2 className="h-3.5 w-3.5" />
               Entreprises
             </button>
           </div>
@@ -218,7 +309,12 @@ export function DrivesDashboard({
             <input
               type="text"
               placeholder="Rechercher par sujet, entreprise ou contact..."
-              className="min-h-10 w-full rounded-md border border-stone-200 bg-white pl-9 pr-4 text-xs text-slate-950 outline-none transition focus:border-teal-500 dark:border-stone-850 dark:bg-stone-950 dark:text-slate-50"
+              className="min-h-10 w-full rounded-md border pl-9 pr-4 text-xs outline-none transition"
+              style={{
+                borderColor: "var(--maison-border)",
+                background: "var(--maison-page)",
+                color: "var(--maison-text-primary)",
+              }}
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
             />
@@ -240,36 +336,66 @@ export function DrivesDashboard({
           </p>
         </div>
       ) : (
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {filteredItems.map((item) => (
             <div
               key={`${item.type}-${item.id}`}
-              className="group relative flex flex-col justify-between rounded-xl border border-stone-200 bg-white p-5 shadow-sm transition hover:shadow-md dark:border-stone-850 dark:bg-stone-950/50 hover:border-stone-300 dark:hover:border-stone-750"
+              className="group relative flex flex-col justify-between rounded-xl p-4 transition-all hover:shadow-md"
+              style={{
+                background: "var(--maison-card)",
+                border: "1px solid var(--maison-border)",
+              }}
             >
               <div>
                 {/* Header: Title + Type Badge */}
                 <div className="flex items-start justify-between gap-3">
-                  <h3 className="text-sm font-bold text-stone-950 dark:text-stone-50 group-hover:text-teal-650 transition-colors line-clamp-1">
+                  <h3
+                    className="text-xs font-bold transition-colors line-clamp-1 flex-1"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
                     {item.title}
                   </h3>
                   {item.type === "lead" ? (
-                    <span className="inline-flex shrink-0 items-center rounded-md border border-blue-100 bg-blue-50/50 px-2 py-0.5 text-[10px] font-bold text-blue-700 dark:border-blue-900/30 dark:bg-blue-950/20 dark:text-blue-400">
+                    <span
+                      className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                      style={{
+                        background: "rgba(201, 168, 76, 0.08)",
+                        color: "var(--maison-brass)",
+                        border: "1px solid var(--maison-border)",
+                      }}
+                    >
                       Opportunité
                     </span>
                   ) : (
-                    <span className="inline-flex shrink-0 items-center rounded-md border border-indigo-100 bg-indigo-50/50 px-2 py-0.5 text-[10px] font-bold text-indigo-700 dark:border-indigo-900/30 dark:bg-indigo-950/20 dark:text-indigo-400">
+                    <span
+                      className="inline-flex shrink-0 items-center rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wide"
+                      style={{
+                        background: "var(--maison-border-subtle)",
+                        color: "var(--maison-text-secondary)",
+                        border: "1px solid var(--maison-border)",
+                      }}
+                    >
                       Entreprise
                     </span>
                   )}
                 </div>
 
-                <p className="text-[10px] font-semibold text-stone-400 dark:text-stone-500 uppercase tracking-wider mt-1">
+                <p
+                  className="text-[9px] font-semibold uppercase tracking-wider mt-1"
+                  style={{ color: "var(--maison-text-muted)" }}
+                >
                   {item.subtitle}
                 </p>
 
                 {/* Details Section */}
-                <div className="mt-4 space-y-2 border-t border-stone-100 pt-3 dark:border-stone-850">
-                  <div className="flex items-center gap-2 text-xs text-stone-600 dark:text-stone-300">
+                <div
+                  className="mt-3 space-y-1.5 border-t pt-2.5"
+                  style={{ borderColor: "var(--maison-border)" }}
+                >
+                  <div
+                    className="flex items-center gap-2 text-xs"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
                     <Building2 className="h-3.5 w-3.5 text-stone-400 shrink-0" />
                     <span className="truncate font-semibold">
                       {item.companyName}
@@ -277,7 +403,10 @@ export function DrivesDashboard({
                   </div>
 
                   {item.contactName && (
-                    <div className="flex items-center gap-2 text-xs text-stone-600 dark:text-stone-300">
+                    <div
+                      className="flex items-center gap-2 text-xs"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
                       <span className="h-3.5 w-3.5 text-stone-400 font-bold text-[10px] flex items-center justify-center shrink-0">
                         @
                       </span>
@@ -288,14 +417,28 @@ export function DrivesDashboard({
               </div>
 
               {/* Action Button */}
-              <div className="mt-5 pt-3 border-t border-stone-100 dark:border-stone-850">
+              <div
+                className="mt-4 pt-2.5 border-t"
+                style={{ borderColor: "var(--maison-border)" }}
+              >
                 <a
                   href={item.driveFolderUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="w-full inline-flex min-h-9 items-center justify-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-750 text-white text-xs font-bold shadow-sm transition"
+                  className="w-full inline-flex min-h-8 items-center justify-center gap-2 rounded-lg text-xs font-bold transition shadow-sm"
+                  style={{
+                    background: "var(--maison-brass)",
+                    color: "var(--maison-brass-text)",
+                  }}
+                  onMouseEnter={(e) => {
+                    e.currentTarget.style.background =
+                      "var(--maison-brass-hover)";
+                  }}
+                  onMouseLeave={(e) => {
+                    e.currentTarget.style.background = "var(--maison-brass)";
+                  }}
                 >
-                  <FolderOpen className="h-4 w-4 shrink-0" />
+                  <FolderOpen className="h-3.5 w-3.5 shrink-0" />
                   <span>Ouvrir dans Google Drive ↗</span>
                 </a>
               </div>

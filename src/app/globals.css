@@ -21,6 +21,18 @@
   --color-foreground: var(--color-stone-950);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-serif: var(--font-playfair);
+
+  /* Maison palette */
+  --color-maison-page: var(--maison-page);
+  --color-maison-card: var(--maison-card);
+  --color-maison-sidebar: var(--maison-sidebar);
+  --color-maison-sidebar-hover: var(--maison-sidebar-hover);
+  --color-maison-sidebar-border: var(--maison-sidebar-border);
+  --color-maison-brass: var(--maison-brass);
+  --color-maison-brass-hover: var(--maison-brass-hover);
+  --color-maison-border: var(--maison-border);
+  --color-maison-border-subtle: var(--maison-border-subtle);
 }
 
 @layer base {
@@ -37,12 +49,31 @@
     --stone-900: #1c1917;
     --stone-950: #0c0a09;
     --white: #ffffff;
+
+    /* Maison Qarizmi — warm paper + navy + brass */
+    --maison-page: #f6f3ec;
+    --maison-card: #fcfbf7;
+    --maison-sidebar: #14293c;
+    --maison-sidebar-hover: #1a3550;
+    --maison-sidebar-border: #1d3a56;
+    --maison-sidebar-active: rgba(201, 168, 76, 0.12);
+    --maison-brass: #b08d4f;
+    --maison-brass-hover: #c4a265;
+    --maison-brass-light: #d4b978;
+    --maison-brass-text: #06231f;
+    --maison-text-primary: #14293c;
+    --maison-text-secondary: #5c6b7a;
+    --maison-text-muted: #8a9aad;
+    --maison-border: #e0d8c8;
+    --maison-border-subtle: #ede7da;
+    --app-topbar-bg: rgba(246, 243, 236, 0.92);
   }
 
   body {
-    background: var(--color-background);
-    color: var(--color-foreground);
+    background: var(--maison-page);
+    color: var(--maison-text-primary);
     font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+    overflow-x: hidden;
     transition:
       background-color 0.2s ease,
       border-color 0.2s ease,
@@ -67,6 +98,24 @@ html.dark,
   --stone-950: #ffffff; /* Max contrast text */
 
   --white: #121215; /* Elevated panels (cards, sidebar, header) */
+
+  /* Cockpit Qarizmi dark palette */
+  --maison-page: #0a141f;
+  --maison-card: #0e1b29;
+  --maison-sidebar: #0c1826;
+  --maison-sidebar-hover: #112130;
+  --maison-sidebar-border: #17293a;
+  --maison-sidebar-active: rgba(201, 168, 76, 0.12);
+  --maison-brass: #c9a84c;
+  --maison-brass-hover: #d8bb6b;
+  --maison-brass-light: #e0c07a;
+  --maison-brass-text: #1e1402;
+  --maison-text-primary: #e9f0f6;
+  --maison-text-secondary: #b6c6d4;
+  --maison-text-muted: #6b8195;
+  --maison-border: #17293a;
+  --maison-border-subtle: #182b3c;
+  --app-topbar-bg: rgba(12, 24, 38, 0.7);
 }
 
 ::selection {

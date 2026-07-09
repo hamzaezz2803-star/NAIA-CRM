@@ -2,8 +2,6 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { PageHeader } from "@/components/layout/page-header";
-import { Button } from "@/components/ui/button";
 import {
   Building2,
   Plus,
@@ -14,6 +12,7 @@ import {
   ChevronRight,
   Briefcase,
   X,
+  Search,
 } from "lucide-react";
 import {
   fetchCompaniesAction,
@@ -23,9 +22,6 @@ import {
 } from "@/features/crm/actions";
 import type { CrmCompanySummary } from "@/features/crm/contracts";
 import toast from "react-hot-toast";
-
-const inputCls =
-  "flex h-10 w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-950 placeholder:text-stone-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20 transition";
 
 export default function ClientsPage() {
   const [companies, setCompanies] = useState<CrmCompanySummary[]>([]);
@@ -49,8 +45,6 @@ export default function ClientsPage() {
         fetchLeadsAction(),
       ]);
       setCompanies(companiesData);
-
-      // Count contacts and leads per company
       const cc: Record<string, number> = {};
       const lc: Record<string, number> = {};
       for (const c of contactsData) {
@@ -96,62 +90,133 @@ export default function ClientsPage() {
   );
 
   return (
-    <div className="space-y-8">
-      <PageHeader
-        eyebrow="CRM · Clients"
-        title="Fiches clients"
-        description="Consultez et gérez toutes vos entreprises clientes avec leurs contacts et projets associés."
-        actions={
-          <Button
-            id="btn-add-client"
-            onClick={() => setIsAddOpen(true)}
-            className="gap-2 bg-teal-700 hover:bg-teal-800 text-white"
+    <div className="space-y-6">
+      {/* Header */}
+      <div
+        className="flex flex-col gap-2 border-b pb-4 sm:flex-row sm:items-center sm:justify-between"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
           >
-            <Plus className="h-4 w-4" />
-            Nouveau client
-          </Button>
-        }
-      />
+            CRM · Clients
+          </p>
+          <h1
+            className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl"
+            style={{
+              fontFamily: "var(--font-playfair), Georgia, serif",
+              color: "var(--maison-text-primary)",
+            }}
+          >
+            Fiches clients
+          </h1>
+          <p
+            className="mt-1 text-xs"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            Gérez vos entreprises clientes, contacts et projets associés.
+          </p>
+        </div>
+        <button
+          id="btn-add-client"
+          onClick={() => setIsAddOpen(true)}
+          className="inline-flex items-center gap-2 self-start rounded-lg px-4 py-2.5 text-xs font-bold shadow-sm transition"
+          style={{
+            background: "var(--maison-brass)",
+            color: "var(--maison-brass-text)",
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "var(--maison-brass-hover)";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "var(--maison-brass)";
+          }}
+        >
+          <Plus className="h-4 w-4" />
+          Nouveau client
+        </button>
+      </div>
 
-      {/* Search */}
+      {/* Search bar */}
       <div className="relative max-w-sm">
+        <Search
+          className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4"
+          style={{ color: "var(--maison-text-muted)" }}
+        />
         <input
           id="client-search"
-          className={inputCls}
+          type="text"
           placeholder="Rechercher un client..."
+          className="w-full rounded-lg border py-2 pl-9 pr-3 text-xs outline-none transition"
+          style={{
+            borderColor: "var(--maison-border)",
+            background: "var(--maison-page)",
+            color: "var(--maison-text-primary)",
+          }}
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
       </div>
 
+      {/* Content */}
       {isLoading ? (
         <div className="flex items-center justify-center py-20">
-          <Loader2 className="h-5 w-5 animate-spin text-teal-600" />
-          <span className="ml-3 text-sm text-stone-500">
+          <Loader2
+            className="h-5 w-5 animate-spin"
+            style={{ color: "var(--maison-brass)" }}
+          />
+          <span
+            className="ml-3 text-xs"
+            style={{ color: "var(--maison-text-muted)" }}
+          >
             Chargement des clients…
           </span>
         </div>
       ) : filtered.length === 0 ? (
-        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-stone-300 bg-stone-50 py-20 text-center">
-          <div className="flex h-14 w-14 items-center justify-center rounded-full bg-teal-50">
-            <Building2 className="h-7 w-7 text-teal-600" />
+        <div
+          className="flex flex-col items-center justify-center rounded-xl border border-dashed py-20 text-center"
+          style={{
+            borderColor: "var(--maison-border)",
+            background: "var(--maison-card)",
+          }}
+        >
+          <div
+            className="flex h-14 w-14 items-center justify-center rounded-full"
+            style={{ background: "rgba(201,168,76,0.1)" }}
+          >
+            <Building2
+              className="h-7 w-7"
+              style={{ color: "var(--maison-brass)" }}
+            />
           </div>
-          <h3 className="mt-4 text-base font-semibold text-stone-800">
+          <h3
+            className="mt-4 text-base font-semibold"
+            style={{ color: "var(--maison-text-primary)" }}
+          >
             {search ? "Aucun client trouvé" : "Aucun client encore"}
           </h3>
-          <p className="mt-1.5 text-sm text-stone-500">
+          <p
+            className="mt-1.5 text-sm"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
             {search
               ? "Essayez une autre recherche."
               : "Créez votre premier client pour commencer."}
           </p>
           {!search && (
-            <Button
-              className="mt-5 gap-2 bg-teal-700 hover:bg-teal-800 text-white"
+            <button
+              className="mt-5 inline-flex items-center gap-2 rounded-lg px-4 py-2.5 text-xs font-bold shadow-sm transition"
+              style={{
+                background: "var(--maison-brass)",
+                color: "var(--maison-brass-text)",
+              }}
               onClick={() => setIsAddOpen(true)}
             >
               <Plus className="h-4 w-4" />
               Nouveau client
-            </Button>
+            </button>
           )}
         </div>
       ) : (
@@ -164,49 +229,92 @@ export default function ClientsPage() {
                 key={company.id}
                 href={`/dashboard/clients/${company.id}`}
                 id={`client-card-${company.id}`}
-                className="group relative flex flex-col gap-4 rounded-xl border border-stone-200 bg-white p-5 shadow-sm transition hover:border-teal-300 hover:shadow-md"
+                className="group relative flex flex-col gap-4 rounded-xl p-5 shadow-sm transition-all hover:shadow-md"
+                style={{
+                  background: "var(--maison-card)",
+                  border: "1px solid var(--maison-border)",
+                }}
               >
                 {/* Header */}
                 <div className="flex items-start gap-3">
-                  <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-teal-50 text-teal-700">
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg"
+                    style={{
+                      background: "rgba(201,168,76,0.12)",
+                      color: "var(--maison-brass)",
+                    }}
+                  >
                     <Building2 className="h-5 w-5" />
                   </div>
                   <div className="min-w-0 flex-1">
-                    <h3 className="truncate text-sm font-bold text-stone-900 group-hover:text-teal-800">
+                    <h3
+                      className="truncate text-sm font-bold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
                       {company.name}
                     </h3>
                     {company.driveFolderUrl && (
-                      <div className="mt-0.5 flex items-center gap-1 text-xs text-stone-500">
+                      <div
+                        className="mt-0.5 flex items-center gap-1 text-xs"
+                        style={{ color: "var(--maison-text-muted)" }}
+                      >
                         <FolderOpen className="h-3 w-3" />
                         <span>Drive synchronisé</span>
                       </div>
                     )}
                   </div>
-                  <ChevronRight className="h-4 w-4 shrink-0 text-stone-300 transition group-hover:translate-x-0.5 group-hover:text-teal-500" />
+                  <ChevronRight
+                    className="h-4 w-4 shrink-0 transition group-hover:translate-x-0.5"
+                    style={{ color: "var(--maison-text-muted)" }}
+                  />
                 </div>
 
                 {/* Stats */}
-                <div className="flex gap-4 border-t border-stone-100 pt-3">
-                  <div className="flex items-center gap-1.5 text-xs text-stone-600">
-                    <Users className="h-3.5 w-3.5 text-stone-400" />
+                <div
+                  className="flex gap-4 border-t pt-3"
+                  style={{ borderColor: "var(--maison-border)" }}
+                >
+                  <div
+                    className="flex items-center gap-1.5 text-xs"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
+                    <Users
+                      className="h-3.5 w-3.5"
+                      style={{ color: "var(--maison-text-muted)" }}
+                    />
                     <span>
-                      <span className="font-semibold text-stone-800">
+                      <span
+                        className="font-semibold"
+                        style={{ color: "var(--maison-text-primary)" }}
+                      >
                         {nbContacts}
                       </span>{" "}
                       contact{nbContacts !== 1 ? "s" : ""}
                     </span>
                   </div>
-                  <div className="flex items-center gap-1.5 text-xs text-stone-600">
-                    <Briefcase className="h-3.5 w-3.5 text-stone-400" />
+                  <div
+                    className="flex items-center gap-1.5 text-xs"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
+                    <Briefcase
+                      className="h-3.5 w-3.5"
+                      style={{ color: "var(--maison-text-muted)" }}
+                    />
                     <span>
-                      <span className="font-semibold text-stone-800">
+                      <span
+                        className="font-semibold"
+                        style={{ color: "var(--maison-text-primary)" }}
+                      >
                         {nbLeads}
                       </span>{" "}
                       projet{nbLeads !== 1 ? "s" : ""}
                     </span>
                   </div>
                   {company.driveFolderUrl && (
-                    <div className="ml-auto flex items-center gap-1 text-xs text-teal-600">
+                    <div
+                      className="ml-auto flex items-center gap-1 text-xs"
+                      style={{ color: "var(--maison-brass)" }}
+                    >
                       <Globe className="h-3 w-3" />
                     </div>
                   )}
@@ -220,83 +328,117 @@ export default function ClientsPage() {
       {/* Add Client Modal */}
       {isAddOpen && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-sm"
+          style={{ background: "rgba(0,0,0,0.55)" }}
           onClick={(e) => {
             if (e.target === e.currentTarget) setIsAddOpen(false);
           }}
         >
-          <div className="w-full max-w-md rounded-2xl border border-stone-200 bg-white shadow-2xl">
-            <div className="flex items-center justify-between border-b border-stone-100 px-6 py-4">
-              <h2 className="text-base font-bold text-stone-900">
-                Nouveau client
-              </h2>
+          <div
+            className="w-full max-w-md rounded-2xl shadow-2xl"
+            style={{
+              background: "var(--maison-card)",
+              border: "1px solid var(--maison-border)",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b px-6 py-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
+              <div>
+                <p
+                  className="text-[10px] font-bold uppercase tracking-widest"
+                  style={{ color: "var(--maison-brass)" }}
+                >
+                  CRM · Clients
+                </p>
+                <h2
+                  className="text-base font-bold"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  Nouveau client
+                </h2>
+              </div>
               <button
                 onClick={() => setIsAddOpen(false)}
-                className="rounded-md p-1.5 text-stone-400 hover:bg-stone-100 hover:text-stone-700 transition"
+                className="rounded-md p-1.5 transition"
+                style={{ color: "var(--maison-text-muted)" }}
                 aria-label="Fermer"
               >
                 <X className="h-5 w-5" />
               </button>
             </div>
             <form onSubmit={handleCreateCompany} className="space-y-4 p-6">
-              <div className="space-y-1.5">
-                <label
-                  className="text-sm font-medium text-stone-800"
-                  htmlFor="new-company-name"
-                >
-                  Nom du client *
-                </label>
-                <input
-                  id="new-company-name"
-                  className={inputCls}
-                  required
-                  placeholder="Ex: Atlas Telecom"
-                  value={newName}
-                  onChange={(e) => setNewName(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label
-                  className="text-sm font-medium text-stone-800"
-                  htmlFor="new-company-industry"
-                >
-                  Secteur d&apos;activité
-                </label>
-                <input
-                  id="new-company-industry"
-                  className={inputCls}
-                  placeholder="Ex: Télécommunications, Immobilier..."
-                  value={newIndustry}
-                  onChange={(e) => setNewIndustry(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <label
-                  className="text-sm font-medium text-stone-800"
-                  htmlFor="new-company-website"
-                >
-                  Site web
-                </label>
-                <input
-                  id="new-company-website"
-                  className={inputCls}
-                  placeholder="https://..."
-                  value={newWebsite}
-                  onChange={(e) => setNewWebsite(e.target.value)}
-                />
-              </div>
+              {[
+                {
+                  id: "new-company-name",
+                  label: "Nom du client *",
+                  placeholder: "Ex: Atlas Telecom",
+                  value: newName,
+                  setter: setNewName,
+                  required: true,
+                },
+                {
+                  id: "new-company-industry",
+                  label: "Secteur d'activité",
+                  placeholder: "Ex: Télécommunications, Immobilier...",
+                  value: newIndustry,
+                  setter: setNewIndustry,
+                  required: false,
+                },
+                {
+                  id: "new-company-website",
+                  label: "Site web",
+                  placeholder: "https://...",
+                  value: newWebsite,
+                  setter: setNewWebsite,
+                  required: false,
+                },
+              ].map((field) => (
+                <div key={field.id} className="space-y-1.5">
+                  <label
+                    className="text-xs font-semibold"
+                    htmlFor={field.id}
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
+                    {field.label}
+                  </label>
+                  <input
+                    id={field.id}
+                    className="flex h-9 w-full rounded-lg border px-3 py-2 text-xs outline-none transition"
+                    style={{
+                      borderColor: "var(--maison-border)",
+                      background: "var(--maison-page)",
+                      color: "var(--maison-text-primary)",
+                    }}
+                    required={field.required}
+                    placeholder={field.placeholder}
+                    value={field.value}
+                    onChange={(e) => field.setter(e.target.value)}
+                  />
+                </div>
+              ))}
               <div className="flex gap-3 pt-2">
-                <Button
+                <button
                   type="button"
-                  variant="outline"
-                  className="flex-1"
+                  className="flex-1 rounded-lg border py-2.5 text-xs font-semibold transition"
+                  style={{
+                    borderColor: "var(--maison-border)",
+                    color: "var(--maison-text-secondary)",
+                    background: "transparent",
+                  }}
                   onClick={() => setIsAddOpen(false)}
                 >
                   Annuler
-                </Button>
-                <Button
+                </button>
+                <button
                   type="submit"
-                  className="flex-1 gap-2 bg-teal-700 hover:bg-teal-800 text-white"
+                  className="flex-1 inline-flex items-center justify-center gap-2 rounded-lg py-2.5 text-xs font-bold shadow-sm transition"
+                  style={{
+                    background: "var(--maison-brass)",
+                    color: "var(--maison-brass-text)",
+                    opacity: isSubmitting || !newName.trim() ? 0.6 : 1,
+                  }}
                   disabled={isSubmitting || !newName.trim()}
                 >
                   {isSubmitting ? (
@@ -305,7 +447,7 @@ export default function ClientsPage() {
                     <Plus className="h-4 w-4" />
                   )}
                   Créer le client
-                </Button>
+                </button>
               </div>
             </form>
           </div>

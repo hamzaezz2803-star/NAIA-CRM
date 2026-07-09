@@ -1389,21 +1389,43 @@ export default function LeadsPage() {
     });
   }, [leads]);
 
+  const activeLeads = leads.filter(
+    (l) => l.status !== "won" && l.status !== "dead-end",
+  );
+
   return (
-    <div className="space-y-2">
-      <div className="flex flex-col gap-2 border-b border-stone-200 pb-2 dark:border-stone-800 lg:flex-row lg:items-center lg:justify-between">
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 border-b border-stone-200 pb-3 dark:border-stone-800 lg:flex-row lg:items-end lg:justify-between">
+        {/* Left: breadcrumb + title */}
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase text-teal-700 dark:text-teal-400">
-            CRM · Pipeline
+          <p className="text-[11px] font-semibold uppercase tracking-widest text-teal-700 dark:text-teal-400">
+            CRM · ESPACE INTERNE
           </p>
-          <h1 className="text-xl font-semibold leading-tight text-stone-950 dark:text-stone-50">
-            Pipeline commercial
-          </h1>
+          <div className="flex items-baseline gap-3 flex-wrap">
+            <h1 className="font-serif text-2xl font-bold italic leading-tight text-stone-950 dark:text-stone-50">
+              Pipeline
+            </h1>
+            <p className="text-sm text-stone-500 dark:text-stone-400">
+              {activeLeads.length} lead{activeLeads.length !== 1 ? "s" : ""}{" "}
+              actif{activeLeads.length !== 1 ? "s" : ""}
+              {overdueLeads.length > 0 && (
+                <>
+                  {" · "}
+                  <span className="font-semibold text-red-600 dark:text-red-400">
+                    {overdueLeads.length} relance
+                    {overdueLeads.length !== 1 ? "s" : ""} en retard
+                  </span>
+                </>
+              )}
+            </p>
+          </div>
         </div>
 
+        {/* Right: actions */}
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          {/* Google connection */}
           {isGoogleConnected ? (
-            <div className="flex h-8 items-center gap-2 rounded-md border border-teal-200 bg-teal-50 px-2.5 text-xs font-medium text-teal-800 dark:border-teal-900/50 dark:bg-teal-950/30 dark:text-teal-400">
+            <div className="flex h-8 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-2.5 text-xs font-medium text-teal-800 dark:border-teal-900/50 dark:bg-teal-950/30 dark:text-teal-400">
               <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
               Google connecté
               <button
@@ -1425,34 +1447,11 @@ export default function LeadsPage() {
             </Button>
           )}
 
-          <Button
-            id="btn-add-lead"
-            onClick={() => {
-              resetForm();
-              setIsAddOpen(true);
-            }}
-            className="h-8 gap-1.5 text-xs"
-          >
-            <Plus className="h-3.5 w-3.5" />
-            Nouveau lead
-          </Button>
-
-          {viewMode === "kanban" && (
-            <Button
-              type="button"
-              onClick={() => openCategoryModal(null)}
-              variant="outline"
-              className="h-8 gap-1.5 border-dashed border-stone-200 text-xs text-stone-700 shadow-sm hover:bg-stone-50 hover:text-stone-950"
-            >
-              <Plus className="h-3.5 w-3.5 text-teal-600" />
-              Colonne
-            </Button>
-          )}
-
-          <div className="flex h-9 items-center gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1 dark:border-stone-800 dark:bg-stone-900">
+          {/* View toggle */}
+          <div className="flex h-8 items-center gap-0.5 rounded-lg border border-stone-200 bg-stone-100 p-0.5 dark:border-stone-800 dark:bg-stone-900">
             <button
               onClick={() => setViewMode("kanban")}
-              className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition ${
+              className={`flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold transition ${
                 viewMode === "kanban"
                   ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
                   : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
@@ -1463,7 +1462,7 @@ export default function LeadsPage() {
             </button>
             <button
               onClick={() => setViewMode("calendar")}
-              className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition ${
+              className={`flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold transition ${
                 viewMode === "calendar"
                   ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
                   : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
@@ -1474,7 +1473,7 @@ export default function LeadsPage() {
             </button>
             <button
               onClick={() => setViewMode("list")}
-              className={`flex h-7 items-center gap-1 rounded-md px-2 text-xs font-semibold transition ${
+              className={`flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold transition ${
                 viewMode === "list"
                   ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
                   : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
@@ -1484,16 +1483,48 @@ export default function LeadsPage() {
               Liste
             </button>
           </div>
+
+          {/* Add column (kanban only) */}
+          {viewMode === "kanban" && (
+            <Button
+              type="button"
+              onClick={() => openCategoryModal(null)}
+              variant="outline"
+              className="h-8 gap-1.5 border-dashed border-stone-300 text-xs text-stone-600 shadow-sm hover:bg-stone-50 hover:text-stone-950"
+            >
+              <Plus className="h-3.5 w-3.5 text-teal-600" />
+              Colonne
+            </Button>
+          )}
+
+          {/* New lead CTA */}
+          <Button
+            id="btn-add-lead"
+            onClick={() => {
+              resetForm();
+              setIsAddOpen(true);
+            }}
+            className="h-8 gap-1.5 bg-stone-900 text-xs text-white hover:bg-stone-800 dark:bg-stone-50 dark:text-stone-900 dark:hover:bg-stone-100"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Nouveau lead
+          </Button>
         </div>
       </div>
 
       {overdueLeads.length > 0 && (
-        <section className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50/60 px-2 py-1.5 shadow-sm dark:border-red-900/40 dark:bg-red-950/20">
-          <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-bold uppercase text-red-800 dark:text-red-300">
+        <section
+          className="flex items-center gap-3 rounded-xl px-3 py-2"
+          style={{
+            background: "#fff5f5",
+            border: "1px solid #fecaca",
+          }}
+        >
+          <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-red-700">
             <AlertCircle className="h-3.5 w-3.5 text-red-600" />
             Retards ({overdueLeads.length})
           </div>
-          <div className="flex min-w-0 flex-1 gap-1.5 overflow-x-auto">
+          <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto">
             {overdueLeads.slice(0, 8).map((lead) => {
               const noteLines = (lead.notes ?? "").split("\n");
               const companyName =
@@ -1513,14 +1544,24 @@ export default function LeadsPage() {
                   type="button"
                   key={lead.id}
                   onClick={() => openEditModal(lead)}
-                  className="flex min-w-[190px] max-w-[240px] items-center gap-2 rounded-md border border-red-100 bg-white px-2 py-1 text-left shadow-sm transition hover:border-red-300 hover:shadow dark:border-red-900/40 dark:bg-stone-950"
+                  className="flex min-w-[190px] max-w-[240px] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:shadow-sm"
+                  style={{
+                    background: "var(--maison-card)",
+                    border: "1px solid #fca5a5",
+                  }}
                 >
-                  <Calendar className="h-3.5 w-3.5 shrink-0 text-red-600" />
+                  <Calendar className="h-3.5 w-3.5 shrink-0 text-red-500" />
                   <div className="min-w-0">
-                    <p className="truncate text-[11px] font-semibold text-stone-950 dark:text-stone-50">
+                    <p
+                      className="truncate text-[11px] font-semibold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
                       {companyName}
                     </p>
-                    <p className="truncate text-[10px] text-stone-500 dark:text-stone-400">
+                    <p
+                      className="truncate text-[10px]"
+                      style={{ color: "var(--maison-text-muted)" }}
+                    >
                       {contactName ? `${contactName} · ` : ""}
                       {formatLeadDateForDisplay(lead.leadDate)}
                     </p>
@@ -1529,7 +1570,7 @@ export default function LeadsPage() {
               );
             })}
             {overdueLeads.length > 8 ? (
-              <span className="flex items-center rounded-md px-2 text-[11px] font-medium text-red-700 dark:text-red-300">
+              <span className="flex items-center rounded-md px-2 text-[11px] font-medium text-red-700">
                 +{overdueLeads.length - 8}
               </span>
             ) : null}
@@ -1547,14 +1588,11 @@ export default function LeadsPage() {
         </div>
       ) : viewMode === "kanban" ? (
         <div>
-          <div
-            ref={kanbanContainerRef}
-            className="overflow-x-auto pb-2 scrollbar-thin scroll-smooth"
-          >
+          <div ref={kanbanContainerRef} className="pb-4">
             <div
-              className="grid min-w-[980px] items-start gap-2 lg:min-w-0"
+              className="grid items-start gap-2"
               style={{
-                gridTemplateColumns: `repeat(${categories.length}, minmax(140px, 1fr))`,
+                gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))`,
               }}
             >
               {categories.map((col, index) => {
@@ -1565,7 +1603,11 @@ export default function LeadsPage() {
                 return (
                   <div
                     key={col.id}
-                    className="group/col flex min-w-0 flex-col gap-1.5 rounded-lg border border-stone-200/70 bg-stone-50/70 p-1 transition-colors hover:border-stone-300 dark:border-stone-800 dark:bg-stone-950/45"
+                    className="group/col flex min-w-0 flex-col gap-2 rounded-xl p-2 transition-colors"
+                    style={{
+                      background: "var(--maison-page)",
+                      border: "1px solid var(--maison-border-subtle)",
+                    }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
                       e.preventDefault();
@@ -1579,16 +1621,24 @@ export default function LeadsPage() {
                     }}
                   >
                     {/* Column header */}
-                    <div
-                      className={`flex min-h-7 items-center gap-1.5 rounded-md border px-2 py-1 ${style.color}`}
-                    >
+                    <div className="flex items-center gap-1.5 px-1 py-0.5">
                       <span
-                        className={`h-1.5 w-1.5 flex-none rounded-full ${style.dot}`}
+                        className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
                       />
-                      <span className="flex-1 truncate text-[11px] font-bold uppercase">
+                      <span
+                        className="flex-1 truncate text-[11px] font-bold uppercase tracking-wider"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
                         {col.name}
                       </span>
-                      <span className="rounded bg-white/45 px-1 text-[10px] font-bold opacity-70 dark:bg-stone-950/30">
+                      <span
+                        className="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
+                        style={{
+                          background: "var(--maison-card)",
+                          color: "var(--maison-text-muted)",
+                          border: "1px solid var(--maison-border)",
+                        }}
+                      >
                         {colLeads.length}
                       </span>
 
@@ -1601,7 +1651,7 @@ export default function LeadsPage() {
                               handleMoveCategoryOrder(col.id, "left")
                             }
                             title="Déplacer à gauche"
-                            className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                            className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
                           >
                             <ChevronLeft className="h-3 w-3" />
                           </button>
@@ -1613,7 +1663,7 @@ export default function LeadsPage() {
                               handleMoveCategoryOrder(col.id, "right")
                             }
                             title="Déplacer à droite"
-                            className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                            className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
                           >
                             <ChevronRight className="h-3 w-3" />
                           </button>
@@ -1622,7 +1672,7 @@ export default function LeadsPage() {
                           type="button"
                           onClick={() => openCategoryModal(col)}
                           title="Modifier"
-                          className="p-0.5 rounded hover:bg-stone-50/30 text-stone-500"
+                          className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
                         >
                           <Edit3 className="h-3 w-3" />
                         </button>
@@ -1630,9 +1680,16 @@ export default function LeadsPage() {
                     </div>
 
                     {/* Lead cards */}
-                    <div className="flex max-h-[calc(100dvh-12.5rem)] min-h-[calc(100dvh-12.5rem)] flex-col gap-1.5 overflow-y-auto pr-0.5">
+                    <div className="flex max-h-[calc(100dvh-14rem)] min-h-[calc(100dvh-14rem)] flex-col gap-2 overflow-y-auto pr-0.5">
                       {colLeads.length === 0 && (
-                        <div className="rounded-md border border-dashed border-stone-200 p-3 text-center text-xs text-stone-400 dark:border-stone-800">
+                        <div
+                          className="rounded-lg border border-dashed p-4 text-center text-xs"
+                          style={{
+                            borderColor: "var(--maison-border)",
+                            color: "var(--maison-text-muted)",
+                            background: "transparent",
+                          }}
+                        >
                           Vide
                         </div>
                       )}
@@ -1649,6 +1706,37 @@ export default function LeadsPage() {
                         />
                       ))}
                     </div>
+
+                    {/* Add button */}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        resetForm();
+                        setFormStatus(col.statusKey);
+                        setIsAddOpen(true);
+                      }}
+                      className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed py-1.5 text-[11px] font-medium transition"
+                      style={{
+                        borderColor: "var(--maison-border)",
+                        color: "var(--maison-text-muted)",
+                      }}
+                      onMouseEnter={(e) => {
+                        (
+                          e.currentTarget as HTMLButtonElement
+                        ).style.background = "var(--maison-card)";
+                        (e.currentTarget as HTMLButtonElement).style.color =
+                          "var(--maison-text-secondary)";
+                      }}
+                      onMouseLeave={(e) => {
+                        (
+                          e.currentTarget as HTMLButtonElement
+                        ).style.background = "transparent";
+                        (e.currentTarget as HTMLButtonElement).style.color =
+                          "var(--maison-text-muted)";
+                      }}
+                    >
+                      <Plus className="h-3 w-3" />+ Ajouter
+                    </button>
                   </div>
                 );
               })}
@@ -4043,7 +4131,28 @@ function LeadCard({
     "Sans entreprise";
   const contactName =
     lead.contactName?.trim() || contactLine || "Contact à qualifier";
-  const showProject = lead.topic.trim() && lead.topic.trim() !== companyName;
+  const showProject = React.useMemo(() => {
+    const t = lead.topic.trim();
+    if (!t) return false;
+    const lowerCompany = companyName.toLowerCase();
+    return t.toLowerCase() !== lowerCompany;
+  }, [lead.topic, companyName]);
+
+  const displayTopic = React.useMemo(() => {
+    let t = lead.topic.trim();
+    if (!t) return "";
+    const lowerCompany = companyName.toLowerCase();
+    if (t.toLowerCase().startsWith(lowerCompany)) {
+      t = t
+        .slice(companyName.length)
+        .replace(/^[\s\-\·\–\—\:]+/, "")
+        .trim();
+    }
+    if (t) {
+      return t.charAt(0).toUpperCase() + t.slice(1);
+    }
+    return "";
+  }, [lead.topic, companyName]);
 
   const isOverdue = React.useMemo(() => {
     if (!lead.leadDate) return false;
@@ -4093,40 +4202,108 @@ function LeadCard({
     rose: "bg-rose-500",
   };
 
+  // Compute a stable avatar index from company name (palette has 8 entries)
+  const avatarIdx =
+    companyName.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 8;
+
+  // 2-letter initials from contact name (e.g. "Hicham El Alami" → "HE")
+  const avatarInitials = React.useMemo(() => {
+    const words = contactName.split(" ").filter(Boolean);
+    if (words.length >= 2) {
+      return (words[0][0] + words[1][0]).toUpperCase();
+    }
+    return contactName.charAt(0).toUpperCase();
+  }, [contactName]);
+
+  // Source display — plain text, no badge
+  const sourceDisplay = lead.source?.trim()?.toUpperCase();
+
+  // Compact date: "18 juil." — manual format avoids fr-FR locale dot-separator bugs
+  const cardDateDisplay = React.useMemo(() => {
+    if (!lead.leadDate) return "";
+    try {
+      const d = new Date(lead.leadDate);
+      if (isNaN(d.getTime())) return "";
+      const months = [
+        "janv.",
+        "févr.",
+        "mars",
+        "avr.",
+        "mai",
+        "juin",
+        "juil.",
+        "août",
+        "sept.",
+        "oct.",
+        "nov.",
+        "déc.",
+      ];
+      return `${d.getDate()} ${months[d.getMonth()]}`;
+    } catch {
+      return "";
+    }
+  }, [lead.leadDate]);
+
+  // Dark avatar colors matching the reference (dark circle, light initials)
+  const darkAvatarPalette = [
+    { bg: "#1e3a5f", text: "#ffffff" }, // dark navy
+    { bg: "#2d4a3e", text: "#ffffff" }, // dark green
+    { bg: "#4a2d5f", text: "#ffffff" }, // dark purple
+    { bg: "#5f3a2d", text: "#ffffff" }, // dark brown
+    { bg: "#2d3a5f", text: "#ffffff" }, // dark indigo
+    { bg: "#5f4a2d", text: "#ffffff" }, // dark amber
+    { bg: "#2d5f4a", text: "#ffffff" }, // dark teal
+    { bg: "#5f2d3a", text: "#ffffff" }, // dark rose
+  ];
+  const darkAvatarColor = darkAvatarPalette[avatarIdx];
+
   return (
     <article
       draggable
       onDragStart={(e) => {
         e.dataTransfer.setData("text/plain", lead.id);
       }}
-      className="group relative min-h-[72px] cursor-grab rounded-md border border-stone-200 bg-white p-2 shadow-sm transition hover:border-teal-300 hover:shadow-md active:cursor-grabbing dark:border-stone-800 dark:bg-stone-950"
+      style={{
+        background: "var(--maison-card)",
+        border: "1px solid var(--maison-border)",
+        borderRadius: "8px",
+        boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+      }}
+      className="group relative cursor-grab transition-shadow hover:shadow-md active:cursor-grabbing"
     >
-      <div className="absolute right-1.5 top-1.5 z-10 flex gap-0.5 rounded-md border border-stone-200 bg-white/95 p-0.5 opacity-0 shadow-sm backdrop-blur-sm transition-opacity duration-200 group-hover:opacity-100 dark:border-stone-800 dark:bg-stone-950/95">
+      {/* Hover action buttons */}
+      <div
+        className="absolute right-2 top-2 z-10 hidden items-center gap-0.5 rounded-lg p-0.5 group-hover:flex"
+        style={{
+          background: "var(--maison-card)",
+          border: "1px solid var(--maison-border)",
+          boxShadow: "0 1px 4px rgba(0,0,0,0.08)",
+        }}
+      >
         {nextStatus && (
           <button
             type="button"
             title="Avancer"
-            onClick={() => onMove(lead, nextStatus)}
-            className="flex h-5 w-5 items-center justify-center rounded text-emerald-600 transition-colors hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/40"
+            onClick={(e) => {
+              e.stopPropagation();
+              onMove(lead, nextStatus);
+            }}
+            className="flex h-5 w-5 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors"
           >
             <MoveRight className="h-3 w-3" />
           </button>
         )}
         <button
           type="button"
-          title={
-            lead.driveFolderUrl
-              ? "Ouvrir le dossier Drive"
-              : "Creer le dossier Drive"
-          }
+          title={lead.driveFolderUrl ? "Ouvrir Drive" : "Créer dossier Drive"}
           onClick={(e) => {
             e.stopPropagation();
             onDriveClick(lead);
           }}
           className={`flex h-5 w-5 items-center justify-center rounded transition-colors ${
             lead.driveFolderUrl
-              ? "text-emerald-600 hover:bg-emerald-50 hover:text-emerald-700 dark:hover:bg-emerald-950/40"
-              : "text-stone-400 hover:bg-stone-50 hover:text-stone-600 dark:hover:bg-stone-900"
+              ? "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
+              : "text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700"
           }`}
         >
           <FolderOpen className="h-3 w-3" />
@@ -4134,81 +4311,123 @@ function LeadCard({
         <button
           type="button"
           title="Relance IA"
-          onClick={() => onGenerateDraft(lead)}
-          className="flex h-5 w-5 items-center justify-center rounded text-blue-600 transition-colors hover:bg-blue-50 hover:text-blue-700 dark:hover:bg-blue-950/40"
+          onClick={(e) => {
+            e.stopPropagation();
+            onGenerateDraft(lead);
+          }}
+          className="flex h-5 w-5 items-center justify-center rounded text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors"
         >
           <Bot className="h-3 w-3" />
         </button>
         <button
           type="button"
           title="Supprimer"
-          onClick={() => onDelete(lead.id)}
-          className="flex h-5 w-5 items-center justify-center rounded text-red-650 transition-colors hover:bg-red-50 hover:text-red-700 dark:hover:bg-red-950/40"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(lead.id);
+          }}
+          className="flex h-5 w-5 items-center justify-center rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
         >
           <Trash2 className="h-3 w-3" />
         </button>
       </div>
 
-      <button
-        type="button"
-        className="flex h-full w-full flex-col justify-between text-left"
-        onClick={onSelect}
-      >
-        <div className="min-w-0">
-          {lead.tags && lead.tags.length > 0 ? (
-            <div className="mb-1 flex gap-1 pr-12">
+      {/* Clickable card body */}
+      <button type="button" className="w-full text-left" onClick={onSelect}>
+        <div className="p-3 pb-2">
+          {/* Tag bars */}
+          {lead.tags && lead.tags.length > 0 && (
+            <div className="mb-2 flex gap-1">
               {lead.tags.slice(0, 3).map((tag) => (
                 <span
-                  aria-label={tag.name}
-                  className={`h-1.5 min-w-8 flex-1 rounded-full ${
-                    tagBarColors[tag.color] ?? "bg-stone-400"
-                  }`}
                   key={tag.id}
+                  aria-label={tag.name}
+                  className={`h-[3px] flex-1 rounded-full ${tagBarColors[tag.color] ?? "bg-stone-400"}`}
                 />
               ))}
             </div>
-          ) : null}
+          )}
 
-          <p className="truncate pr-10 text-[12px] font-semibold leading-tight text-stone-950 transition-colors group-hover:text-teal-800 dark:text-stone-50 dark:group-hover:text-teal-300">
-            {companyName}
-          </p>
-
-          <p className="mt-0.5 flex items-center gap-1 truncate text-[11px] font-medium text-stone-600 dark:text-stone-300">
-            <User className="h-3 w-3 shrink-0 text-stone-400" />
-            <span className="truncate">{contactName}</span>
-          </p>
-
-          {showProject ? (
-            <p className="mt-0.5 truncate text-[10px] leading-tight text-stone-500 dark:text-stone-400">
-              {lead.topic}
+          {/* Company name + Dark avatar (2-letter initials) */}
+          <div className="flex items-start justify-between gap-2">
+            <p
+              className="flex-1 truncate text-[13px] font-semibold leading-snug"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              {companyName}
             </p>
-          ) : null}
+            <span
+              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold leading-none"
+              style={{
+                background: darkAvatarColor.bg,
+                color: darkAvatarColor.text,
+              }}
+            >
+              {avatarInitials}
+            </span>
+          </div>
+
+          {/* Topic / subtitle — 1 line truncated */}
+          {showProject && (
+            <p
+              className="mt-0.5 truncate text-[11px]"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              {displayTopic}
+            </p>
+          )}
+
+          {/* Next action — 1 line max for compact uniform height */}
+          {lead.nextAction && (
+            <p
+              className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug"
+              style={{ color: "var(--maison-text-muted)" }}
+            >
+              <span className="mt-px shrink-0">→</span>
+              <span className="truncate">{lead.nextAction}</span>
+            </p>
+          )}
         </div>
 
-        <div className="mt-1.5 flex items-center justify-between gap-1 border-t border-stone-100 pt-1 dark:border-stone-900">
-          {lead.leadDate ? (
+        {/* Footer — date + source, no separator */}
+        <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
+          {/* Date: compact "18 juil." with calendar icon; red if overdue */}
+          {cardDateDisplay ? (
             <span
-              className={`inline-flex min-w-0 items-center gap-1 truncate rounded border px-1.5 py-0.5 text-[9px] font-semibold ${
-                isOverdue
-                  ? "border-red-200/70 bg-red-50 text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300"
-                  : "border-amber-200/60 bg-amber-50 text-amber-700 dark:border-amber-900/50 dark:bg-amber-950/25 dark:text-amber-300"
-              }`}
+              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px]"
+              style={{
+                color: isOverdue ? "#dc2626" : "var(--maison-text-muted)",
+              }}
             >
-              <Calendar className="h-2.5 w-2.5 shrink-0" />
-              <span className="truncate">
-                {formatLeadDateForDisplay(lead.leadDate)}
-              </span>
+              <Calendar className="h-3 w-3 shrink-0" />
+              {cardDateDisplay}
+              {isOverdue && (
+                <span className="font-semibold text-red-600">· retard</span>
+              )}
             </span>
           ) : (
             <span />
           )}
 
-          <div className="flex shrink-0 items-center gap-1">
-            <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
-            <span className="text-[9px] font-bold uppercase tracking-tight text-stone-600 dark:text-stone-400">
-              {statusLabels[lead.status] || lead.status}
+          {/* Source: plain uppercase text, no box */}
+          {sourceDisplay ? (
+            <span
+              className="shrink-0 text-[10px] font-semibold uppercase tracking-wide"
+              style={{ color: "var(--maison-text-muted)" }}
+            >
+              {sourceDisplay}
             </span>
-          </div>
+          ) : (
+            <div className="flex shrink-0 items-center gap-1">
+              <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
+              <span
+                className="text-[10px] font-semibold uppercase tracking-wide"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
+                {statusLabels[lead.status] || lead.status}
+              </span>
+            </div>
+          )}
         </div>
       </button>
     </article>

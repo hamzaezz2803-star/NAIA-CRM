@@ -3,7 +3,6 @@
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { PageHeader } from "@/components/layout/page-header";
 import { Button } from "@/components/ui/button";
 import {
   Building2,
@@ -43,7 +42,8 @@ import type {
 import toast from "react-hot-toast";
 
 const inputCls =
-  "flex h-10 w-full rounded-md border border-stone-300 bg-white px-3 py-2 text-sm text-stone-950 placeholder:text-stone-400 focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-600/20 transition";
+  "flex h-9 w-full rounded-lg border px-3 py-2 text-xs outline-none transition" +
+  " [border-color:var(--maison-border)] [background:var(--maison-page)] [color:var(--maison-text-primary)]";
 
 const statusLabels: Record<
   string,
@@ -122,7 +122,10 @@ function StatusBadge({ status }: { status: string }) {
 
 function SectionTitle({ children }: { children: React.ReactNode }) {
   return (
-    <h2 className="text-sm font-semibold uppercase tracking-wider text-stone-500">
+    <h2
+      className="text-[10px] font-bold uppercase tracking-[0.08em]"
+      style={{ color: "var(--maison-text-muted)" }}
+    >
       {children}
     </h2>
   );
@@ -310,48 +313,80 @@ export default function ClientDetailPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       {/* Back + Header */}
-      <div>
+      <div
+        className="flex flex-col gap-2 border-b pb-4"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
         <Link
           href="/dashboard/clients"
-          className="mb-4 inline-flex items-center gap-1.5 text-sm text-stone-500 hover:text-teal-700 transition"
+          className="inline-flex items-center gap-1.5 text-xs font-medium transition hover:opacity-70 w-fit"
+          style={{ color: "var(--maison-text-muted)" }}
         >
           <ArrowLeft className="h-3.5 w-3.5" />
           Tous les clients
         </Link>
-        <PageHeader
-          eyebrow="CRM · Fiche client"
-          title={company.name}
-          description={
-            [company.industry, company.website].filter(Boolean).join(" · ") ||
-            "Informations générales, contacts et projets."
-          }
-        />
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            CRM · Fiche client
+          </p>
+          <h1
+            className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl"
+            style={{
+              fontFamily: "var(--font-playfair), Georgia, serif",
+              color: "var(--maison-text-primary)",
+            }}
+          >
+            {company.name}
+          </h1>
+          <p
+            className="mt-1 text-xs"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            {[company.industry, company.website].filter(Boolean).join(" · ") ||
+              "Informations générales, contacts et projets."}
+          </p>
+        </div>
       </div>
 
       <div className="grid gap-8 lg:grid-cols-3">
         {/* LEFT COLUMN — Info + Contacts */}
         <div className="space-y-6 lg:col-span-1">
           {/* ── Informations générales ── */}
-          <section className="rounded-xl border border-stone-200 bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-stone-100 px-5 py-4">
+          <section
+            className="rounded-xl shadow-sm"
+            style={{
+              background: "var(--maison-card)",
+              border: "1px solid var(--maison-border)",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b px-5 py-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
               <SectionTitle>Informations générales</SectionTitle>
               {!isEditingInfo ? (
-                <Button
+                <button
                   id="btn-edit-company-info"
-                  variant="ghost"
-                  className="h-8 gap-1.5 px-2.5 text-xs text-stone-600 hover:text-teal-700"
+                  className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition hover:opacity-70"
+                  style={{
+                    color: "var(--maison-brass)",
+                    background: "rgba(201,168,76,0.08)",
+                  }}
                   onClick={() => setIsEditingInfo(true)}
                 >
                   <Edit3 className="h-3.5 w-3.5" />
                   Modifier
-                </Button>
+                </button>
               ) : (
                 <div className="flex gap-1.5">
-                  <Button
-                    variant="ghost"
-                    className="h-8 w-8 px-0 text-stone-400 hover:text-stone-700"
+                  <button
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-lg transition hover:opacity-70"
+                    style={{ color: "var(--maison-text-muted)" }}
                     onClick={() => {
                       setIsEditingInfo(false);
                       setEditName(company.name);
@@ -361,9 +396,13 @@ export default function ClientDetailPage() {
                     }}
                   >
                     <X className="h-4 w-4" />
-                  </Button>
-                  <Button
-                    className="h-8 gap-1.5 bg-teal-700 px-3 text-xs text-white hover:bg-teal-800"
+                  </button>
+                  <button
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg px-3 text-xs font-bold transition hover:opacity-80"
+                    style={{
+                      background: "var(--maison-brass)",
+                      color: "var(--maison-brass-text)",
+                    }}
                     onClick={handleSaveInfo}
                     disabled={isSavingInfo}
                   >
@@ -373,7 +412,7 @@ export default function ClientDetailPage() {
                       <Check className="h-3.5 w-3.5" />
                     )}
                     Sauvegarder
-                  </Button>
+                  </button>
                 </div>
               )}
             </div>
@@ -538,7 +577,8 @@ export default function ClientDetailPage() {
                                 );
                                 setIsEditContactOpen(true);
                               }}
-                              className="text-stone-400 hover:text-teal-700 p-0.5 rounded transition"
+                              style={{ color: "var(--maison-text-muted)" }}
+                              className="p-0.5 rounded transition hover:opacity-70"
                               title="Modifier le contact"
                             >
                               <Edit3 className="h-3.5 w-3.5" />
@@ -593,7 +633,8 @@ export default function ClientDetailPage() {
                           {contact.email && (
                             <a
                               href={`mailto:${contact.email}`}
-                              className="flex items-center gap-1 text-xs text-teal-700 hover:underline"
+                              className="flex items-center gap-1 text-xs hover:underline"
+                              style={{ color: "var(--maison-brass)" }}
                             >
                               <Mail className="h-3 w-3" />
                               {contact.email}
@@ -602,7 +643,8 @@ export default function ClientDetailPage() {
                           {contact.phone && (
                             <a
                               href={`tel:${contact.phone}`}
-                              className="flex items-center gap-1 text-xs text-stone-600 hover:underline"
+                              className="flex items-center gap-1 text-xs hover:underline"
+                              style={{ color: "var(--maison-text-secondary)" }}
                             >
                               <Phone className="h-3 w-3" />
                               {contact.phone}
@@ -643,12 +685,22 @@ export default function ClientDetailPage() {
         {/* RIGHT COLUMN — Projects + Invoices */}
         <div className="space-y-6 lg:col-span-2">
           {/* ── Projets / Leads ── */}
-          <section className="rounded-xl border border-stone-200 bg-white shadow-sm">
-            <div className="flex items-center justify-between border-b border-stone-100 px-5 py-4">
+          <section
+            className="rounded-xl shadow-sm"
+            style={{
+              background: "var(--maison-card)",
+              border: "1px solid var(--maison-border)",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b px-5 py-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
               <SectionTitle>Projets ({leads.length})</SectionTitle>
               <Link
                 href="/dashboard/leads"
-                className="flex items-center gap-1.5 text-xs text-stone-500 hover:text-teal-700 transition"
+                className="flex items-center gap-1.5 text-xs font-semibold transition hover:opacity-70"
+                style={{ color: "var(--maison-brass)" }}
               >
                 Voir le kanban
                 <ExternalLink className="h-3 w-3" />

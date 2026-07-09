@@ -23,7 +23,6 @@ import type { NaiaActionDraft, NaiaOrchestrationResult } from "./orchestrator";
 import {
   createVoiceSilenceDetector,
   playElevenLabsVoice,
-  primeVoicePlayback,
   type VoicePlaybackHandle,
   VOICE_RECORDING_MAX_MS,
 } from "./voice-client";
@@ -85,7 +84,7 @@ type FloatingPosition = {
   y: number;
 };
 
-const BUBBLE_SIZE = 58;
+const BUBBLE_SIZE = 48;
 const PANEL_WIDTH = 420;
 const PANEL_HEIGHT = 620;
 
@@ -236,7 +235,6 @@ export function NaiaFloatingAssistant() {
     const cleanCommand = nextCommand.trim();
     if (!cleanCommand) return;
 
-    if (options.speak) primeVoicePlayback();
     setCommand(cleanCommand);
     setIsOpen(true);
     setIsRunning(true);
@@ -268,7 +266,6 @@ export function NaiaFloatingAssistant() {
     action: SignedNaiaAction,
     leadInput?: Partial<CrmLeadDraft>,
   ) => {
-    primeVoicePlayback();
     setIsApplyingAction(true);
     setNotice("");
 
@@ -320,7 +317,6 @@ export function NaiaFloatingAssistant() {
   };
 
   const startVoiceControl = () => {
-    primeVoicePlayback();
     setIsOpen(true);
     if (canRecordAudio) {
       void startMediaRecorderControl();
@@ -580,16 +576,23 @@ export function NaiaFloatingAssistant() {
           aria-label="Assistant NAIA"
         >
           <div className="flex items-center justify-between gap-3">
-            <div className="flex items-center gap-2 text-sm font-semibold">
+            <div
+              className="flex items-center gap-2 text-sm font-semibold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
               <MessageCircle
-                className="h-4 w-4 text-cyan-500"
+                className="h-4 w-4"
+                style={{ color: "var(--maison-brass)" }}
                 aria-hidden="true"
               />
               NAIA
             </div>
             <button
               aria-label="Fermer NAIA"
-              className="flex h-9 w-9 items-center justify-center rounded-md border border-slate-200 text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900"
+              className="flex h-9 w-9 items-center justify-center rounded-md border text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 dark:text-slate-200 dark:hover:bg-slate-900"
+              style={{
+                borderColor: "var(--maison-border)",
+              }}
               onClick={() => setIsOpen(false)}
               type="button"
             >
@@ -609,7 +612,12 @@ export function NaiaFloatingAssistant() {
             </label>
             <textarea
               autoFocus
-              className="min-h-28 w-full resize-none rounded-md border border-slate-200 bg-slate-50 px-3 py-3 text-sm leading-6 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:bg-white focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-cyan-200"
+              className="min-h-28 w-full resize-none rounded-md border px-3 py-3 text-sm leading-6 outline-none transition"
+              style={{
+                borderColor: "var(--maison-border)",
+                background: "var(--maison-page)",
+                color: "var(--maison-text-primary)",
+              }}
               id="naia-command"
               onChange={(event) => setCommand(event.target.value)}
               onKeyDown={(event) => {
@@ -623,7 +631,12 @@ export function NaiaFloatingAssistant() {
             />
             <div className="mt-2 grid grid-cols-2 gap-2">
               <button
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-50"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-3 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  borderColor: "var(--maison-border)",
+                  background: "var(--maison-card)",
+                  color: "var(--maison-text-primary)",
+                }}
                 disabled={isListening || isRunning}
                 onClick={startVoiceControl}
                 type="button"
@@ -639,7 +652,11 @@ export function NaiaFloatingAssistant() {
                 {isListening ? "J'écoute" : "Parler"}
               </button>
               <button
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-cyan-300 px-3 text-sm font-semibold text-slate-950 transition hover:bg-cyan-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500 disabled:cursor-not-allowed disabled:opacity-60"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
+                style={{
+                  background: "var(--maison-brass)",
+                  color: "var(--maison-brass-text)",
+                }}
                 disabled={isRunning || !command.trim()}
                 type="submit"
               >
@@ -711,16 +728,19 @@ export function NaiaFloatingAssistant() {
 
       <button
         aria-label={isOpen ? "Fermer NAIA" : "Ouvrir NAIA"}
-        className="fixed z-[80] flex cursor-grab touch-none items-center justify-center rounded-full border border-cyan-200/70 bg-cyan-300 text-slate-950 shadow-2xl shadow-cyan-500/35 transition hover:scale-105 active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-100"
-        onPointerDown={handleBubblePointerDown}
-        onPointerMove={handleBubblePointerMove}
-        onPointerUp={handleBubblePointerUp}
+        className="fixed z-[80] flex cursor-grab touch-none items-center justify-center rounded-full border shadow-2xl transition hover:scale-105 active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2"
         style={{
+          background: "var(--maison-brass)",
+          color: "var(--maison-brass-text)",
+          borderColor: "var(--maison-border)",
           height: BUBBLE_SIZE,
           left: position.x,
           top: position.y,
           width: BUBBLE_SIZE,
         }}
+        onPointerDown={handleBubblePointerDown}
+        onPointerMove={handleBubblePointerMove}
+        onPointerUp={handleBubblePointerUp}
         type="button"
       >
         {isOpen ? (
@@ -979,8 +999,8 @@ function clampPosition(
   height: number,
 ) {
   return {
-    x: clamp(position.x, 12, width - BUBBLE_SIZE - 12),
-    y: clamp(position.y, 12, height - BUBBLE_SIZE - 12),
+    x: clamp(position.x, 16, width - BUBBLE_SIZE - 28),
+    y: clamp(position.y, 16, height - BUBBLE_SIZE - 28),
   };
 }
 
