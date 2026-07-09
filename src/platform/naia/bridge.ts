@@ -6,15 +6,21 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import {
   createLeadAction,
+  extractLeadFromNaturalTextAction,
   updateLeadStatusAction,
   type CrmActionContext,
 } from "@/features/crm/actions";
 import {
   crmLeadStatuses,
+  type CrmLeadDraft,
   type CrmLeadStatus,
   type CrmLeadSummary,
 } from "@/features/crm/contracts";
-import { orchestrateNaiaCommand } from "@/features/naia/orchestrator";
+import {
+  inferCrmStatus,
+  orchestrateNaiaCommand,
+  type NaiaActionDraft,
+} from "@/features/naia/orchestrator";
 import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 import {
   hasPermission,
@@ -129,15 +135,16 @@ export async function planBridgeCommand(
 ): Promise<NaiaBridgePlan> {
   // The commandHash inside the approval tokens is computed on this same
   // truncated string, so HMAC verification stays consistent per channel.
-  const cleanCommand = command.trim().slice(0, maxLength);
+  const cleanCommand = normalizeBridgeCommand(command).slice(0, maxLength);
   const crmLeads = await fetchBridgeLeads(user.organizationId);
   const result = orchestrateNaiaCommand({ command: cleanCommand, crmLeads });
+  const actions = await prepareBridgeActions(cleanCommand, result.actions);
 
   return {
-    actions: result.actions.map((action) => signAction(action, cleanCommand)),
+    actions: actions.map((action) => signAction(action, cleanCommand)),
     agentName: result.agent.name,
     command: cleanCommand,
-    response: result.response,
+    response: buildBridgeResponse(result.response, result.actions, actions),
   };
 }
 
@@ -446,6 +453,245 @@ function coerceStatus(status: string): CrmLeadStatus | null {
   return (crmLeadStatuses as readonly string[]).includes(status)
     ? status
     : null;
+}
+
+async function prepareBridgeActions(
+  command: string,
+  actions: NaiaActionDraft[],
+): Promise<NaiaActionDraft[]> {
+  if (!actions.some((action) => action.kind === "crm.createLead")) {
+    return actions;
+  }
+
+  const extracted = await extractLeadDraft(command);
+  const hydratedActions = actions.map((action) => {
+    if (action.kind !== "crm.createLead") return action;
+
+    return {
+      ...action,
+      description:
+        "Salma a pré-rempli le lead CRM depuis l'extraction IA avant validation Slack.",
+      payload: hydrateLeadDraft(command, action.payload, extracted),
+    } satisfies NaiaActionDraft;
+  });
+
+  // On bridge channels, the lead validation itself triggers Calendar sync when
+  // leadDate is present. Keeping the separate schedule card would look
+  // executable while it is only informational in the web cockpit.
+  return hydratedActions.filter(
+    (action) =>
+      !(
+        action.kind === "calendar.scheduleMeeting" &&
+        hydratedActions.some((candidate) => candidate.kind === "crm.createLead")
+      ),
+  );
+}
+
+function buildBridgeResponse(
+  response: string,
+  originalActions: NaiaActionDraft[],
+  preparedActions: NaiaActionDraft[],
+) {
+  const collapsedCalendar =
+    originalActions.some(
+      (action) => action.kind === "calendar.scheduleMeeting",
+    ) &&
+    preparedActions.some((action) => action.kind === "crm.createLead") &&
+    !preparedActions.some(
+      (action) => action.kind === "calendar.scheduleMeeting",
+    );
+
+  if (!collapsedCalendar) return response;
+
+  return "Salma prend le relais CRM avec Adam en support calendrier. J'ai préparé l'action \"Créer le lead CRM\": le lead sera créé en meeting booked, puis Adam vérifiera Google Calendar et créera l'événement pendant cette validation si le créneau est libre.";
+}
+
+async function extractLeadDraft(
+  command: string,
+): Promise<Partial<CrmLeadDraft>> {
+  try {
+    const extracted = await extractLeadFromNaturalTextAction(command);
+    if (extracted.success && extracted.extracted?.topic) {
+      return {
+        companyName: extracted.extracted.companyName,
+        contactEmail: extracted.extracted.contactEmail,
+        contactName: extracted.extracted.contactName,
+        contactPhone: extracted.extracted.contactPhone,
+        leadDate: extracted.extracted.leadDate,
+        nextAction: extracted.extracted.nextAction,
+        notes: extracted.extracted.notes,
+        source: extracted.extracted.source ?? "NAIA",
+        status: extracted.extracted.status ?? "lead-to-contact",
+        topic: extracted.extracted.topic,
+        tags: extracted.extracted.tags,
+      };
+    }
+  } catch {
+    // Fall through to deterministic extraction: Slack should still create a
+    // usable lead when Groq is temporarily unavailable.
+  }
+
+  return extractLeadDraftLocally(command);
+}
+
+function hydrateLeadDraft(
+  command: string,
+  base: CrmLeadDraft,
+  extracted: Partial<CrmLeadDraft>,
+): CrmLeadDraft {
+  const status =
+    coerceStatus(inferCrmStatus(command) ?? "") ??
+    coerceStatus(extracted.status ?? "") ??
+    coerceStatus(base.status) ??
+    "lead-to-contact";
+  const merged = sanitizeLeadDraft({
+    ...base,
+    ...extracted,
+    source: extracted.source ?? base.source ?? "NAIA",
+    status,
+  });
+
+  return {
+    ...merged,
+    notes: buildLeadNotes(command, base.notes, extracted.notes, merged),
+  };
+}
+
+function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
+  const clean = normalizeBridgeCommand(command)
+    .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
+    .trim()
+    .replace(/[.!?]$/g, "");
+  const isMeetingCommand =
+    /\b(meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion)\b/i.test(
+      clean,
+    );
+  const prospectMatch =
+    clean.match(
+      /\b(?:parle|parlé|contacte|contacté|appele|appelé|echange|échangé|discute|discuté)\s+(?:(?:a|à|avec)\s+)?(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
+    ) ??
+    clean.match(
+      /\b(?:talked|spoke|contacted|called|discussed|exchanged|met)\s+(?:to|with)?\s*(.+?)\s+(?:from|at|with)\s+([^,.;]+?)(?=\s+(?:and|who|they|he|she|to|for|with|would|will|have|has)\b|[,.;]|$)/i,
+    );
+
+  if (prospectMatch) {
+    const contactName = prospectMatch[1].trim();
+    const companyName = prospectMatch[2].trim();
+
+    return {
+      companyName,
+      contactName,
+      nextAction: isMeetingCommand
+        ? "Préparer le meeting et confirmer le contexte avec le contact"
+        : "Qualifier le besoin et confirmer le prochain rendez-vous",
+      notes: clean,
+      source: "NAIA",
+      status: isMeetingCommand ? "meeting-booked" : "contacted",
+      topic: `${companyName} - nouveau lead`,
+    };
+  }
+
+  const companyFirstMatch = clean.match(
+    /\b(?:pour|chez)\s+([^,.;]+?)\s+(?:avec|contact(?:\s+principal)?|pour contact)\s+([^,.;]+?)(?=\s+(?:meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion|et|qui|il|elle)\b|[,.;]|$)/i,
+  );
+
+  if (companyFirstMatch) {
+    const companyName = companyFirstMatch[1].trim();
+    const contactName = companyFirstMatch[2].trim();
+
+    return {
+      companyName,
+      contactName,
+      nextAction: isMeetingCommand
+        ? "Préparer le meeting et confirmer le contexte avec le contact"
+        : "Qualifier le besoin et confirmer le prochain rendez-vous",
+      notes: clean,
+      source: "NAIA",
+      status: isMeetingCommand ? "meeting-booked" : "lead-to-contact",
+      topic: `${companyName} - nouveau lead`,
+    };
+  }
+
+  return {
+    nextAction: isMeetingCommand
+      ? "Préparer le meeting et confirmer le contexte avec le contact"
+      : "Qualifier le besoin et confirmer le prochain rendez-vous",
+    notes: clean,
+    source: "NAIA",
+    status: isMeetingCommand ? "meeting-booked" : "lead-to-contact",
+    topic: clean.slice(0, 160) || "Nouveau lead NAIA",
+  };
+}
+
+function sanitizeLeadDraft(input: Partial<CrmLeadDraft>): CrmLeadDraft {
+  return {
+    companyName: cleanOptional(input.companyName, 120),
+    contactEmail: cleanOptional(input.contactEmail, 160),
+    contactName: cleanOptional(input.contactName, 120),
+    contactPhone: cleanOptional(input.contactPhone, 80),
+    leadDate: cleanOptional(input.leadDate, 80),
+    nextAction:
+      cleanOptional(input.nextAction, 280) ??
+      "Qualifier le besoin et confirmer le prochain rendez-vous",
+    notes: cleanOptional(input.notes, 1200),
+    source: cleanOptional(input.source, 120) ?? "NAIA",
+    status: coerceStatus(input.status ?? "") ?? "lead-to-contact",
+    topic: cleanRequired(input.topic, "Nouveau lead NAIA", 160),
+    tags: Array.isArray(input.tags) ? input.tags.slice(0, 12) : undefined,
+  };
+}
+
+function buildLeadNotes(
+  command: string,
+  baseNotes: string | undefined,
+  extractedNotes: string | undefined,
+  draft: CrmLeadDraft,
+) {
+  const cleanCommand = normalizeBridgeCommand(command);
+  const notes = normalizeBridgeCommand(extractedNotes ?? baseNotes ?? "");
+  const parts = [
+    draft.companyName && `Entreprise: ${draft.companyName}`,
+    draft.contactName && `Contact: ${draft.contactName}`,
+    notes,
+    cleanCommand && `Commande NAIA: ${cleanCommand}`,
+  ].filter((part): part is string => Boolean(part && part.trim()));
+
+  const seen = new Set<string>();
+  return parts
+    .filter((part) => {
+      const key = part.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .join("\n")
+    .slice(0, 1200);
+}
+
+function normalizeBridgeCommand(value: string | undefined) {
+  let clean = (value ?? "").trim();
+
+  if (clean.startsWith("`") && clean.endsWith("`")) {
+    clean = clean.slice(1, -1).trim();
+  }
+
+  return clean
+    .replace(/^@?naia\b[:,\s-]*/i, "")
+    .replace(/^<@[^>]+>\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function cleanRequired(value: unknown, fallback: string, maxLength: number) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, maxLength)
+    : fallback;
+}
+
+function cleanOptional(value: unknown, maxLength: number) {
+  return typeof value === "string" && value.trim()
+    ? value.trim().slice(0, maxLength)
+    : undefined;
 }
 
 function formatDateForSlack(value: string) {

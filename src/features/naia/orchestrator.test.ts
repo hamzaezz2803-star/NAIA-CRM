@@ -20,6 +20,32 @@ const crmLeads: CrmLeadSummary[] = [
   },
 ];
 
+const crmPipelineLeads: CrmLeadSummary[] = [
+  ...crmLeads,
+  {
+    companyName: "Beta",
+    contactName: "Achraf",
+    createdAt: "2026-07-02T10:00:00.000Z",
+    id: "lead-beta",
+    notes: "Meeting confirmé",
+    organizationId: "org-1",
+    status: "meeting-booked",
+    topic: "Projet commercial avec l'entreprise Beta",
+    updatedAt: "2026-07-02T10:00:00.000Z",
+  },
+  {
+    companyName: "HPS",
+    contactName: "Abdeslam",
+    createdAt: "2026-07-03T10:00:00.000Z",
+    id: "lead-hps",
+    notes: "Contact initial",
+    organizationId: "org-1",
+    status: "contacted",
+    topic: "HPS - LLM local",
+    updatedAt: "2026-07-03T10:00:00.000Z",
+  },
+];
+
 describe("NAIA orchestrator", () => {
   it("routes CRM update commands to Salma with a validated action draft", () => {
     const result = orchestrateNaiaCommand({
@@ -145,6 +171,31 @@ describe("NAIA orchestrator", () => {
     expect(
       result.actions.some((action) => action.kind === "crm.createLead"),
     ).toBe(true);
+  });
+
+  it("answers CRM lead count questions without proposing pipeline mutations", () => {
+    const result = orchestrateNaiaCommand({
+      command: "on a combien de lead dans le CRM ?",
+      crmLeads: crmPipelineLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("3 leads");
+    expect(result.response).toContain("À contacter: 1");
+    expect(result.response).toContain("Meeting fixé: 1");
+  });
+
+  it("answers leads-to-contact questions without interpreting them as Contacté status updates", () => {
+    const result = orchestrateNaiaCommand({
+      command: "combien de lead dans la pipe à contacter ?",
+      crmLeads: crmPipelineLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("1 lead à contacter");
+    expect(result.response).toContain("Atlas Process");
   });
 
   it("creates a CRM lead card from a French commercial conversation without meeting wording", () => {

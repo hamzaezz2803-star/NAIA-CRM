@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   consumedPurge: vi.fn(),
   createLeadAction: vi.fn(),
   createServiceRoleSupabaseClient: vi.fn(),
+  extractLeadFromNaturalTextAction: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   updateLeadStatusAction: vi.fn(),
@@ -12,6 +13,7 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("@/features/crm/actions", () => ({
   createLeadAction: mocks.createLeadAction,
+  extractLeadFromNaturalTextAction: mocks.extractLeadFromNaturalTextAction,
   updateLeadStatusAction: mocks.updateLeadStatusAction,
 }));
 
@@ -27,7 +29,11 @@ vi.mock("@/platform/auth/supabase-server", () => ({
 import type { NaiaActionDraft } from "@/features/naia/orchestrator";
 import { signAction } from "@/platform/naia/action-tokens";
 
-import { executeBridgeAction, type NaiaBridgeUser } from "./bridge";
+import {
+  executeBridgeAction,
+  planBridgeCommand,
+  type NaiaBridgeUser,
+} from "./bridge";
 
 const bridgeUser: NaiaBridgeUser = {
   email: "ali@qarizmi.com",
@@ -51,17 +57,67 @@ const gmailAction: NaiaActionDraft = {
   risk: "low",
 };
 
-function fakeServiceRoleClient() {
+const sparseCrmCreateAction: NaiaActionDraft = {
+  agentId: "crm",
+  approvalRequired: true,
+  description: "Salma creera un lead avec le texte de la commande.",
+  id: "crm-create-hps",
+  kind: "crm.createLead",
+  label: "Creer le lead CRM",
+  payload: {
+    nextAction: "Preparer le meeting et confirmer le contexte avec le contact",
+    notes:
+      "`@NAIA crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h`",
+    source: "NAIA",
+    status: "meeting-booked",
+    topic:
+      "`@NAIA crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h`",
+  },
+  risk: "medium",
+};
+
+const hydratedCrmCreateAction: NaiaActionDraft = {
+  ...sparseCrmCreateAction,
+  payload: {
+    companyName: "HPS",
+    contactName: "Abdeslam",
+    leadDate: "2026-07-10T11:00:00",
+    nextAction: "Préparer le meeting avec Abdeslam",
+    notes:
+      "Meeting demandé vendredi à 11h.\nCommande NAIA: crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h",
+    source: "Slack",
+    status: "meeting-booked",
+    topic: "Meeting HPS",
+  },
+};
+
+function fakeServiceRoleClient({
+  leads = [],
+}: {
+  leads?: unknown[];
+} = {}) {
   return {
     from: vi.fn((table: string) => {
-      if (table !== "naia_consumed_action_tokens") {
-        throw new Error(`Unexpected table in test: ${table}`);
+      if (table === "crm_leads") {
+        return {
+          select: () => ({
+            eq: () => ({
+              order: () => ({
+                limit: vi.fn().mockResolvedValue({ data: leads, error: null }),
+              }),
+            }),
+          }),
+        };
       }
 
-      return {
-        delete: () => ({ lt: mocks.consumedPurge }),
-        insert: mocks.consumedInsert,
-      };
+      if (table === "naia_consumed_action_tokens") {
+        return {
+          delete: () => ({ lt: mocks.consumedPurge }),
+          insert: mocks.consumedInsert,
+        };
+      }
+
+      throw new Error(`Unexpected table in test: ${table}`);
     }),
   };
 }
@@ -143,5 +199,86 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(result.message).toContain("invalide ou expiré");
     expect(mocks.consumedInsert).not.toHaveBeenCalled();
     expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+  });
+
+  it("hydrates sparse Slack CRM lead drafts before signing approval tokens", async () => {
+    mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
+      extracted: {
+        companyName: "HPS",
+        contactName: "Abdeslam",
+        leadDate: "2026-07-10T11:00:00",
+        nextAction: "Préparer le meeting avec Abdeslam",
+        notes: "Meeting demandé vendredi à 11h.",
+        source: "Slack",
+        status: "meeting-booked",
+        topic: "Meeting HPS",
+      },
+      success: true,
+    });
+
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "`@NAIA crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h`",
+    );
+
+    expect(plan.command).toBe(
+      "crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h",
+    );
+    expect(mocks.extractLeadFromNaturalTextAction).toHaveBeenCalledWith(
+      "crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h",
+    );
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.response).toContain("Adam");
+    expect(plan.actions[0]).toMatchObject({
+      kind: "crm.createLead",
+      payload: {
+        companyName: "HPS",
+        contactName: "Abdeslam",
+        leadDate: "2026-07-10T11:00:00",
+        nextAction: "Préparer le meeting avec Abdeslam",
+        source: "Slack",
+        status: "meeting-booked",
+        topic: "Meeting HPS",
+      },
+    });
+    expect(plan.actions[0].approvalToken).toEqual(expect.any(String));
+  });
+
+  it("creates Calendar events from signed hydrated CRM lead drafts", async () => {
+    mocks.createLeadAction.mockResolvedValue({
+      calendarLink: "https://calendar.google.com/event?eid=hps",
+      calendarSynced: true,
+      lead: { id: "lead-hps" },
+      success: true,
+    });
+
+    const command =
+      "crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h";
+    const signed = signAction(hydratedCrmCreateAction, command);
+
+    const result = await executeBridgeAction(bridgeUser, {
+      actionId: hydratedCrmCreateAction.id,
+      approvalToken: signed.approvalToken,
+      command,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.createLeadAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        companyName: "HPS",
+        contactName: "Abdeslam",
+        leadDate: "2026-07-10T11:00:00",
+        nextAction: "Préparer le meeting avec Abdeslam",
+        notes: expect.stringContaining("Commande NAIA:"),
+        source: "Slack",
+        status: "meeting-booked",
+        topic: "Meeting HPS",
+      }),
+      expect.objectContaining({
+        actorProfileId: "profile-ali",
+        organizationId: "org-1",
+      }),
+    );
+    expect(result.message).toContain("Adam a créé l'événement Calendar");
   });
 });

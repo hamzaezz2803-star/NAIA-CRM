@@ -3,6 +3,7 @@ import type {
   CrmLeadStatus,
   CrmLeadSummary,
 } from "@/features/crm/contracts";
+import { crmLeadStatuses } from "@/features/crm/contracts";
 
 import { getNaiaAgent, type NaiaAgentId } from "./agents";
 import { buildOperationalAnalysisResponse } from "./operational-context";
@@ -429,6 +430,7 @@ export function isNaiaOverviewQuestion(command: string) {
 
 export function inferCrmStatus(command: string): CrmLeadStatus | null {
   const normalized = normalize(command);
+  const tokens = tokenSet(normalized);
 
   if (
     includesAny(normalized, [
@@ -453,18 +455,25 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
     return "meeting-booked";
   }
 
-  if (includesAny(normalized, ["propale", "proposition", "offre"])) {
+  if (hasAnyToken(tokens, ["propale", "proposition", "offre"])) {
     return "proposal-sent";
   }
 
-  if (includesAny(normalized, ["relance", "relancer", "follow up"])) {
+  if (
+    hasAnyToken(tokens, ["relance", "relancer"]) ||
+    normalized.includes("follow up")
+  ) {
     return "to-follow-up";
   }
 
   if (
-    includesAny(normalized, [
+    hasAnyToken(tokens, [
       "contacte",
+      "contactee",
+      "contactes",
       "appele",
+      "appelee",
+      "appeles",
       "joint",
       "parle",
       "discute",
@@ -476,17 +485,17 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
       "called",
       "discussed",
       "exchanged",
-      "met with",
-    ])
+    ]) ||
+    normalized.includes("met with")
   ) {
     return "contacted";
   }
 
-  if (includesAny(normalized, ["gagne", "signe", "won"])) {
+  if (hasAnyToken(tokens, ["gagne", "signee", "signe", "won"])) {
     return "won";
   }
 
-  if (includesAny(normalized, ["dead", "perdu", "stop"])) {
+  if (hasAnyToken(tokens, ["dead", "perdu", "stop"])) {
     return "dead-end";
   }
 
@@ -494,9 +503,13 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
 }
 
 function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
+  const normalized = normalize(command);
+  if (isCrmReadQuestion(normalized)) {
+    return [];
+  }
+
   const status = inferCrmStatus(command);
   const matchedLead = findBestLeadMatch(command, crmLeads);
-  const normalized = normalize(command);
   const wantsLeadCreation = includesAny(normalized, [
     "cree un lead",
     "creer un lead",
@@ -866,6 +879,9 @@ function buildResponse(
       return `${agent.name} prend le relais CRM. J'ai prepare l'action ${actionLabels[0]} avec validation humaine avant ecriture dans le pipeline.`;
     }
 
+    const crmQuestionResponse = buildCrmQuestionResponse(command, crmLeads);
+    if (crmQuestionResponse) return crmQuestionResponse;
+
     if (crmLeads.length === 0) {
       return `${agent.name} prend le relais CRM. Je n'ai pas encore de leads charges dans cette session, donc je peux preparer un brouillon ou ouvrir le pipeline.`;
     }
@@ -924,6 +940,132 @@ function buildResponse(
   }
 
   return `${agent.name} prend le relais. Je garde l'orchestration, les permissions et le fil vocal.`;
+}
+
+function buildCrmQuestionResponse(command: string, crmLeads: CrmLeadSummary[]) {
+  const normalized = normalize(command);
+  if (!isCrmReadQuestion(normalized)) return null;
+
+  const requestedStatus = inferCrmQuestionStatus(normalized);
+  if (requestedStatus) {
+    const matchingLeads = crmLeads.filter(
+      (lead) => lead.status === requestedStatus,
+    );
+    const leadWord = matchingLeads.length > 1 ? "leads" : "lead";
+    const statusLabel =
+      requestedStatus === "lead-to-contact"
+        ? "à contacter"
+        : crmStatusLabels[requestedStatus].toLowerCase();
+    const examples = matchingLeads.slice(0, 5).map(formatCrmLeadLabel);
+
+    return [
+      `${matchingLeads.length} ${leadWord} ${statusLabel} dans le CRM.`,
+      examples.length > 0 ? `Exemples: ${examples.join("; ")}.` : undefined,
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
+
+  const openLeadCount = crmLeads.filter(
+    (lead) => lead.status !== "won" && lead.status !== "dead-end",
+  ).length;
+  const counts = crmLeadStatuses
+    .map((status) => ({
+      count: crmLeads.filter((lead) => lead.status === status).length,
+      label: crmStatusLabels[status],
+    }))
+    .filter((item) => item.count > 0)
+    .map((item) => `${item.label}: ${item.count}`);
+
+  return [
+    `Il y a ${crmLeads.length} leads dans le CRM, dont ${openLeadCount} actifs.`,
+    counts.length > 0 ? counts.join(" · ") : "Aucun lead chargé.",
+  ].join("\n");
+}
+
+function isCrmReadQuestion(normalizedCommand: string) {
+  const tokens = tokenSet(normalizedCommand);
+  const asksForCountOrList =
+    hasAnyToken(tokens, [
+      "combien",
+      "nombre",
+      "total",
+      "count",
+      "liste",
+      "list",
+      "quels",
+      "quelles",
+    ]) || normalizedCommand.includes("on a combien");
+  const mentionsPipeline = includesAny(normalizedCommand, [
+    "crm",
+    "lead",
+    "leads",
+    "pipeline",
+    "pipe",
+    "a contacter",
+    "contactes",
+    "meeting",
+    "relancer",
+  ]);
+
+  return asksForCountOrList && mentionsPipeline;
+}
+
+function inferCrmQuestionStatus(
+  normalizedCommand: string,
+): CrmLeadStatus | null {
+  const tokens = tokenSet(normalizedCommand);
+
+  if (
+    normalizedCommand.includes("a contacter") ||
+    normalizedCommand.includes("to contact") ||
+    normalizedCommand.includes("lead to contact")
+  ) {
+    return "lead-to-contact";
+  }
+
+  if (hasAnyToken(tokens, ["relancer", "relance", "follow"])) {
+    return "to-follow-up";
+  }
+
+  if (
+    includesAny(normalizedCommand, [
+      "meeting",
+      "rdv",
+      "rendez vous",
+      "rendez-vous",
+      "call",
+      "demo",
+      "visio",
+    ])
+  ) {
+    return "meeting-booked";
+  }
+
+  if (hasAnyToken(tokens, ["contacte", "contactee", "contactes"])) {
+    return "contacted";
+  }
+
+  if (hasAnyToken(tokens, ["propale", "proposition", "offre"])) {
+    return "proposal-sent";
+  }
+
+  if (hasAnyToken(tokens, ["gagne", "gagnes", "won"])) {
+    return "won";
+  }
+
+  if (hasAnyToken(tokens, ["perdu", "dead", "stop"])) {
+    return "dead-end";
+  }
+
+  return null;
+}
+
+function formatCrmLeadLabel(lead: CrmLeadSummary) {
+  return [lead.companyName, lead.contactName, lead.topic]
+    .filter(Boolean)
+    .slice(0, 2)
+    .join(" - ");
 }
 
 function confidenceFor(agentId: NaiaAgentId, command: string) {
@@ -1272,6 +1414,10 @@ function extractSlackMessageDraft(command: string) {
 
 function includesAny(value: string, needles: string[]) {
   return needles.some((needle) => value.includes(needle));
+}
+
+function hasAnyToken(tokens: Set<string>, needles: string[]) {
+  return needles.some((needle) => tokens.has(needle));
 }
 
 function normalize(value: string) {
