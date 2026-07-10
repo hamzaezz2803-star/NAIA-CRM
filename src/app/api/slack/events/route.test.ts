@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   afterTasks: [] as Promise<unknown>[],
+  fetchSlackConversationHistory: vi.fn(),
   fetchSlackUserProfile: vi.fn(),
   planBridgeCommand: vi.fn(),
   postSlackMessage: vi.fn(),
@@ -27,6 +28,7 @@ vi.mock("@/platform/integrations/slack", async (importOriginal) => {
 
   return {
     ...actual,
+    fetchSlackConversationHistory: mocks.fetchSlackConversationHistory,
     fetchSlackUserProfile: mocks.fetchSlackUserProfile,
     postSlackMessage: mocks.postSlackMessage,
   };
@@ -116,6 +118,7 @@ describe("Slack events route", () => {
       email: "ali@qarizmi.com",
       isBot: false,
     });
+    mocks.fetchSlackConversationHistory.mockResolvedValue([]);
     mocks.resolveBridgeUser.mockResolvedValue(bridgeUser);
     mocks.planBridgeCommand.mockResolvedValue({
       actions: [{ ...gmailAction, approvalToken: "payload.signature" }],
@@ -192,6 +195,8 @@ describe("Slack events route", () => {
     expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
       bridgeUser,
       "lis mes emails gmail non lus",
+      undefined,
+      [],
     );
   });
 
@@ -228,6 +233,8 @@ describe("Slack events route", () => {
     expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
       bridgeUser,
       "lis mes emails gmail non lus",
+      undefined,
+      [],
     );
 
     const message = mocks.postSlackMessage.mock.calls[0][0];
@@ -253,6 +260,88 @@ describe("Slack events route", () => {
     expect(draft?.command).toBe("lis mes emails gmail non lus");
   });
 
+  it("forwards recent Slack context without duplicating the current command", async () => {
+    mocks.fetchSlackConversationHistory.mockResolvedValue([
+      { content: "Combien de leads avons-nous ?", role: "user" },
+      { content: "Il y en a 14.", role: "assistant" },
+      { content: "Et lesquels sont à relancer ?", role: "user" },
+    ]);
+
+    await POST(slackRequest(messageImEvent("Et lesquels sont à relancer ?")));
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "Et lesquels sont à relancer ?",
+      undefined,
+      [
+        { content: "Combien de leads avons-nous ?", role: "user" },
+        { content: "Il y en a 14.", role: "assistant" },
+      ],
+    );
+  });
+
+  it("shows the complete lead draft and an edit control before approval", async () => {
+    mocks.planBridgeCommand.mockResolvedValue({
+      actions: [
+        {
+          agentId: "crm",
+          approvalRequired: true,
+          approvalToken: "payload.signature",
+          description: "Brouillon CRM à vérifier",
+          id: "crm-create-winxo",
+          kind: "crm.createLead",
+          label: "Créer le lead CRM",
+          payload: {
+            companyName: "Winxo",
+            contactEmail: "Yzaidi@winxo.com",
+            contactJobTitle: "Directeur d'exploitation",
+            contactName: "Youssef Zaidi",
+            contactPhone: "0661420960",
+            nextAction: "Envoyer la présentation avant le rendez-vous",
+            notes: "Demande de présentation avant rencontre",
+            source: "Appel téléphonique",
+            status: "contacted",
+            topic: "Présentation pour Winxo",
+          },
+          risk: "medium",
+        },
+      ],
+      agentName: "Salma",
+      command: "crée le lead Winxo",
+      mode: "local-orchestrated",
+      response: "Salma a préparé une fiche lead à vérifier.",
+      responseType: "action",
+    });
+
+    await POST(slackRequest(messageImEvent("crée le lead Winxo")));
+    await flushAfterTasks();
+
+    const message = mocks.postSlackMessage.mock.calls[0][0];
+    const serializedBlocks = JSON.stringify(message.blocks);
+
+    expect(serializedBlocks).toContain("Présentation pour Winxo");
+    expect(serializedBlocks).toContain("Winxo");
+    expect(serializedBlocks).toContain("Youssef Zaidi");
+    expect(serializedBlocks).toContain("Directeur d'exploitation");
+    expect(serializedBlocks).toContain("Yzaidi@winxo.com");
+    expect(serializedBlocks).toContain("0661420960");
+    expect(serializedBlocks).toContain(
+      "Envoyer la présentation avant le rendez-vous",
+    );
+
+    const editButton = message.blocks
+      .filter((block: { type: string }) => block.type === "actions")
+      .flatMap(
+        (block: { elements: Array<{ action_id: string }> }) => block.elements,
+      )
+      .find(
+        (element: { action_id: string }) =>
+          element.action_id === "naia_edit_lead:crm-create-winxo",
+      );
+    expect(editButton).toBeDefined();
+  });
+
   it("strips the bot mention before planning an app_mention command", async () => {
     const body = JSON.stringify({
       event: {
@@ -273,6 +362,8 @@ describe("Slack events route", () => {
     expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
       bridgeUser,
       "passe le lead HPS en meeting booked",
+      undefined,
+      [],
     );
     expect(mocks.postSlackMessage).toHaveBeenCalledWith(
       expect.objectContaining({

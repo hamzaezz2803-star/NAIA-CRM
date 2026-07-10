@@ -1,8 +1,8 @@
 import { createHmac } from "node:crypto";
 
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { verifySlackSignature } from "./slack";
+import { fetchSlackMessageSnapshot, verifySlackSignature } from "./slack";
 
 const SIGNING_SECRET = "test-signing-secret";
 
@@ -99,5 +99,46 @@ describe("verifySlackSignature", () => {
         timestamp: freshTimestamp,
       }),
     ).toBe(false);
+  });
+});
+
+describe("fetchSlackMessageSnapshot", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("returns the exact bot message from a thread", async () => {
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        messages: [
+          { text: "Question", ts: "1111.2222" },
+          {
+            blocks: [{ block_id: "naia_action_buttons:crm-create-winxo" }],
+            text: "Réponse NAIA",
+            ts: "1234.5678",
+          },
+        ],
+        ok: true,
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(
+      fetchSlackMessageSnapshot({
+        channel: "C0123456789",
+        messageTs: "1234.5678",
+        threadTs: "1111.2222",
+      }),
+    ).resolves.toEqual({
+      blocks: [{ block_id: "naia_action_buttons:crm-create-winxo" }],
+      text: "Réponse NAIA",
+    });
+    const url = fetchMock.mock.calls[0][0] as URL;
+    expect(url.pathname).toBe("/api/conversations.replies");
+    expect(url.searchParams.get("channel")).toBe("C0123456789");
+    expect(url.searchParams.get("ts")).toBe("1111.2222");
   });
 });

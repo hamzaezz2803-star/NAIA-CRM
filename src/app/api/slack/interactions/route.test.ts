@@ -5,9 +5,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   afterTasks: [] as Promise<unknown>[],
   executeBridgeAction: vi.fn(),
+  fetchSlackMessageSnapshot: vi.fn(),
   fetchSlackUserProfile: vi.fn(),
+  openSlackModal: vi.fn(),
   resolveBridgeUser: vi.fn(),
   respondToSlackInteraction: vi.fn(),
+  updateSlackMessage: vi.fn(),
 }));
 
 vi.mock("next/server", () => ({
@@ -27,10 +30,16 @@ vi.mock("@/platform/integrations/slack", async (importOriginal) => {
 
   return {
     ...actual,
+    fetchSlackMessageSnapshot: mocks.fetchSlackMessageSnapshot,
     fetchSlackUserProfile: mocks.fetchSlackUserProfile,
+    openSlackModal: mocks.openSlackModal,
     respondToSlackInteraction: mocks.respondToSlackInteraction,
+    updateSlackMessage: mocks.updateSlackMessage,
   };
 });
+
+import type { NaiaActionDraft } from "@/features/naia/orchestrator";
+import { signAction, verifyApprovalToken } from "@/platform/naia/action-tokens";
 
 import { POST } from "./route";
 
@@ -58,6 +67,10 @@ function buildInteractionPayload({
 }: { actionId?: string; value?: string } = {}) {
   return {
     actions: [{ action_id: actionId, value }],
+    container: {
+      channel_id: "D0123456789",
+      message_ts: "1234.5678",
+    },
     message: {
       blocks: [
         {
@@ -73,6 +86,7 @@ function buildInteractionPayload({
       ],
     },
     response_url: "https://hooks.slack.com/actions/T000/response",
+    trigger_id: "1234.5678.trigger",
     type: "block_actions",
     user: { id: "U0123456789", username: "ali" },
   };
@@ -110,6 +124,7 @@ describe("Slack interactions route", () => {
   beforeEach(() => {
     vi.stubEnv("SLACK_SIGNING_SECRET", SIGNING_SECRET);
     vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubEnv("NAIA_ACTION_APPROVAL_SECRET", "test-approval-secret");
     mocks.afterTasks = [];
     mocks.fetchSlackUserProfile.mockResolvedValue({
       displayName: "Ali",
@@ -122,7 +137,10 @@ describe("Slack interactions route", () => {
       message: "Lina a lu 1 message(s) Gmail autorise(s).",
       success: true,
     });
+    mocks.fetchSlackMessageSnapshot.mockResolvedValue(null);
     mocks.respondToSlackInteraction.mockResolvedValue(undefined);
+    mocks.openSlackModal.mockResolvedValue(undefined);
+    mocks.updateSlackMessage.mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -240,5 +258,194 @@ describe("Slack interactions route", () => {
     const [, update] = mocks.respondToSlackInteraction.mock.calls[0];
     expect(update.replace_original).toBe(true);
     expect(update.text).toContain("Action ignorée");
+  });
+
+  it("opens a prefilled lead modal from the Slack draft card", async () => {
+    const command = "crée le lead Winxo";
+    const action: NaiaActionDraft = {
+      agentId: "crm",
+      approvalRequired: true,
+      description: "Brouillon CRM",
+      id: "crm-create-winxo",
+      kind: "crm.createLead",
+      label: "Créer le lead CRM",
+      payload: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactJobTitle: "Directeur d'exploitation",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        nextAction: "Envoyer la présentation",
+        source: "Appel téléphonique",
+        status: "contacted",
+        topic: "Présentation pour Winxo",
+      },
+      risk: "medium",
+    };
+    const signed = signAction(action, command);
+    const value = JSON.stringify({
+      d: {
+        actionId: signed.id,
+        approvalToken: signed.approvalToken,
+        command,
+      },
+      v: 2,
+    });
+
+    await POST(
+      interactionRequest(
+        buildInteractionPayload({
+          actionId: `naia_edit_lead:${action.id}`,
+          value,
+        }),
+      ),
+    );
+    await flushAfterTasks();
+
+    expect(mocks.executeBridgeAction).not.toHaveBeenCalled();
+    expect(mocks.openSlackModal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        triggerId: "1234.5678.trigger",
+        view: expect.objectContaining({
+          callback_id: "naia_edit_lead",
+          type: "modal",
+        }),
+      }),
+    );
+    const view = mocks.openSlackModal.mock.calls[0][0].view;
+    expect(JSON.stringify(view)).toContain("Présentation pour Winxo");
+    expect(JSON.stringify(view)).toContain("Yzaidi@winxo.com");
+  });
+
+  it("executes the exact lead values submitted from the edit modal", async () => {
+    const command = "crée le lead Winxo";
+    const action: NaiaActionDraft = {
+      agentId: "crm",
+      approvalRequired: true,
+      description: "Brouillon CRM",
+      id: "crm-create-winxo",
+      kind: "crm.createLead",
+      label: "Créer le lead CRM",
+      payload: {
+        nextAction: "Qualifier le besoin",
+        source: "NAIA",
+        status: "lead-to-contact",
+        topic: "Winxo",
+      },
+      risk: "medium",
+    };
+    const signed = signAction(action, command);
+    const privateMetadata = JSON.stringify({
+      approvalDraft: {
+        actionId: signed.id,
+        approvalToken: signed.approvalToken,
+        command,
+      },
+      channelId: "D0123456789",
+      messageTs: "1234.5678",
+      threadTs: "1111.2222",
+    });
+    mocks.fetchSlackMessageSnapshot.mockResolvedValue({
+      blocks: [
+        {
+          block_id: "naia_response",
+          text: {
+            text: "Salma et Adam ont préparé deux actions.",
+            type: "mrkdwn",
+          },
+          type: "section",
+        },
+        {
+          block_id: `naia_action_buttons:${action.id}`,
+          elements: [],
+          type: "actions",
+        },
+        {
+          block_id: "naia_action_buttons:calendar-reminder-winxo",
+          elements: [],
+          type: "actions",
+        },
+      ],
+      text: "Salma et Adam ont préparé deux actions.",
+    });
+    const field = (value: string) => ({ value: { value } });
+    const payload = {
+      type: "view_submission",
+      user: { id: "U0123456789" },
+      view: {
+        callback_id: "naia_edit_lead",
+        private_metadata: privateMetadata,
+        state: {
+          values: {
+            lead_company: field("Winxo"),
+            lead_contact: field("Youssef Zaidi"),
+            lead_date: field(""),
+            lead_email: field("yzaidi@winxo.com"),
+            lead_job_title: field("Directeur d'exploitation"),
+            lead_linkedin: field(""),
+            lead_next_action: field("Envoyer la présentation"),
+            lead_notes: field("Demande confirmée par téléphone"),
+            lead_phone: field("0661420960"),
+            lead_source: field("Appel téléphonique"),
+            lead_status: {
+              selected: { selected_option: { value: "contacted" } },
+            },
+            lead_topic: field("Présentation pour Winxo"),
+          },
+        },
+      },
+    };
+
+    const response = await POST(interactionRequest(payload));
+    expect(await response.json()).toEqual({ response_action: "clear" });
+    await flushAfterTasks();
+
+    const executionDraft = mocks.executeBridgeAction.mock.calls[0][1];
+    const executedAction = verifyApprovalToken(
+      executionDraft.approvalToken,
+      executionDraft.actionId,
+      executionDraft.command,
+    );
+    expect(executedAction).toMatchObject({
+      kind: "crm.createLead",
+      payload: {
+        companyName: "Winxo",
+        contactEmail: "yzaidi@winxo.com",
+        contactJobTitle: "Directeur d'exploitation",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        status: "contacted",
+        topic: "Présentation pour Winxo",
+      },
+    });
+    expect(mocks.updateSlackMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        channel: "D0123456789",
+        ts: "1234.5678",
+      }),
+    );
+    expect(mocks.fetchSlackMessageSnapshot).toHaveBeenCalledWith({
+      channel: "D0123456789",
+      messageTs: "1234.5678",
+      threadTs: "1111.2222",
+    });
+    const updatedBlocks = mocks.updateSlackMessage.mock.calls[0][0].blocks;
+    expect(updatedBlocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          block_id: `naia_action_result:${action.id}`,
+        }),
+        expect.objectContaining({
+          block_id: "naia_action_buttons:calendar-reminder-winxo",
+        }),
+      ]),
+    );
+    expect(updatedBlocks).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          block_id: `naia_action_buttons:${action.id}`,
+        }),
+      ]),
+    );
   });
 });

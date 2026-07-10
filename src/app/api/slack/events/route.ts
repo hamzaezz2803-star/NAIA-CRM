@@ -1,10 +1,12 @@
 import { after } from "next/server";
 
 import {
+  fetchSlackConversationHistory,
   fetchSlackUserProfile,
   postSlackMessage,
   verifySlackSignature,
 } from "@/platform/integrations/slack";
+import { canonicalizeConversationText } from "@/features/naia/lead-understanding";
 import {
   planBridgeCommand,
   resolveBridgeUser,
@@ -141,7 +143,24 @@ async function handleSlackCommand({
       return;
     }
 
-    const plan = await planBridgeCommand(user, command);
+    const history = await fetchSlackConversationHistory({
+      channel,
+      threadTs,
+    });
+    const canonicalCommand = canonicalizeConversationText(command);
+    const priorHistory = history
+      .filter(
+        (message, index) =>
+          index < history.length - 1 ||
+          canonicalizeConversationText(message.content) !== canonicalCommand,
+      )
+      .slice(-8);
+    const plan = await planBridgeCommand(
+      user,
+      command,
+      undefined,
+      priorHistory,
+    );
     await postSlackMessage({
       blocks: buildPlanBlocks(plan),
       channel,
@@ -189,6 +208,29 @@ function buildPlanBlocks(plan: NaiaBridgePlan) {
       type: "section",
     });
 
+    if (action.kind === "crm.createLead") {
+      blocks.push(...buildLeadDraftBlocks(action));
+    }
+    if (action.kind === "calendar.createReminder") {
+      blocks.push({
+        block_id: `naia_reminder_fields:${action.id}`,
+        fields: [
+          slackField("Rappel", action.payload.title),
+          slackField("Date", action.payload.scheduledAt),
+          slackField("Fuseau", action.payload.timeZone),
+          slackField(
+            "Heure",
+            action.payload.timeWasInferred
+              ? "Inférée, à vérifier"
+              : "Confirmée",
+          ),
+        ].filter((field): field is { text: string; type: "mrkdwn" } =>
+          Boolean(field),
+        ),
+        type: "section",
+      });
+    }
+
     if (!value) {
       // The draft exceeds Slack's 2000-character button value limit even
       // after command truncation: degrade gracefully instead of posting a
@@ -209,6 +251,20 @@ function buildPlanBlocks(plan: NaiaBridgePlan) {
     blocks.push({
       block_id: `naia_action_buttons:${action.id}`,
       elements: [
+        ...(action.kind === "crm.createLead"
+          ? [
+              {
+                action_id: `naia_edit_lead:${action.id}`,
+                text: {
+                  emoji: true,
+                  text: "✏️ Vérifier / modifier",
+                  type: "plain_text",
+                },
+                type: "button",
+                value,
+              },
+            ]
+          : []),
         {
           action_id: `naia_approve:${action.id}`,
           style: "primary",
@@ -228,4 +284,76 @@ function buildPlanBlocks(plan: NaiaBridgePlan) {
   }
 
   return blocks;
+}
+
+function buildLeadDraftBlocks(
+  action: Extract<
+    NaiaBridgePlan["actions"][number],
+    { kind: "crm.createLead" }
+  >,
+) {
+  const lead = action.payload;
+  const fields = [
+    slackField("Projet", lead.topic),
+    slackField("Entreprise", lead.companyName),
+    slackField("Contact", lead.contactName),
+    slackField("Fonction", lead.contactJobTitle),
+    slackField("Email", lead.contactEmail),
+    slackField("Téléphone", lead.contactPhone),
+    slackField("Statut", formatLeadStatus(lead.status)),
+    slackField("Date planifiée", lead.leadDate),
+    slackField("Source", lead.source),
+    slackField("Action suivante", lead.nextAction),
+  ].filter((field): field is { text: string; type: "mrkdwn" } =>
+    Boolean(field),
+  );
+
+  const blocks: unknown[] = [
+    {
+      block_id: `naia_lead_fields:${action.id}`,
+      fields,
+      type: "section",
+    },
+  ];
+
+  if (lead.notes) {
+    blocks.push({
+      block_id: `naia_lead_notes:${action.id}`,
+      text: {
+        text: `*Notes & contexte*\n${escapeSlackText(lead.notes).slice(0, 900)}`,
+        type: "mrkdwn",
+      },
+      type: "section",
+    });
+  }
+
+  return blocks;
+}
+
+function slackField(label: string, value: string | undefined) {
+  if (!value?.trim()) return null;
+  return {
+    text: `*${label}*\n${escapeSlackText(value).slice(0, 280)}`,
+    type: "mrkdwn" as const,
+  };
+}
+
+function escapeSlackText(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+function formatLeadStatus(status: string) {
+  const labels: Record<string, string> = {
+    contacted: "Contacté",
+    "dead-end": "Dead end",
+    "lead-to-contact": "À contacter",
+    "meeting-booked": "Meeting fixé",
+    "proposal-sent": "Proposition envoyée",
+    "to-follow-up": "À relancer",
+    won: "Gagné",
+  };
+  return labels[status] ?? status;
 }

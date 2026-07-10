@@ -98,6 +98,8 @@ export type CrmLeadSummary = {
 export type CrmLeadDraft = {
   companyName?: string;
   contactEmail?: string;
+  contactJobTitle?: string;
+  contactLinkedinUrl?: string;
   contactName?: string;
   contactPhone?: string;
   leadDate?: string;

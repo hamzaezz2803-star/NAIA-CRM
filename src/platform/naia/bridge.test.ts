@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   consumedInsert: vi.fn(),
   consumedPurge: vi.fn(),
+  createGoogleCalendarReminder: vi.fn(),
   createLeadAction: vi.fn(),
   createServiceRoleSupabaseClient: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
@@ -18,6 +19,7 @@ vi.mock("@/features/crm/actions", () => ({
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
+  createGoogleCalendarReminder: mocks.createGoogleCalendarReminder,
   listGmailMessages: mocks.listGmailMessages,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
@@ -27,6 +29,7 @@ vi.mock("@/platform/auth/supabase-server", () => ({
 }));
 
 import type { NaiaActionDraft } from "@/features/naia/orchestrator";
+import type { CrmLeadDraft } from "@/features/crm/contracts";
 import { signAction } from "@/platform/naia/action-tokens";
 
 import {
@@ -133,10 +136,17 @@ describe("executeBridgeAction single-use approval tokens", () => {
     mocks.listGmailMessages.mockResolvedValue([
       { from: "nabil@qarizmi.com", id: "gmail-1", subject: "Demo client" },
     ]);
+    mocks.createGoogleCalendarReminder.mockResolvedValue({
+      htmlLink: "https://calendar.google.com/reminder",
+      id: "reminder-1",
+      start: "2026-07-11T09:00:00",
+      title: "Envoyer la présentation",
+    });
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
     vi.clearAllMocks();
   });
 
@@ -244,6 +254,39 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(plan.actions[0].approvalToken).toEqual(expect.any(String));
   });
 
+  it("uses the shared assistant for open questions on Slack", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "naia",
+                confidence: 0.92,
+                response:
+                  "Un LLM est un modèle de langage capable de comprendre et générer du texte.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "Peux-tu m'expliquer simplement ce qu'est un LLM ?",
+    );
+
+    expect(plan.mode).toBe("groq-orchestrated");
+    expect(plan.responseType).toBe("answer");
+    expect(plan.actions).toHaveLength(0);
+    expect(plan.response).toContain("modèle de langage");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps new lead contact capture in CRM even when a presentation is mentioned", async () => {
     mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
       extracted: {
@@ -264,13 +307,13 @@ describe("executeBridgeAction single-use approval tokens", () => {
 
     const plan = await planBridgeCommand(
       bridgeUser,
-      "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, je lui ai parlé au tel il me demander lui envoyer une présentation avant de se rencontrer - crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
+      "nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
     );
 
     expect(plan.agentName).toBe("Salma");
     expect(plan.response).toContain("Salma");
     expect(plan.response).not.toContain("Maya");
-    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions).toHaveLength(2);
     expect(plan.actions[0]).toMatchObject({
       kind: "crm.createLead",
       payload: {
@@ -282,6 +325,12 @@ describe("executeBridgeAction single-use approval tokens", () => {
         nextAction: "Envoyer la présentation avant le rendez-vous",
         status: "contacted",
         topic: "Winxo - nouveau lead",
+      },
+    });
+    expect(plan.actions[1]).toMatchObject({
+      kind: "calendar.createReminder",
+      payload: {
+        scheduledAt: expect.stringMatching(/T09:00:00$/),
       },
     });
   });
@@ -298,7 +347,7 @@ describe("executeBridgeAction single-use approval tokens", () => {
     );
 
     expect(plan.agentName).toBe("Salma");
-    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions).toHaveLength(2);
     expect(plan.actions[0]).toMatchObject({
       kind: "crm.createLead",
       payload: {
@@ -311,6 +360,48 @@ describe("executeBridgeAction single-use approval tokens", () => {
         topic: "Winxo - nouveau lead",
       },
     });
+    expect(plan.actions[1]).toMatchObject({
+      kind: "calendar.createReminder",
+      payload: {
+        scheduledAt: expect.stringMatching(/T09:00:00$/),
+        title: "Envoyer la présentation",
+      },
+    });
+  });
+
+  it("preserves contact details from Slack mailto markup when Groq returns a partial lead", async () => {
+    mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
+      extracted: {
+        nextAction: "Envoyer la présentation avant le rendez-vous",
+        notes: "Demande de présentation avant rencontre",
+        source: "Appel téléphonique",
+        status: "contacted",
+        topic: "Présentation pour Winxo",
+      },
+      success: true,
+    });
+
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo <mailto:0661420960Yzaidi@winxo.com|0661420960 - Yzaidi@winxo.com>, je lui ai parlé au tel et il me demande de lui envoyer une présentation",
+    );
+
+    expect(mocks.extractLeadFromNaturalTextAction).toHaveBeenCalledWith(
+      expect.stringContaining("0661420960 - Yzaidi@winxo.com"),
+    );
+    expect(plan.actions[0]).toMatchObject({
+      kind: "crm.createLead",
+      payload: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactJobTitle: "Directeur d'exploitation",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+      },
+    });
+    expect((plan.actions[0].payload as CrmLeadDraft).notes).not.toContain(
+      "<mailto:",
+    );
   });
 
   it("creates Calendar events from signed hydrated CRM lead drafts", async () => {
@@ -349,5 +440,46 @@ describe("executeBridgeAction single-use approval tokens", () => {
       }),
     );
     expect(result.message).toContain("Adam a créé l'événement Calendar");
+  });
+
+  it("creates a transparent Google Calendar reminder after approval", async () => {
+    const command = "rappelle-moi demain matin d'envoyer la présentation";
+    const action: NaiaActionDraft = {
+      agentId: "meetings",
+      approvalRequired: true,
+      description: "Adam créera un rappel personnel.",
+      id: "calendar-reminder-winxo",
+      kind: "calendar.createReminder",
+      label: "Créer le rappel Calendar",
+      payload: {
+        notes: command,
+        scheduledAt: "2026-07-11T09:00:00",
+        timeWasInferred: true,
+        timeZone: "Africa/Casablanca",
+        title: "Envoyer la présentation",
+      },
+      risk: "medium",
+    };
+    const signed = signAction(action, command);
+
+    const result = await executeBridgeAction(bridgeUser, {
+      actionId: signed.id,
+      approvalToken: signed.approvalToken,
+      command,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.createGoogleCalendarReminder).toHaveBeenCalledWith(
+      {
+        scheduledAt: "2026-07-11T09:00:00",
+        timeZone: "Africa/Casablanca",
+        title: "Envoyer la présentation",
+      },
+      expect.objectContaining({
+        organizationId: "org-1",
+        profileId: "profile-ali",
+      }),
+    );
+    expect(result.message).toContain("rappel Google Calendar");
   });
 });

@@ -6,6 +6,7 @@ import type {
 import { crmLeadStatuses } from "@/features/crm/contracts";
 
 import { getNaiaAgent, type NaiaAgentId } from "./agents";
+import { extractLeadIdentity, inferReminderDate } from "./lead-understanding";
 import { buildOperationalAnalysisResponse } from "./operational-context";
 
 export type NaiaActionRisk = "low" | "medium" | "high";
@@ -40,6 +41,22 @@ export type NaiaActionDraft =
         leadActionId?: string;
         notes: string;
         requestedDate?: string;
+        title: string;
+      };
+      risk: NaiaActionRisk;
+    }
+  | {
+      agentId: "meetings";
+      approvalRequired: true;
+      description: string;
+      id: string;
+      kind: "calendar.createReminder";
+      label: string;
+      payload: {
+        notes: string;
+        scheduledAt?: string;
+        timeWasInferred: boolean;
+        timeZone: string;
         title: string;
       };
       risk: NaiaActionRisk;
@@ -165,6 +182,7 @@ export type NaiaOrchestrationResult = {
     | "developer"
     | "overview";
   response: string;
+  responseType: "action" | "answer" | "handoff";
 };
 
 const crmStatusLabels: Record<CrmLeadStatus, string> = {
@@ -213,6 +231,12 @@ export function orchestrateNaiaCommand({
           ? workspaceActions
           : [];
 
+  const responseType = classifyResponseType({
+    actions,
+    agentId,
+    command: cleanCommand,
+  });
+
   return {
     actions,
     agent: {
@@ -231,7 +255,26 @@ export function orchestrateNaiaCommand({
         ?.trim()
         .slice(0, 1200) ||
       buildResponse(agentId, cleanCommand, actions, crmLeads),
+    responseType,
   };
+}
+
+function classifyResponseType({
+  actions,
+  agentId,
+  command,
+}: {
+  actions: NaiaActionDraft[];
+  agentId: NaiaAgentId;
+  command: string;
+}): NaiaOrchestrationResult["responseType"] {
+  if (actions.length > 0) return "action";
+  if (isNaiaOverviewQuestion(command)) return "answer";
+  if (agentId === "crm" && buildCrmQuestionResponse(command, [])) {
+    return "answer";
+  }
+  if (buildOperationalAnalysisResponse({ agentId, command })) return "answer";
+  return "handoff";
 }
 
 export function classifyNaiaAgent(command: string): NaiaAgentId {
@@ -341,19 +384,38 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
 
   if (
     includesAny(normalized, [
+      "rh",
+      "recrut",
+      "candidat",
+      "entretien",
+      "staffing",
+      "capacity",
+      "hire",
+      "hiring",
+      "recruit",
+      "roles",
+    ])
+  ) {
+    return "hr";
+  }
+
+  if (
+    includesAny(normalized, [
       "projet",
+      "projets",
+      "project",
+      "projects",
       "delivery",
       "retard",
+      "risk",
+      "blocked",
+      "blocking",
       "gantt",
       "use case",
       "jalon",
     ])
   ) {
     return "projects";
-  }
-
-  if (includesAny(normalized, ["rh", "recrut", "candidat", "entretien"])) {
-    return "hr";
   }
 
   if (
@@ -409,7 +471,7 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
 }
 
 export function isNaiaOverviewQuestion(command: string) {
-  const normalized = normalize(command);
+  const normalized = normalize(command).replace(/-/g, " ");
   if (normalized === "aide" || normalized === "help") return true;
 
   return includesAny(normalized, [
@@ -426,6 +488,10 @@ export function isNaiaOverviewQuestion(command: string) {
     "comment peux tu m aider",
     "tes capacites",
     "tes fonctions",
+    "what can you do",
+    "how can you help",
+    "your capabilities",
+    "what are your capabilities",
   ]);
 }
 
@@ -506,7 +572,11 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
 
 function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
   const normalized = normalize(command);
-  if (isCrmReadQuestion(normalized)) {
+  if (
+    isCrmReadQuestion(normalized) ||
+    (isCrmInformationQuestion(command, normalized) &&
+      !isExplicitCrmWriteRequest(normalized))
+  ) {
     return [];
   }
 
@@ -568,7 +638,30 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
     } satisfies NaiaActionDraft;
     const actions: NaiaActionDraft[] = [createLeadAction];
 
-    if (effectiveStatus === "meeting-booked") {
+    if (isInternalReminderMeeting(normalized)) {
+      actions.push({
+        agentId: "meetings",
+        approvalRequired: true,
+        description:
+          "Adam créera un rappel personnel transparent dans Google Calendar après validation.",
+        id: `calendar-reminder-${stableActionSuffix(command)}`,
+        kind: "calendar.createReminder",
+        label: "Créer le rappel Calendar",
+        payload: {
+          notes: command,
+          scheduledAt: inferReminderDate(command),
+          timeWasInferred: true,
+          timeZone: "Africa/Casablanca",
+          title: inferReminderTitle(normalized),
+        },
+        risk: "medium",
+      });
+    }
+
+    if (
+      effectiveStatus === "meeting-booked" &&
+      !isInternalReminderMeeting(normalized)
+    ) {
       actions.push({
         agentId: "meetings",
         approvalRequired: true,
@@ -858,7 +951,7 @@ function buildResponse(
   }
 
   if (agentId === "naia" && isNaiaOverviewQuestion(command)) {
-    return "Je peux router tes demandes vers les agents NAIA, preparer des leads CRM avec validation humaine, analyser les donnees disponibles du cockpit, aider sur finance/projets/RH, et repondre aux questions generales quand elles ne demandent pas d'action sensible. Pour les actions externes, je prepare d'abord une carte a valider.";
+    return "Je suis l'assistante opérationnelle de Qarizmi. Je peux répondre à tes questions générales, lire le CRM réel (pipeline, statuts, contacts et prochaines actions), préparer une fiche lead complète à corriger puis valider, consulter Gmail et Google Calendar quand ton compte est connecté, et lancer Maya pour les pitchs liés aux leads. Finance, Projects et HR disposent encore de données de travail simulées: je te le préciserai toujours au lieu de les présenter comme réelles. Toute écriture CRM ou action externe reste soumise à ta validation.";
   }
 
   const operationalResponse = buildOperationalAnalysisResponse({
@@ -877,6 +970,13 @@ function buildResponse(
         actions.some((action) => action.kind === "calendar.scheduleMeeting")
       ) {
         return `${agent.name} prend le relais CRM avec Adam en support calendrier. J'ai prepare ${actionLabels.join(" et ")}: le lead sera cree en meeting booked, puis Google Calendar sera verifie avant creation de l'evenement.`;
+      }
+
+      if (
+        actions.some((action) => action.kind === "crm.createLead") &&
+        actions.some((action) => action.kind === "calendar.createReminder")
+      ) {
+        return `${agent.name} prépare la fiche CRM et Adam prépare le rappel personnel. Vérifie puis valide séparément le lead et le rappel Calendar.`;
       }
 
       return `${agent.name} prend le relais CRM. J'ai prepare l'action ${actionLabels[0]} avec validation humaine avant ecriture dans le pipeline.`;
@@ -947,6 +1047,30 @@ function buildResponse(
 
 function buildCrmQuestionResponse(command: string, crmLeads: CrmLeadSummary[]) {
   const normalized = normalize(command);
+  if (isCrmStatusDefinitionQuestion(normalized)) {
+    const asksContactedVsMeeting =
+      includesAny(normalized, ["contacte", "contacted"]) &&
+      includesAny(normalized, ["meeting", "rdv", "rendez vous"]);
+
+    if (asksContactedVsMeeting) {
+      return [
+        "Contacté: un échange réel a eu lieu avec le prospect, mais aucun rendez-vous n'est encore confirmé.",
+        "Meeting fixé: une date et une heure de rendez-vous ont été convenues avec le prospect.",
+        "Utilise Contacté après un appel, un email ou une discussion; passe en Meeting fixé seulement quand le créneau est confirmé.",
+      ].join("\n");
+    }
+
+    return [
+      "À contacter: prospect identifié, aucun échange encore réalisé.",
+      "Contacté: premier échange réalisé, sans rendez-vous confirmé.",
+      "À relancer: une réponse ou une prochaine action est attendue.",
+      "Meeting fixé: rendez-vous confirmé avec une date et une heure.",
+      "Propale envoyée: proposition transmise, décision attendue.",
+      "Gagné: opportunité acceptée ou signée.",
+      "Dead end: opportunité perdue, disqualifiée ou abandonnée.",
+    ].join("\n");
+  }
+
   if (!isCrmReadQuestion(normalized)) return null;
 
   const requestedStatus = inferCrmQuestionStatus(normalized);
@@ -986,6 +1110,33 @@ function buildCrmQuestionResponse(command: string, crmLeads: CrmLeadSummary[]) {
   ].join("\n");
 }
 
+function isCrmStatusDefinitionQuestion(normalizedCommand: string) {
+  const comparableCommand = normalizedCommand.replace(/-/g, " ");
+  const mentionsStatus = includesAny(comparableCommand, [
+    "statut",
+    "status",
+    "contacte",
+    "contacted",
+    "meeting booke",
+    "meeting fixe",
+  ]);
+  const asksDefinition = includesAny(comparableCommand, [
+    "explique",
+    "difference entre",
+    "quand utiliser",
+    "que signifie",
+    "c est quoi",
+    "explain",
+    "difference between",
+    "when should",
+    "what is",
+    "what are",
+    "compare",
+  ]);
+
+  return mentionsStatus && asksDefinition;
+}
+
 function isCrmReadQuestion(normalizedCommand: string) {
   const tokens = tokenSet(normalizedCommand);
   const asksForCountOrList =
@@ -1012,6 +1163,91 @@ function isCrmReadQuestion(normalizedCommand: string) {
   ]);
 
   return asksForCountOrList && mentionsPipeline;
+}
+
+function isCrmInformationQuestion(command: string, normalizedCommand: string) {
+  const comparableCommand = normalizedCommand.replace(/-/g, " ");
+
+  return (
+    command.includes("?") ||
+    includesAny(comparableCommand, [
+      "explique",
+      "difference entre",
+      "quand utiliser",
+      "que signifie",
+      "quel statut",
+      "quelle etape",
+      "c est quoi",
+      "qu est ce",
+      "est ce que",
+      "est il",
+      "est elle",
+      "pourquoi",
+      "comment fonctionne",
+      "explain",
+      "difference between",
+      "when should",
+      "what is",
+      "what are",
+      "which status",
+      "how does",
+      "why",
+      "compare",
+    ])
+  );
+}
+
+function isExplicitCrmWriteRequest(normalizedCommand: string) {
+  const comparableCommand = normalizedCommand.replace(/-/g, " ");
+  const startsWithWriteVerb =
+    /^(?:(?:naia|salma)\s+)?(?:passe|mets|met|change|modifie|deplace|update|move|set)\b/.test(
+      comparableCommand,
+    );
+
+  return (
+    startsWithWriteVerb ||
+    includesAny(comparableCommand, [
+      "cree un lead",
+      "creer un lead",
+      "cree le lead",
+      "creer le lead",
+      "ajoute un lead",
+      "ajouter un lead",
+      "create a lead",
+      "add a lead",
+      "passe le lead",
+      "mets le lead",
+      "met le lead",
+      "change le statut",
+      "modifie le statut",
+      "deplace le lead",
+      "update the lead",
+      "move the lead",
+      "set the lead",
+      "planifie",
+      "schedule a",
+      "schedule the",
+      "book a",
+      "book the",
+      "booke un",
+      "booke le",
+      "redige",
+      "prepare le pitch",
+      "genere le pitch",
+      "il faut",
+      "je veux que tu",
+      "peux tu creer",
+      "peux tu ajouter",
+      "peux tu passer",
+      "can you create",
+      "can you add",
+      "can you move",
+      "please create",
+      "please add",
+      "rappelle moi",
+      "me rappeler",
+    ])
+  );
 }
 
 function inferCrmQuestionStatus(
@@ -1114,6 +1350,11 @@ function extractLeadTopic(command: string) {
 }
 
 function extractSimpleLeadIdentity(command: string) {
+  const sharedIdentity = extractLeadIdentity(command);
+  if (sharedIdentity.companyName || sharedIdentity.contactName) {
+    return sharedIdentity;
+  }
+
   const withoutPrefix = command
     .replace(/^(naia[, ]*)?/i, "")
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
@@ -1330,6 +1571,21 @@ function inferLeadNextAction(normalizedCommand: string, status: CrmLeadStatus) {
   }
 
   return undefined;
+}
+
+function inferReminderTitle(normalizedCommand: string) {
+  if (
+    includesAny(normalizedCommand, [
+      "envoyer une presentation",
+      "envoyer la presentation",
+      "send a presentation",
+      "send the presentation",
+    ])
+  ) {
+    return "Envoyer la présentation";
+  }
+
+  return "Rappel NAIA";
 }
 
 function isCashFlowIntent(normalizedCommand: string) {

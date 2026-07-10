@@ -52,6 +52,90 @@ export type SlackUserProfile = {
   isBot: boolean;
 };
 
+export type SlackConversationMessage = {
+  content: string;
+  role: "assistant" | "user";
+};
+
+export type SlackMessageSnapshot = {
+  blocks?: unknown[];
+  text?: string;
+};
+
+export async function fetchSlackConversationHistory({
+  channel,
+  limit = 10,
+  threadTs,
+}: {
+  channel: string;
+  limit?: number;
+  threadTs?: string;
+}): Promise<SlackConversationMessage[]> {
+  const url = new URL(
+    threadTs
+      ? "https://slack.com/api/conversations.replies"
+      : "https://slack.com/api/conversations.history",
+  );
+  url.searchParams.set("channel", channel);
+  url.searchParams.set("limit", String(Math.max(1, Math.min(limit, 20))));
+  if (threadTs) url.searchParams.set("ts", threadTs);
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${getSlackBotToken()}` },
+  });
+  const payload = (await response.json()) as {
+    messages?: Array<{ bot_id?: string; text?: string }>;
+    ok?: boolean;
+  };
+  if (!response.ok || !payload.ok) return [];
+
+  const messages = (payload.messages ?? []).flatMap((message) => {
+    const content = message.text?.trim();
+    return content
+      ? [{ content, role: message.bot_id ? "assistant" : "user" } as const]
+      : [];
+  });
+  return threadTs ? messages.slice(-limit) : messages.reverse().slice(-limit);
+}
+
+export async function fetchSlackMessageSnapshot({
+  channel,
+  messageTs,
+  threadTs,
+}: {
+  channel: string;
+  messageTs: string;
+  threadTs?: string;
+}): Promise<SlackMessageSnapshot | null> {
+  try {
+    const url = new URL("https://slack.com/api/conversations.replies");
+    url.searchParams.set("channel", channel);
+    url.searchParams.set("limit", "100");
+    url.searchParams.set("ts", threadTs ?? messageTs);
+
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${getSlackBotToken()}` },
+    });
+    const payload = (await response.json()) as {
+      messages?: Array<{ blocks?: unknown[]; text?: string; ts?: string }>;
+      ok?: boolean;
+    };
+    if (!response.ok || !payload.ok) return null;
+
+    const message = payload.messages?.find(
+      (candidate) => candidate.ts === messageTs,
+    );
+    return message
+      ? {
+          blocks: message.blocks,
+          text: message.text,
+        }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchSlackUserProfile(
   userId: string,
 ): Promise<SlackUserProfile | null> {
@@ -147,6 +231,69 @@ export async function postSlackMessage({
     channel: payload.channel,
     ts: payload.ts,
   };
+}
+
+export async function openSlackModal({
+  triggerId,
+  view,
+}: {
+  triggerId: string;
+  view: Record<string, unknown>;
+}) {
+  const response = await fetch("https://slack.com/api/views.open", {
+    body: JSON.stringify({ trigger_id: triggerId, view }),
+    headers: {
+      Authorization: `Bearer ${getSlackBotToken()}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  const payload = (await response.json()) as {
+    error?: string;
+    ok?: boolean;
+  };
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(
+      `Slack rejected the modal: ${payload.error ?? "unknown error"}`,
+    );
+  }
+}
+
+export async function updateSlackMessage({
+  blocks,
+  channel,
+  text,
+  ts,
+}: {
+  blocks?: unknown[];
+  channel: string;
+  text: string;
+  ts: string;
+}) {
+  const response = await fetch("https://slack.com/api/chat.update", {
+    body: JSON.stringify({
+      channel,
+      text,
+      ts,
+      ...(blocks ? { blocks } : {}),
+    }),
+    headers: {
+      Authorization: `Bearer ${getSlackBotToken()}`,
+      "Content-Type": "application/json",
+    },
+    method: "POST",
+  });
+  const payload = (await response.json()) as {
+    error?: string;
+    ok?: boolean;
+  };
+
+  if (!response.ok || !payload.ok) {
+    throw new Error(
+      `Slack rejected the message update: ${payload.error ?? "unknown error"}`,
+    );
+  }
 }
 
 // Interactive components ship a short-lived response_url that can update the

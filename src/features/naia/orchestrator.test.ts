@@ -47,6 +47,93 @@ const crmPipelineLeads: CrmLeadSummary[] = [
 ];
 
 describe("NAIA orchestrator", () => {
+  it("answers a natural capability question with punctuation and hyphens", () => {
+    const result = orchestrateNaiaCommand({
+      command: "que sais-tu faire ?",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("naia");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("CRM");
+    expect(result.response).toContain("Google Calendar");
+    expect(result.response).not.toContain("Je garde l'orchestration");
+  });
+
+  it("keeps English capability questions above domain keywords", () => {
+    const result = orchestrateNaiaCommand({
+      command: "What can you do for my CRM, cash and project teams?",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("naia");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("CRM");
+  });
+
+  it("understands project risk questions in English", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "Which projects are most at risk this quarter, and what is blocking them?",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("projects");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("Données simulées NAIA");
+    expect(result.response).toContain("projets sont en risque");
+  });
+
+  it("prioritizes staffing over a generic delivery keyword", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "Do we have enough capacity for delivery, ou quels rôles faut-il recruter d'abord ?",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("hr");
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("Données simulées NAIA");
+    expect(result.response).toContain("besoins ouverts");
+  });
+
+  it("answers CRM definition questions without drafting a write", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "Explique-moi la différence entre un lead contacté et un meeting booké, et quand utiliser chaque statut.",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.actions).toHaveLength(0);
+    expect(result.responseType).toBe("answer");
+    expect(result.response).toContain("un échange réel a eu lieu");
+    expect(result.response).toContain("une date et une heure");
+  });
+
+  it("still accepts an explicit CRM write phrased as a question", () => {
+    const result = orchestrateNaiaCommand({
+      command: "Peux-tu créer un lead pour HPS avec Abdeslam ?",
+      crmLeads,
+    });
+
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({ kind: "crm.createLead" });
+  });
+
+  it("accepts a hyphenated status-change request phrased as a question", () => {
+    const result = orchestrateNaiaCommand({
+      command: "Peux-tu passer Atlas en meeting booked ?",
+      crmLeads,
+    });
+
+    expect(result.actions).toHaveLength(2);
+    expect(result.actions[0]).toMatchObject({
+      kind: "crm.updateLeadStatus",
+      payload: { leadId: "lead-atlas", status: "meeting-booked" },
+    });
+  });
+
   it("routes CRM update commands to Salma with a validated action draft", () => {
     const result = orchestrateNaiaCommand({
       command: "NAIA passe Atlas en meeting booked et prepare le pitch",
@@ -227,7 +314,7 @@ describe("NAIA orchestrator", () => {
 
     expect(result.agent.id).toBe("crm");
     expect(result.agent.name).toBe("Salma");
-    expect(result.actions).toHaveLength(1);
+    expect(result.actions).toHaveLength(2);
     expect(result.actions[0]).toMatchObject({
       approvalRequired: true,
       kind: "crm.createLead",
@@ -238,6 +325,16 @@ describe("NAIA orchestrator", () => {
         contactPhone: "0661420960",
         nextAction: "Envoyer la présentation avant le rendez-vous",
         status: "contacted",
+      },
+    });
+    expect(result.actions[1]).toMatchObject({
+      agentId: "meetings",
+      approvalRequired: true,
+      kind: "calendar.createReminder",
+      payload: {
+        scheduledAt: expect.stringMatching(/T09:00:00$/),
+        timeZone: "Africa/Casablanca",
+        title: "Envoyer la présentation",
       },
     });
   });
@@ -311,6 +408,7 @@ describe("NAIA orchestrator", () => {
 
     expect(result.agent.id).toBe("finance");
     expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("Données simulées NAIA");
     expect(result.response).toContain("Oct.");
     expect(result.response).toContain("Medina Health");
     expect(result.response).toContain("Sahara Logistics");

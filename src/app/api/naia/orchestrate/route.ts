@@ -13,12 +13,13 @@ import {
 } from "@/features/crm/contracts";
 import {
   inferCrmStatus,
-  isNaiaOverviewQuestion,
-  orchestrateNaiaCommand,
   type NaiaOrchestrationResult,
 } from "@/features/naia/orchestrator";
-import { buildNaiaOperatingContext } from "@/features/naia/operational-context";
-import { naiaAgents, type NaiaAgentId } from "@/features/naia/agents";
+import {
+  canonicalizeConversationText,
+  extractLeadIdentity,
+  inferReminderDate,
+} from "@/features/naia/lead-understanding";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import {
   hasPermission,
@@ -26,10 +27,15 @@ import {
   type PermissionAction,
 } from "@/platform/core/permissions";
 import {
+  createGoogleCalendarReminder,
   listGmailMessages,
   listGoogleCalendarEvents,
 } from "@/platform/integrations/google-workspace";
 import { signAction, verifyApprovalToken } from "@/platform/naia/action-tokens";
+import {
+  planNaiaAssistant,
+  type NaiaConversationMessage,
+} from "@/platform/naia/assistant";
 import { generateMayaPitchDraftForLeadAction } from "@/features/maya/actions";
 
 type OrchestratePayload = {
@@ -37,6 +43,7 @@ type OrchestratePayload = {
   approvalToken?: string;
   command?: string;
   execute?: boolean;
+  history?: NaiaConversationMessage[];
   leadInput?: Partial<
     CrmLeadDraft & {
       createGoogleDrive?: boolean;
@@ -66,12 +73,10 @@ export async function POST(request: Request) {
   }
 
   const crmLeads = await fetchLeadsAction();
-  const localResult = orchestrateNaiaCommand({ command, crmLeads });
-
-  const { mode, result } = await enhanceWithGroqOrchestrator({
+  const { mode, result } = await planNaiaAssistant({
     command,
     crmLeads,
-    localResult,
+    history: parseHistory(payload.history),
   });
   const hydratedResult = await hydrateCrmLeadDrafts({
     command,
@@ -91,222 +96,6 @@ export async function POST(request: Request) {
     },
     mode,
   });
-}
-
-async function enhanceWithGroqOrchestrator({
-  command,
-  crmLeads,
-  localResult,
-}: {
-  command: string;
-  crmLeads: Awaited<ReturnType<typeof fetchLeadsAction>>;
-  localResult: NaiaOrchestrationResult;
-}): Promise<{
-  mode: "groq-orchestrated" | "local-orchestrated";
-  result: NaiaOrchestrationResult;
-}> {
-  const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
-  if (!apiKey || !command || isNaiaOverviewQuestion(command)) {
-    return { mode: "local-orchestrated", result: localResult };
-  }
-
-  const operatingContext = buildNaiaOperatingContext();
-  const realGoogleCalendar = await buildRealGoogleCalendarContext();
-
-  try {
-    const groqResponse = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
-      {
-        body: JSON.stringify({
-          max_tokens: 600,
-          messages: [
-            {
-              content:
-                'Tu es NAIA, orchestrateur vocal de Qarizmi OS. Tu choisis exactement un agent pour traiter la demande, puis tu reponds en francais comme un assistant operationnel. Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}. Utilise operatingContext pour toute analyse operationnelle: cash flow, pipeline, projets, staffing, relances et risques. Si "realGoogleCalendar" est present, ce sont les VRAIS evenements du Google Calendar de l\'utilisateur: ces donnees agenda sont reelles et priment sur toute donnee d\'exemple du operatingContext pour les questions d\'agenda, de disponibilites ou de reunions. Si la demande est une question generale hors contexte Qarizmi, choisis "naia" et reponds comme un assistant LLM normal, sans pretendre avoir execute une action externe. Si la demande mentionne un rendez-vous, call ou meeting avec un prospect/client potentiel, choisis toujours "crm" pour que Salma cree ou mette a jour le lead; Adam intervient ensuite pour le calendrier. N\'invente jamais une action deja executee. Pour les actions externes ou CRM, parle de brouillon, preparation ou validation humaine.',
-              role: "system",
-            },
-            {
-              content: JSON.stringify({
-                agents: naiaAgents.map((agent) => ({
-                  id: agent.id,
-                  label: agent.label,
-                  mission: agent.mission,
-                  name: agent.name,
-                  role: agent.role,
-                })),
-                command,
-                crmSnapshot: crmLeads.slice(0, 8).map((lead) => ({
-                  id: lead.id,
-                  nextAction: lead.nextAction,
-                  notes: lead.notes,
-                  status: lead.status,
-                  topic: lead.topic,
-                })),
-                localSuggestion: {
-                  agentId: localResult.agent.id,
-                  actions: localResult.actions.map((action) => ({
-                    kind: action.kind,
-                    label: action.label,
-                  })),
-                  response: localResult.response,
-                },
-                operatingContext,
-                realGoogleCalendar: realGoogleCalendar ?? undefined,
-              }),
-              role: "user",
-            },
-          ],
-          model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
-          response_format: { type: "json_object" },
-          temperature: 0.2,
-        }),
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        method: "POST",
-      },
-    );
-
-    if (!groqResponse.ok) {
-      return { mode: "local-orchestrated", result: localResult };
-    }
-
-    const payload = (await groqResponse.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const decision = parseGroqDecision(payload.choices?.[0]?.message?.content);
-
-    if (!decision) {
-      return { mode: "local-orchestrated", result: localResult };
-    }
-
-    return {
-      mode: "groq-orchestrated",
-      result: orchestrateNaiaCommand({
-        agentIdOverride: decision.agentId,
-        command,
-        confidenceOverride: decision.confidence,
-        crmLeads,
-        responseOverride: decision.response,
-      }),
-    };
-  } catch {
-    return { mode: "local-orchestrated", result: localResult };
-  }
-}
-
-const REAL_CALENDAR_DAYS_AHEAD = 7;
-const REAL_CALENDAR_MAX_EVENTS = 15;
-const REAL_CALENDAR_TIME_ZONE = "Africa/Casablanca";
-const REAL_CALENDAR_CONTEXT_TIMEOUT_MS = 2500;
-
-// Reads the acting user's real Google Calendar (per-user connection) and
-// returns a compact French summary for the Groq context. Returns null when
-// the user has no connected Google account, the provider call fails, or the
-// deadline expires (the provider fetches carry no AbortSignal, so a stalled
-// Google endpoint must not block the whole NAIA command); the orchestration
-// then falls back to CRM-only context. Note: event titles are sent to Groq
-// when GROQ_API_KEY is configured.
-async function buildRealGoogleCalendarContext(): Promise<string | null> {
-  try {
-    const events = await withDeadline(
-      listGoogleCalendarEvents({
-        daysAhead: REAL_CALENDAR_DAYS_AHEAD,
-        maxResults: REAL_CALENDAR_MAX_EVENTS,
-      }),
-      REAL_CALENDAR_CONTEXT_TIMEOUT_MS,
-    );
-
-    if (events.length === 0) {
-      return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours) : aucun événement.`;
-    }
-
-    const summary = events
-      .map((event) => `${event.title} — ${formatRealCalendarDate(event.start)}`)
-      .join(" ; ");
-
-    return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours) : ${summary}`;
-  } catch {
-    return null;
-  }
-}
-
-function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-
-  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
-}
-
-function formatRealCalendarDate(start?: string) {
-  if (!start) return "date non précisée";
-
-  const date = new Date(start);
-  if (Number.isNaN(date.getTime())) return "date non précisée";
-
-  // All-day events expose a date without time component.
-  if (!start.includes("T")) {
-    return new Intl.DateTimeFormat("fr-FR", {
-      day: "numeric",
-      month: "long",
-      timeZone: REAL_CALENDAR_TIME_ZONE,
-      weekday: "long",
-    }).format(date);
-  }
-
-  return new Intl.DateTimeFormat("fr-FR", {
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    month: "long",
-    timeZone: REAL_CALENDAR_TIME_ZONE,
-    weekday: "long",
-  }).format(date);
-}
-
-function parseGroqDecision(content: string | undefined) {
-  if (!content) return null;
-
-  try {
-    const parsed = JSON.parse(content) as {
-      agentId?: unknown;
-      confidence?: unknown;
-      response?: unknown;
-    };
-    const agentId = parseAgentId(parsed.agentId);
-    const response =
-      typeof parsed.response === "string" ? parsed.response.trim() : "";
-
-    if (!agentId || !response) return null;
-
-    const confidence =
-      typeof parsed.confidence === "number" &&
-      parsed.confidence >= 0 &&
-      parsed.confidence <= 1
-        ? parsed.confidence
-        : undefined;
-
-    return {
-      agentId,
-      confidence,
-      response,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function parseAgentId(agentId: unknown): NaiaAgentId | null {
-  return typeof agentId === "string" &&
-    naiaAgents.some((agent) => agent.id === agentId)
-    ? (agentId as NaiaAgentId)
-    : null;
 }
 
 async function executeAction({
@@ -436,6 +225,8 @@ async function executeAction({
     const response = await createLeadAction({
       companyName: leadDraft.companyName,
       contactEmail: leadDraft.contactEmail,
+      contactJobTitle: leadDraft.contactJobTitle,
+      contactLinkedinUrl: leadDraft.contactLinkedinUrl,
       contactName: leadDraft.contactName,
       contactPhone: leadDraft.contactPhone,
       leadDate: leadDraft.leadDate,
@@ -479,6 +270,45 @@ async function executeAction({
         "Adam passera par le lead CRM validé pour vérifier les disponibilités Google Calendar et créer l'événement. Valide d'abord l'action Salma si le lead n'existe pas encore.",
       success: true,
     });
+  }
+
+  if (action.kind === "calendar.createReminder") {
+    if (!action.payload.scheduledAt) {
+      return Response.json({
+        action,
+        execution: "failed",
+        message:
+          "Adam a besoin d'une date et d'une heure précises pour créer ce rappel.",
+        success: false,
+      });
+    }
+
+    try {
+      const reminder = await createGoogleCalendarReminder({
+        scheduledAt: action.payload.scheduledAt,
+        timeZone: action.payload.timeZone,
+        title: action.payload.title,
+      });
+      return Response.json({
+        action,
+        execution: "applied",
+        message: reminder.htmlLink
+          ? `Rappel Google Calendar créé: ${reminder.htmlLink}`
+          : "Rappel Google Calendar créé.",
+        providerResult: { reminder },
+        success: true,
+      });
+    } catch (error) {
+      return Response.json({
+        action,
+        execution: "failed",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Création du rappel Google Calendar impossible.",
+        success: false,
+      });
+    }
   }
 
   if (action.kind === "google.gmail.listMessages") {
@@ -672,10 +502,24 @@ async function hydrateCrmLeadDrafts({
   const hasCalendarAction = result.actions.some(
     (action) => action.kind === "calendar.scheduleMeeting",
   );
+  const hasReminderAction = result.actions.some(
+    (action) => action.kind === "calendar.createReminder",
+  );
+  const reminderDate = extracted.leadDate ?? inferReminderDate(command);
 
   return {
     ...result,
     actions: result.actions.map((action) => {
+      if (action.kind === "calendar.createReminder") {
+        return {
+          ...action,
+          payload: {
+            ...action.payload,
+            scheduledAt: reminderDate ?? action.payload.scheduledAt,
+          },
+        };
+      }
+
       if (action.kind === "calendar.scheduleMeeting") {
         return {
           ...action,
@@ -706,7 +550,9 @@ async function hydrateCrmLeadDrafts({
             nextActionOverride ??
             extracted.nextAction ??
             action.payload.nextAction,
-          status: inferredStatus ?? extracted.status ?? action.payload.status,
+          status: internalReminder
+            ? "contacted"
+            : (inferredStatus ?? extracted.status ?? action.payload.status),
           notes: extracted.notes
             ? [extracted.notes, `Commande NAIA: ${command}`].join("\n")
             : action.payload.notes,
@@ -715,18 +561,24 @@ async function hydrateCrmLeadDrafts({
     }),
     response: hasCalendarAction
       ? "Salma prend le relais CRM et Adam prépare le calendrier. J'ai pré-rempli le lead; valide-le pour l'écrire en meeting booked dans le pipeline et laisser Adam vérifier Google Calendar avant de créer l'événement."
-      : "Salma prend le relais CRM. J'ai pré-rempli le formulaire du lead avec l'extraction IA. Vérifie les champs, puis clique sur \"Valider et créer le lead\" pour l'écrire dans le pipeline.",
+      : hasReminderAction
+        ? "Salma a pré-rempli la fiche du lead et Adam a préparé un rappel personnel distinct. Vérifie les champs du lead, puis valide séparément la création CRM et le rappel Google Calendar."
+        : "Salma prend le relais CRM. J'ai pré-rempli le formulaire du lead avec l'extraction IA. Vérifie les champs, puis clique sur \"Valider et créer le lead\" pour l'écrire dans le pipeline.",
   };
 }
 
 async function extractLeadDraft(
   command: string,
 ): Promise<Partial<CrmLeadDraft>> {
+  const deterministic = extractLeadDraftLocally(command);
   const extracted = await extractLeadFromNaturalTextAction(command);
   if (extracted.success && extracted.extracted?.topic) {
     return {
+      ...deterministic,
       companyName: extracted.extracted.companyName,
       contactEmail: extracted.extracted.contactEmail,
+      contactJobTitle: extracted.extracted.contactJobTitle,
+      contactLinkedinUrl: extracted.extracted.contactLinkedinUrl,
       contactName: extracted.extracted.contactName,
       contactPhone: extracted.extracted.contactPhone,
       leadDate: extracted.extracted.leadDate,
@@ -736,14 +588,15 @@ async function extractLeadDraft(
       status: extracted.extracted.status ?? "lead-to-contact",
       topic: extracted.extracted.topic,
       tags: extracted.extracted.tags,
+      ...preferDeterministicIdentity(deterministic),
     };
   }
 
-  return extractLeadDraftLocally(command);
+  return deterministic;
 }
 
 function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
-  const clean = command
+  const clean = canonicalizeConversationText(command)
     .replace(/^(naia[, ]*)?/i, "")
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
     .trim()
@@ -759,6 +612,20 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
     /\b(meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion)\b/i.test(
       clean,
     );
+  const sharedIdentity = extractLeadIdentity(clean);
+
+  if (sharedIdentity.companyName && sharedIdentity.contactName) {
+    return {
+      ...sharedIdentity,
+      nextAction: isMeetingCommand
+        ? "Preparer le meeting et confirmer le contexte avec le contact"
+        : "Qualifier le besoin et confirmer le prochain rendez-vous",
+      notes: `Commande NAIA: ${clean}`,
+      source: "NAIA",
+      status: isMeetingCommand ? "meeting-booked" : "contacted",
+      topic: `${sharedIdentity.companyName} - nouveau lead`,
+    };
+  }
 
   if (prospectMeetingMatch) {
     const contactName = prospectMeetingMatch[1].trim();
@@ -802,12 +669,33 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
   };
 }
 
+function preferDeterministicIdentity(
+  draft: Partial<CrmLeadDraft>,
+): Partial<CrmLeadDraft> {
+  const identity = {
+    companyName: draft.companyName,
+    contactEmail: draft.contactEmail,
+    contactJobTitle: draft.contactJobTitle,
+    contactLinkedinUrl: draft.contactLinkedinUrl,
+    contactName: draft.contactName,
+    contactPhone: draft.contactPhone,
+  };
+
+  return Object.fromEntries(
+    Object.entries(identity).filter(
+      ([, value]) => typeof value === "string" && value.trim(),
+    ),
+  );
+}
+
 function sanitizeLeadDraft(input: Partial<CrmLeadDraft>): CrmLeadDraft {
   const status = coerceStatus(input.status ?? "") ?? "lead-to-contact";
 
   return {
     companyName: cleanOptional(input.companyName, 120),
     contactEmail: cleanOptional(input.contactEmail, 160),
+    contactJobTitle: cleanOptional(input.contactJobTitle, 160),
+    contactLinkedinUrl: cleanOptional(input.contactLinkedinUrl, 300),
     contactName: cleanOptional(input.contactName, 120),
     contactPhone: cleanOptional(input.contactPhone, 80),
     leadDate: cleanOptional(input.leadDate, 80),
@@ -849,6 +737,7 @@ function buildLeadNotes(leadDraft: CrmLeadDraft) {
     [
       leadDraft.companyName && `Entreprise: ${leadDraft.companyName}`,
       leadDraft.contactName && `Contact: ${leadDraft.contactName}`,
+      leadDraft.contactJobTitle && `Fonction: ${leadDraft.contactJobTitle}`,
       leadDraft.contactEmail && `Email: ${leadDraft.contactEmail}`,
       leadDraft.contactPhone && `Tel: ${leadDraft.contactPhone}`,
       leadDraft.notes,
@@ -897,5 +786,30 @@ function coerceStatus(status: string): CrmLeadStatus | null {
 }
 
 function parseCommand(command: unknown) {
-  return typeof command === "string" ? command.trim().slice(0, 2000) : "";
+  return typeof command === "string"
+    ? canonicalizeConversationText(command).slice(0, 2000)
+    : "";
+}
+
+function parseHistory(history: unknown): NaiaConversationMessage[] {
+  if (!Array.isArray(history)) return [];
+
+  return history
+    .flatMap((message) => {
+      if (!message || typeof message !== "object") return [];
+      const candidate = message as { content?: unknown; role?: unknown };
+      if (
+        (candidate.role !== "assistant" && candidate.role !== "user") ||
+        typeof candidate.content !== "string"
+      ) {
+        return [];
+      }
+      const content = canonicalizeConversationText(candidate.content).slice(
+        0,
+        1200,
+      );
+      const role: NaiaConversationMessage["role"] = candidate.role;
+      return content ? [{ content, role }] : [];
+    })
+    .slice(-8);
 }

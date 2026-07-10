@@ -118,17 +118,38 @@ export function buildOperationalAnalysisResponse({
   }
 
   if (
-    agentId === "projects" ||
-    includesAny(normalized, ["delivery", "projet", "retard", "risque"])
+    agentId === "hr" ||
+    includesAny(normalized, [
+      "staffing",
+      "recrut",
+      "recruit",
+      "hiring",
+      "hire",
+      "roles",
+      "rh",
+      "capacite",
+      "capacity",
+    ])
   ) {
-    return buildProjectAnalysis();
+    return buildStaffingAnalysis();
   }
 
   if (
-    agentId === "hr" ||
-    includesAny(normalized, ["staffing", "recrut", "rh", "capacite"])
+    agentId === "projects" ||
+    includesAny(normalized, [
+      "delivery",
+      "projet",
+      "projets",
+      "project",
+      "projects",
+      "retard",
+      "risque",
+      "risk",
+      "blocked",
+      "blocking",
+    ])
   ) {
-    return buildStaffingAnalysis();
+    return buildProjectAnalysis();
   }
 
   return null;
@@ -143,6 +164,7 @@ function buildFinanceAnalysis() {
   const urgentRelances = clientRelances.slice(0, 2);
 
   return [
+    "Données simulées NAIA (pas encore connectées à la comptabilité réelle).",
     `Analyse cash: le solde projete est au plus bas en ${lowestBalance.month} avec ${formatMad(lowestBalance.balance)}.`,
     highRiskMonth
       ? `${highRiskMonth.month} est le mois le plus risque: ${formatMad(highRiskMonth.inflow)} d'encaissements contre ${formatMad(highRiskMonth.outflow)} de decaissements.`
@@ -161,6 +183,7 @@ function buildProjectAnalysis() {
   const riskyProjects = projects.filter((project) => project.risk === "high");
 
   return [
+    "Données simulées NAIA (pas encore connectées au portefeuille projets réel).",
     `Analyse delivery: ${riskyProjects.length} projets sont en risque eleve.`,
     ...riskyProjects.map(
       (project) =>
@@ -179,6 +202,7 @@ function buildStaffingAnalysis() {
     .map((row) => `${row.project}: ${row.linkedNeed ?? row.role}`);
 
   return [
+    "Données simulées NAIA (pas encore connectées au staffing réel).",
     `Analyse staffing: ${hiringNeeds.length} besoins ouverts - ${needs.join("; ")}.`,
     `Les projets relies a un recrutement sont: ${linkedStaffing.join("; ")}.`,
     "Priorite: securiser AI Delivery Lead puis Full-stack Next.js avant le pic delivery.",

@@ -49,6 +49,73 @@ export type GmailMessageSummary = {
   threadId?: string;
 };
 
+export type GoogleCalendarReminderResult = {
+  htmlLink?: string;
+  id: string;
+  start: string;
+  title: string;
+};
+
+export async function createGoogleCalendarReminder(
+  {
+    durationMinutes = 15,
+    scheduledAt,
+    timeZone = "Africa/Casablanca",
+    title,
+  }: {
+    durationMinutes?: number;
+    scheduledAt: string;
+    timeZone?: string;
+    title: string;
+  },
+  context?: GoogleWorkspaceContext,
+): Promise<GoogleCalendarReminderResult> {
+  const connection = await getGoogleWorkspaceConnection(context);
+  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
+  const start = normalizeReminderDateTime(scheduledAt);
+  const end = addMinutesToCalendarDateTime(
+    start,
+    Math.max(5, Math.min(durationMinutes, 120)),
+  );
+  const response = await fetch(
+    "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+    {
+      body: JSON.stringify({
+        end: { dateTime: end, timeZone },
+        reminders: {
+          overrides: [{ method: "popup", minutes: 0 }],
+          useDefault: false,
+        },
+        start: { dateTime: start, timeZone },
+        summary: title.trim().slice(0, 180) || "Rappel NAIA",
+        transparency: "transparent",
+      }),
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+      },
+      method: "POST",
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(await providerError("Google Calendar", response));
+  }
+
+  const payload = (await response.json()) as {
+    htmlLink?: string;
+    id?: string;
+    start?: { dateTime?: string };
+    summary?: string;
+  };
+  return {
+    htmlLink: payload.htmlLink,
+    id: payload.id ?? crypto.randomUUID(),
+    start: payload.start?.dateTime ?? start,
+    title: payload.summary ?? title,
+  };
+}
+
 export async function getGoogleWorkspaceAccessToken({
   requiredScopes = [],
 }: {
@@ -123,6 +190,36 @@ export async function listGoogleCalendarEvents(
     start: event.start?.dateTime ?? event.start?.date,
     title: event.summary ?? "Evenement sans titre",
   }));
+}
+
+function normalizeReminderDateTime(value: string) {
+  const clean = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(clean)) return `${clean}T09:00:00`;
+  if (
+    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?$/.test(
+      clean,
+    )
+  ) {
+    return clean.length === 16 ? `${clean}:00` : clean;
+  }
+  throw new Error("Date de rappel invalide.");
+}
+
+function addMinutesToCalendarDateTime(value: string, minutes: number) {
+  const hasOffset = /(?:Z|[+-]\d{2}:\d{2})$/.test(value);
+  if (hasOffset) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime()))
+      throw new Error("Date de rappel invalide.");
+    return new Date(date.getTime() + minutes * 60_000).toISOString();
+  }
+
+  const [datePart, timePart = "09:00:00"] = value.split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  const [hour, minute, second = 0] = timePart.split(":").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  date.setUTCMinutes(date.getUTCMinutes() + minutes);
+  return date.toISOString().slice(0, 19);
 }
 
 export async function listGmailMessages(

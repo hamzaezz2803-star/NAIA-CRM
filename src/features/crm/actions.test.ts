@@ -33,6 +33,7 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
 }));
 
 import {
+  createLeadAction,
   updateLeadAction,
   updateLeadStatusAction,
   type CrmActionContext,
@@ -316,6 +317,86 @@ describe("CRM lead status Drive folder creation", () => {
     expect(result.success).toBe(true);
     expect(mocks.afterCallbacks).toHaveLength(0);
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+  });
+});
+
+describe("createLeadAction contact enrichment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.afterCallbacks.length = 0;
+  });
+
+  it("fills only missing fields on an existing contact", async () => {
+    const contactUpdates: Array<Record<string, unknown>> = [];
+    const client = createFakeSupabase((state) => {
+      if (state.table === "crm_companies" && state.op === "select") {
+        return { data: { id: "company-winxo" }, error: null };
+      }
+      if (state.table === "crm_contacts" && state.op === "select") {
+        return {
+          data: {
+            email: null,
+            id: "contact-youssef",
+            job_title: null,
+            linkedin_url: "https://linkedin.com/in/youssef",
+            phone: null,
+          },
+          error: null,
+        };
+      }
+      if (state.table === "crm_contacts" && state.op === "update") {
+        contactUpdates.push(state.payload as Record<string, unknown>);
+        return { data: null, error: null };
+      }
+      if (state.table === "crm_leads" && state.op === "insert") {
+        return {
+          data: {
+            company_id: "company-winxo",
+            contact_id: "contact-youssef",
+            contact_job_title: "Directeur d'exploitation",
+            contact_linkedin_url: null,
+            created_at: "2026-07-10T09:00:00.000Z",
+            id: "lead-winxo",
+            last_contacted_at: null,
+            lead_date: null,
+            next_action: "Envoyer la présentation",
+            next_action_date: null,
+            notes: "Contact téléphonique",
+            organization_id: "org-1",
+            source: "Slack",
+            status: "contacted",
+            topic: "Présentation pour Winxo",
+            updated_at: "2026-07-10T09:00:00.000Z",
+          },
+          error: null,
+        };
+      }
+      return { data: null, error: null };
+    }) as unknown as SupabaseClient;
+
+    const result = await createLeadAction(
+      {
+        companyName: "Winxo",
+        contactEmail: "yzaidi@winxo.com",
+        contactJobTitle: "Directeur d'exploitation",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        skipGoogleCalendarSync: true,
+        skipGoogleDriveCreate: true,
+        status: "contacted",
+        topic: "Présentation pour Winxo",
+      },
+      trustedContext(client),
+    );
+
+    expect(result.success).toBe(true);
+    expect(contactUpdates).toEqual([
+      {
+        email: "yzaidi@winxo.com",
+        job_title: "Directeur d'exploitation",
+        phone: "0661420960",
+      },
+    ]);
   });
 });
 

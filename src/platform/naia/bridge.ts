@@ -18,9 +18,13 @@ import {
 } from "@/features/crm/contracts";
 import {
   inferCrmStatus,
-  orchestrateNaiaCommand,
   type NaiaActionDraft,
 } from "@/features/naia/orchestrator";
+import {
+  canonicalizeConversationText,
+  extractLeadIdentity,
+  inferReminderDate,
+} from "@/features/naia/lead-understanding";
 import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 import {
   hasPermission,
@@ -28,6 +32,7 @@ import {
   type PermissionAction,
 } from "@/platform/core/permissions";
 import {
+  createGoogleCalendarReminder,
   listGmailMessages,
   listGoogleCalendarEvents,
 } from "@/platform/integrations/google-workspace";
@@ -36,6 +41,11 @@ import {
   verifyApprovalToken,
   type SignedNaiaAction,
 } from "@/platform/naia/action-tokens";
+import {
+  planNaiaAssistant,
+  type NaiaConversationMessage,
+  type NaiaAssistantMode,
+} from "@/platform/naia/assistant";
 
 // Channel-agnostic NAIA bridge for conversational surfaces (Slack today).
 // It reuses the same pure orchestrator and the same HMAC approval tokens as
@@ -67,7 +77,9 @@ export type NaiaBridgePlan = {
   actions: SignedNaiaAction[];
   agentName: string;
   command: string;
+  mode: NaiaAssistantMode;
   response: string;
+  responseType: "action" | "answer" | "handoff";
 };
 
 export type NaiaBridgeExecution = {
@@ -132,19 +144,34 @@ export async function planBridgeCommand(
   user: NaiaBridgeUser,
   command: string,
   maxLength = SLACK_COMMAND_MAX_LENGTH,
+  history: NaiaConversationMessage[] = [],
 ): Promise<NaiaBridgePlan> {
   // The commandHash inside the approval tokens is computed on this same
   // truncated string, so HMAC verification stays consistent per channel.
   const cleanCommand = normalizeBridgeCommand(command).slice(0, maxLength);
   const crmLeads = await fetchBridgeLeads(user.organizationId);
-  const result = orchestrateNaiaCommand({ command: cleanCommand, crmLeads });
+  const supabase = createServiceRoleSupabaseClient();
+  const { mode, result } = await planNaiaAssistant({
+    command: cleanCommand,
+    crmLeads,
+    googleContext: supabase
+      ? {
+          organizationId: user.organizationId,
+          profileId: user.profileId,
+          supabase,
+        }
+      : undefined,
+    history,
+  });
   const actions = await prepareBridgeActions(cleanCommand, result.actions);
 
   return {
     actions: actions.map((action) => signAction(action, cleanCommand)),
     agentName: result.agent.name,
     command: cleanCommand,
+    mode,
     response: buildBridgeResponse(result.response, result.actions, actions),
+    responseType: result.responseType,
   };
 }
 
@@ -292,6 +319,8 @@ export async function executeBridgeAction(
       {
         companyName: draft.companyName,
         contactEmail: draft.contactEmail,
+        contactJobTitle: draft.contactJobTitle,
+        contactLinkedinUrl: draft.contactLinkedinUrl,
         contactName: draft.contactName,
         contactPhone: draft.contactPhone,
         leadDate: draft.leadDate,
@@ -327,6 +356,40 @@ export async function executeBridgeAction(
         "Adam passera par le lead CRM validé pour vérifier Google Calendar et créer l'événement. Valide d'abord l'action Salma si le lead n'existe pas encore.",
       success: true,
     };
+  }
+
+  if (action.kind === "calendar.createReminder") {
+    if (!action.payload.scheduledAt) {
+      return {
+        message:
+          "Adam a besoin d'une date et d'une heure précises pour créer ce rappel.",
+        success: false,
+      };
+    }
+
+    try {
+      const reminder = await createGoogleCalendarReminder(
+        {
+          scheduledAt: action.payload.scheduledAt,
+          timeZone: action.payload.timeZone,
+          title: action.payload.title,
+        },
+        googleContext,
+      );
+      return {
+        details: reminder.htmlLink ? [reminder.htmlLink] : undefined,
+        message: "Adam a créé le rappel Google Calendar.",
+        success: true,
+      };
+    } catch (error) {
+      return {
+        message:
+          error instanceof Error
+            ? error.message
+            : "Création du rappel Google Calendar impossible.",
+        success: false,
+      };
+    }
   }
 
   return {
@@ -464,7 +527,18 @@ async function prepareBridgeActions(
   }
 
   const extracted = await extractLeadDraft(command);
+  const reminderDate = extracted.leadDate ?? inferReminderDate(command);
   const hydratedActions = actions.map((action) => {
+    if (action.kind === "calendar.createReminder") {
+      return {
+        ...action,
+        payload: {
+          ...action.payload,
+          scheduledAt: reminderDate ?? action.payload.scheduledAt,
+        },
+      } satisfies NaiaActionDraft;
+    }
+
     if (action.kind !== "crm.createLead") return action;
 
     return {
@@ -509,12 +583,17 @@ function buildBridgeResponse(
 async function extractLeadDraft(
   command: string,
 ): Promise<Partial<CrmLeadDraft>> {
+  const deterministic = extractLeadDraftLocally(command);
+
   try {
     const extracted = await extractLeadFromNaturalTextAction(command);
     if (extracted.success && extracted.extracted?.topic) {
       return {
+        ...deterministic,
         companyName: extracted.extracted.companyName,
         contactEmail: extracted.extracted.contactEmail,
+        contactJobTitle: extracted.extracted.contactJobTitle,
+        contactLinkedinUrl: extracted.extracted.contactLinkedinUrl,
         contactName: extracted.extracted.contactName,
         contactPhone: extracted.extracted.contactPhone,
         leadDate: extracted.extracted.leadDate,
@@ -524,6 +603,7 @@ async function extractLeadDraft(
         status: extracted.extracted.status ?? "lead-to-contact",
         topic: extracted.extracted.topic,
         tags: extracted.extracted.tags,
+        ...preferDeterministicIdentity(deterministic),
       };
     }
   } catch {
@@ -531,7 +611,7 @@ async function extractLeadDraft(
     // usable lead when Groq is temporarily unavailable.
   }
 
-  return extractLeadDraftLocally(command);
+  return deterministic;
 }
 
 function hydrateLeadDraft(
@@ -540,11 +620,12 @@ function hydrateLeadDraft(
   extracted: Partial<CrmLeadDraft>,
 ): CrmLeadDraft {
   const internalReminder = isInternalReminderCommand(command);
-  const status =
-    coerceStatus(inferCrmStatus(command) ?? "") ??
-    coerceStatus(extracted.status ?? "") ??
-    coerceStatus(base.status) ??
-    "lead-to-contact";
+  const status = internalReminder
+    ? "contacted"
+    : (coerceStatus(inferCrmStatus(command) ?? "") ??
+      coerceStatus(extracted.status ?? "") ??
+      coerceStatus(base.status) ??
+      "lead-to-contact");
   const merged = sanitizeLeadDraft({
     ...base,
     ...extracted,
@@ -579,6 +660,23 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
       clean,
     ) && isMeetingCommand;
   const nextAction = inferLocalNextAction(clean, isMeetingCommand);
+  const sharedIdentity = extractLeadIdentity(clean);
+
+  if (sharedIdentity.companyName && sharedIdentity.contactName) {
+    return {
+      ...sharedIdentity,
+      nextAction,
+      notes: clean,
+      source: "NAIA",
+      status: isInternalReminder
+        ? "contacted"
+        : isMeetingCommand
+          ? "meeting-booked"
+          : "contacted",
+      topic: `${sharedIdentity.companyName} - nouveau lead`,
+    };
+  }
+
   const businessCardMatch = clean.match(
     /\b(?:lead|prospect)\s*:?\s*(.+?)\s+(?:directeur|directrice|ceo|cto|cfo|coo|dg|fondateur|fondatrice|founder|responsable|manager|head)\b.+?\s+(?:de|chez)\s+([^,.;\d-]+?)(?=\s+(?:\+?\d|0\d)|\s*[-,;.]|$)/i,
   );
@@ -698,6 +796,8 @@ function sanitizeLeadDraft(input: Partial<CrmLeadDraft>): CrmLeadDraft {
   return {
     companyName: cleanOptional(input.companyName, 120),
     contactEmail: cleanOptional(input.contactEmail, 160),
+    contactJobTitle: cleanOptional(input.contactJobTitle, 160),
+    contactLinkedinUrl: cleanOptional(input.contactLinkedinUrl, 300),
     contactName: cleanOptional(input.contactName, 120),
     contactPhone: cleanOptional(input.contactPhone, 80),
     leadDate: cleanOptional(input.leadDate, 80),
@@ -723,6 +823,9 @@ function buildLeadNotes(
   const parts = [
     draft.companyName && `Entreprise: ${draft.companyName}`,
     draft.contactName && `Contact: ${draft.contactName}`,
+    draft.contactJobTitle && `Fonction: ${draft.contactJobTitle}`,
+    draft.contactEmail && `Email: ${draft.contactEmail}`,
+    draft.contactPhone && `Téléphone: ${draft.contactPhone}`,
     notes,
     cleanCommand && `Commande NAIA: ${cleanCommand}`,
   ].filter((part): part is string => Boolean(part && part.trim()));
@@ -740,17 +843,30 @@ function buildLeadNotes(
 }
 
 function normalizeBridgeCommand(value: string | undefined) {
-  let clean = (value ?? "").trim();
-
-  if (clean.startsWith("`") && clean.endsWith("`")) {
-    clean = clean.slice(1, -1).trim();
-  }
-
-  return clean
+  return canonicalizeConversationText(value ?? "")
     .replace(/^@?naia\b[:,\s-]*/i, "")
     .replace(/^<@[^>]+>\s*/i, "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function preferDeterministicIdentity(
+  draft: Partial<CrmLeadDraft>,
+): Partial<CrmLeadDraft> {
+  const identity = {
+    companyName: draft.companyName,
+    contactEmail: draft.contactEmail,
+    contactJobTitle: draft.contactJobTitle,
+    contactLinkedinUrl: draft.contactLinkedinUrl,
+    contactName: draft.contactName,
+    contactPhone: draft.contactPhone,
+  };
+
+  return Object.fromEntries(
+    Object.entries(identity).filter(
+      ([, value]) => typeof value === "string" && value.trim(),
+    ),
+  );
 }
 
 function isInternalReminderCommand(command: string) {

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  createGoogleCalendarReminder: vi.fn(),
   createLeadAction: vi.fn(),
   createTagAction: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
@@ -31,6 +32,7 @@ vi.mock("@/features/maya/actions", () => ({
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
+  createGoogleCalendarReminder: mocks.createGoogleCalendarReminder,
   listGmailMessages: mocks.listGmailMessages,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
@@ -105,7 +107,6 @@ describe("NAIA orchestrate route", () => {
     const createLeadAction = body.actions.find(
       (action: { kind: string }) => action.kind === "crm.createLead",
     );
-
     expect(createLeadAction.payload.status).toBe("contacted");
     expect(body.response).toContain("pré-rempli");
     expect(body.response).toContain("Valider et créer le lead");
@@ -134,7 +135,7 @@ describe("NAIA orchestrate route", () => {
       new Request("http://localhost/api/naia/orchestrate", {
         body: JSON.stringify({
           command:
-            "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, je lui ai parlé au tel il me demander lui envoyer une présentation avant de se rencontrer - crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
+            "nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
         }),
         method: "POST",
       }),
@@ -142,6 +143,9 @@ describe("NAIA orchestrate route", () => {
     const body = await response.json();
     const createLeadAction = body.actions.find(
       (action: { kind: string }) => action.kind === "crm.createLead",
+    );
+    const reminderAction = body.actions.find(
+      (action: { kind: string }) => action.kind === "calendar.createReminder",
     );
 
     expect(body.agent.id).toBe("crm");
@@ -155,6 +159,17 @@ describe("NAIA orchestrate route", () => {
       topic: "Winxo - nouveau lead",
     });
     expect(createLeadAction.payload.leadDate).toBeUndefined();
+    expect(reminderAction.payload).toMatchObject({
+      scheduledAt: "2026-07-10T09:00:00",
+      timeZone: "Africa/Casablanca",
+      title: "Envoyer la présentation",
+    });
+    expect(
+      body.actions.some(
+        (action: { kind: string }) =>
+          action.kind === "calendar.scheduleMeeting",
+      ),
+    ).toBe(false);
   });
 
   it("keeps NAIA in charge for capability questions even when Groq is configured", async () => {
@@ -216,10 +231,10 @@ describe("NAIA orchestrate route", () => {
     expect(body.agent.id).toBe("naia");
     expect(body.actions).toHaveLength(0);
     expect(body.response).toContain("modele de langage");
-    expect(systemPrompt).toContain("question generale");
-    expect(systemPrompt).toContain("sans pretendre avoir execute");
+    expect(systemPrompt).toContain("question générale");
+    expect(systemPrompt).toContain("Ne prétends jamais avoir exécuté");
     expect(systemPrompt).toContain("realGoogleCalendar");
-    expect(systemPrompt).toContain("priment");
+    expect(systemPrompt).toContain("prime");
     expect(userPrompt.operatingContext.cashFlow).toContain("Oct.");
     expect(userPrompt.operatingContext.pipeline).toContain("Atlas Process");
     expect(userPrompt.operatingContext.projects).toContain("Sahara Logistics");
@@ -227,14 +242,9 @@ describe("NAIA orchestrate route", () => {
       "Full-stack Next.js",
     );
     expect(userPrompt.operatingContext.followUps).toContain("Medina Health");
-    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith({
-      daysAhead: 7,
-      maxResults: 15,
-    });
-    expect(userPrompt.realGoogleCalendar).toContain(
-      "Agenda Google réel de l'utilisateur",
-    );
-    expect(userPrompt.realGoogleCalendar).toContain("Point client");
+    expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
+    expect(userPrompt.contextSources.googleCalendar).toBe("not loaded");
+    expect(userPrompt.realGoogleCalendar).toBeUndefined();
   });
 
   it("keeps Groq orchestration working when the user has no Google connection", async () => {

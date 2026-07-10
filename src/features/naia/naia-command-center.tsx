@@ -57,6 +57,11 @@ type SignedNaiaAction = NaiaActionDraft & {
   approvalToken: string;
 };
 
+type ConversationMessage = {
+  content: string;
+  role: "assistant" | "user";
+};
+
 type VoiceOption = {
   category: string;
   description: string;
@@ -228,6 +233,7 @@ export function NaiaCommandCenter() {
   const router = useRouter();
   const [command, setCommand] = useState(commandExamples[0]);
   const [result, setResult] = useState<ApiResult | null>(null);
+  const conversationRef = useRef<ConversationMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -385,7 +391,10 @@ export function NaiaCommandCenter() {
 
     try {
       const response = await fetch("/api/naia/orchestrate", {
-        body: JSON.stringify({ command: cleanCommand }),
+        body: JSON.stringify({
+          command: cleanCommand,
+          history: conversationRef.current.slice(-8),
+        }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
@@ -396,6 +405,11 @@ export function NaiaCommandCenter() {
       }
 
       setResult(payload);
+      conversationRef.current = [
+        ...conversationRef.current,
+        { content: cleanCommand, role: "user" as const },
+        { content: payload.response, role: "assistant" as const },
+      ].slice(-8);
       if (options.speak) {
         speakText(payload.response);
       }
@@ -1213,6 +1227,25 @@ function ActionCard({
           <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
             {action.description}
           </p>
+          {action.kind === "calendar.createReminder" && (
+            <div className="mt-3 grid gap-1 rounded-md border border-emerald-200 bg-white/75 p-3 text-sm text-emerald-950 dark:border-emerald-200/20 dark:bg-slate-950/60 dark:text-emerald-50 sm:grid-cols-2">
+              <span>
+                <strong>Rappel:</strong> {action.payload.title}
+              </span>
+              <span>
+                <strong>Date:</strong>{" "}
+                {action.payload.scheduledAt ?? "À préciser"}
+              </span>
+              <span>
+                <strong>Fuseau:</strong> {action.payload.timeZone}
+              </span>
+              {action.payload.timeWasInferred && (
+                <span className="text-amber-700 dark:text-amber-200">
+                  Heure inférée, à vérifier
+                </span>
+              )}
+            </div>
+          )}
           <button
             className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200 dark:focus-visible:ring-emerald-100"
             disabled={disabled}
@@ -1320,6 +1353,11 @@ function LeadDraftActionCard({
                 value={draft.contactName ?? ""}
               />
               <LeadField
+                label="Fonction / poste"
+                onChange={(value) => updateDraft({ contactJobTitle: value })}
+                value={draft.contactJobTitle ?? ""}
+              />
+              <LeadField
                 label="Email"
                 onChange={(value) => updateDraft({ contactEmail: value })}
                 value={draft.contactEmail ?? ""}
@@ -1328,6 +1366,11 @@ function LeadDraftActionCard({
                 label="Téléphone"
                 onChange={(value) => updateDraft({ contactPhone: value })}
                 value={draft.contactPhone ?? ""}
+              />
+              <LeadField
+                label="LinkedIn"
+                onChange={(value) => updateDraft({ contactLinkedinUrl: value })}
+                value={draft.contactLinkedinUrl ?? ""}
               />
               <LeadField
                 label="Source"

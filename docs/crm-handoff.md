@@ -175,8 +175,24 @@ Safe defaults:
   Supabase auth/rows are unavailable.
 - Prepare drafts for status changes and lead creation.
 - Execute CRM writes only after an explicit UI validation step.
+- Canonicalize conversational input before extraction. Slack mentions and
+  `mailto`/`tel` markup must be converted back to readable text before Salma
+  derives company, contact, phone, email, job title, or notes.
+- Preserve deterministic contact-card fields when an LLM extraction is
+  partial. An explicit email, phone, person, company, or job title in the
+  command takes precedence over an omitted or conflicting model field.
+- Show the complete structured lead draft before approval. Slack uses the
+  "Vérifier / modifier" modal; the web cockpit uses the inline editable card.
+  Execution must use the reviewed payload, not a newly generated draft.
+- When an existing contact is reused, fill only its missing email, phone, job
+  title, and LinkedIn fields. Never overwrite an already populated value from
+  a new conversational draft.
 - Execute status-only updates through `updateLeadStatusAction()` so NAIA does not trigger provider side effects such as Calendar sync from generic lead updates.
 - Treat prospect/client meetings as CRM-first. A command like "j'ai parlé à X de Y, meeting vendredi" should create or update the CRM lead in `meeting-booked`; Adam/Meetings then checks Google Calendar from that validated lead context.
+- Treat personal reminders separately. "Crée un meeting demain matin pour me
+  rappeler d'envoyer la présentation" keeps the contacted CRM status and
+  prepares a distinct `calendar.createReminder` action; it is not a client
+  meeting and must not trigger Maya.
 - For leads with a planned meeting date, Calendar sync must check Google FreeBusy before event creation and return a suggested alternative if the requested slot is busy.
 - Trigger Google Calendar only after an explicit UI validation step, either through `syncLeadToGoogleCalendarAction()` or the validated NAIA lead creation flow. Calendar and Gmail always use the acting user's own per-user connection (`connected_by_profile_id`), never a shared org token.
 - Create Drive client folders through the organization service account under

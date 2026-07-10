@@ -598,7 +598,7 @@ export async function createLeadAction(
     // Find or create contact
     const { data: existingCont } = await supabase
       .from("crm_contacts")
-      .select("id")
+      .select("id, email, phone, job_title, linkedin_url")
       .eq("organization_id", orgId)
       .eq("company_id", companyId)
       .eq("name", contact)
@@ -607,6 +607,28 @@ export async function createLeadAction(
 
     if (existingCont) {
       contactId = existingCont.id;
+      const contactUpdates = {
+        ...(!existingCont.email && input.contactEmail
+          ? { email: input.contactEmail }
+          : {}),
+        ...(!existingCont.phone && input.contactPhone
+          ? { phone: input.contactPhone }
+          : {}),
+        ...(!existingCont.job_title && input.contactJobTitle
+          ? { job_title: input.contactJobTitle }
+          : {}),
+        ...(!existingCont.linkedin_url && input.contactLinkedinUrl
+          ? { linkedin_url: input.contactLinkedinUrl }
+          : {}),
+      };
+
+      if (Object.keys(contactUpdates).length > 0) {
+        await supabase
+          .from("crm_contacts")
+          .update(contactUpdates)
+          .eq("organization_id", orgId)
+          .eq("id", existingCont.id);
+      }
     } else {
       const { data: newCont } = await supabase
         .from("crm_contacts")
@@ -1827,6 +1849,8 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
     companyName?: string;
     contactName?: string;
     contactEmail?: string;
+    contactJobTitle?: string;
+    contactLinkedinUrl?: string;
     contactPhone?: string;
     source?: string;
     notes?: string;
@@ -1863,6 +1887,8 @@ Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
   "companyName": "nom de l'entreprise",
   "contactName": "nom du contact",
   "contactEmail": "email si mentionné",
+  "contactJobTitle": "fonction ou poste exact du contact si mentionné",
+  "contactLinkedinUrl": "URL LinkedIn du contact si mentionnée",
   "contactPhone": "téléphone si mentionné",
   "source": "source du lead (salon, LinkedIn, appel, etc.)",
   "notes": "notes complémentaires",
