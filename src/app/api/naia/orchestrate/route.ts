@@ -21,6 +21,7 @@ import {
   inferReminderDate,
 } from "@/features/naia/lead-understanding";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import { getAppSession } from "@/platform/auth/session";
 import {
   hasPermission,
   type OrganizationRole,
@@ -73,7 +74,9 @@ export async function POST(request: Request) {
   }
 
   const crmLeads = await fetchLeadsAction();
+  const actor = await resolveWebActor();
   const { mode, result } = await planNaiaAssistant({
+    actor,
     command,
     crmLeads,
     history: parseHistory(payload.history),
@@ -96,6 +99,20 @@ export async function POST(request: Request) {
     },
     mode,
   });
+}
+
+async function resolveWebActor() {
+  try {
+    const session = await getAppSession();
+    return {
+      email: session.user.email,
+      name: session.user.name,
+      organizationName: session.organization.name,
+      role: session.user.role,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 async function executeAction({

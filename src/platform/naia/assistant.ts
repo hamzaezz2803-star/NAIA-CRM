@@ -1,7 +1,11 @@
 import "server-only";
 
 import type { CrmLeadSummary } from "@/features/crm/contracts";
-import { naiaAgents, type NaiaAgentId } from "@/features/naia/agents";
+import {
+  getNaiaAgent,
+  naiaAgents,
+  type NaiaAgentId,
+} from "@/features/naia/agents";
 import { buildNaiaOperatingContext } from "@/features/naia/operational-context";
 import {
   isNaiaOverviewQuestion,
@@ -9,7 +13,25 @@ import {
   type NaiaOrchestrationResult,
 } from "@/features/naia/orchestrator";
 import {
+  inferPersonalCalendarDays,
+  isAssistantIdentityQuery,
+  isCalendarReadQuery,
+  isCrmMeetingReadQuery,
+  isGmailReadQuery,
+  isGoogleAccessQuery,
+  isIdentityQuery,
+  isPersonalCalendarQuery,
+  isPersonalGmailQuery,
+  isUrgentGmailQuery,
+  normalizePersonalQuery,
+  wantsCalendarOutsideCrm,
+} from "@/features/naia/personal-query-intents";
+import {
+  inspectGoogleWorkspaceCapabilities,
+  listGmailMessages,
   listGoogleCalendarEvents,
+  type GmailMessageSummary,
+  type GoogleCalendarEventSummary,
   type GoogleWorkspaceContext,
 } from "@/platform/integrations/google-workspace";
 
@@ -18,19 +40,59 @@ export type NaiaConversationMessage = {
   content: string;
   role: "assistant" | "user";
 };
+export type NaiaActorContext = {
+  email: string;
+  name: string;
+  organizationName?: string;
+  role: "owner" | "admin" | "member" | "viewer";
+};
 
 export async function planNaiaAssistant({
+  actor,
+  allowPersonalData = true,
   command,
   crmLeads,
   googleContext,
   history = [],
 }: {
+  actor?: NaiaActorContext;
+  allowPersonalData?: boolean;
   command: string;
   crmLeads: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
   history?: NaiaConversationMessage[];
 }): Promise<{ mode: NaiaAssistantMode; result: NaiaOrchestrationResult }> {
   const localResult = orchestrateNaiaCommand({ command, crmLeads });
+  if (
+    !allowPersonalData &&
+    localResult.agent.id === "crm" &&
+    localResult.actions.length === 0 &&
+    localResult.responseType === "answer"
+  ) {
+    return {
+      mode: "local-orchestrated",
+      result: createDirectAnswer({
+        agentId: "naia",
+        command,
+        crmLeads,
+        response:
+          "Pour protéger les données CRM de Qarizmi, pose cette question en message privé à NAIA.",
+      }),
+    };
+  }
+  const personalCommand = resolvePersonalFollowUp(command, history);
+  const personalAnswer = await answerPersonalQuery({
+    actor,
+    allowPersonalData,
+    command: personalCommand,
+    crmLeads,
+    googleContext,
+    resultCommand: command,
+  });
+  if (personalAnswer) {
+    return { mode: "local-orchestrated", result: personalAnswer };
+  }
+
   const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
 
   // Deterministic answers and every write plan stay authoritative. The LLM is
@@ -44,9 +106,10 @@ export async function planNaiaAssistant({
     return { mode: "local-orchestrated", result: localResult };
   }
 
-  const realGoogleCalendar = shouldReadCalendar(command)
-    ? await buildRealGoogleCalendarContext(googleContext)
-    : null;
+  const realGoogleCalendar =
+    allowPersonalData && shouldReadCalendar(command)
+      ? await buildRealGoogleCalendarContext(googleContext)
+      : null;
 
   try {
     const groqResponse = await fetch(
@@ -70,25 +133,29 @@ export async function planNaiaAssistant({
                   status: agent.status,
                 })),
                 command,
-                conversationHistory: history.slice(-8),
+                conversationHistory: allowPersonalData ? history.slice(-8) : [],
                 contextSources: {
-                  crm: "live organization data",
+                  crm: allowPersonalData
+                    ? "live organization data"
+                    : "not loaded on shared surfaces",
                   googleCalendar: realGoogleCalendar
                     ? "live connected user data"
                     : "not loaded",
                   operations:
                     "simulated working data; always disclose this when used",
                 },
-                crmSnapshot: crmLeads.slice(0, 30).map((lead) => ({
-                  companyName: lead.companyName,
-                  contactName: lead.contactName,
-                  id: lead.id,
-                  leadDate: lead.leadDate,
-                  nextAction: lead.nextAction,
-                  notes: lead.notes,
-                  status: lead.status,
-                  topic: lead.topic,
-                })),
+                crmSnapshot: (allowPersonalData ? crmLeads : [])
+                  .slice(0, 30)
+                  .map((lead) => ({
+                    companyName: lead.companyName,
+                    contactName: lead.contactName,
+                    id: lead.id,
+                    leadDate: lead.leadDate,
+                    nextAction: lead.nextAction,
+                    notes: lead.notes,
+                    status: lead.status,
+                    topic: lead.topic,
+                  })),
                 suggestedAgentId: localResult.agent.id,
                 operatingContext: buildNaiaOperatingContext(),
                 realGoogleCalendar: realGoogleCalendar ?? undefined,
@@ -135,6 +202,498 @@ export async function planNaiaAssistant({
   } catch {
     return { mode: "local-orchestrated", result: localResult };
   }
+}
+
+async function answerPersonalQuery({
+  actor,
+  allowPersonalData,
+  command,
+  crmLeads,
+  googleContext,
+  resultCommand,
+}: {
+  actor?: NaiaActorContext;
+  allowPersonalData: boolean;
+  command: string;
+  crmLeads: CrmLeadSummary[];
+  googleContext?: GoogleWorkspaceContext;
+  resultCommand: string;
+}): Promise<NaiaOrchestrationResult | null> {
+  const personalQuery =
+    isIdentityQuery(command) ||
+    isGoogleAccessQuery(command) ||
+    isGmailReadQuery(command) ||
+    isCalendarReadQuery(command) ||
+    isCrmMeetingReadQuery(command);
+
+  if (!allowPersonalData && personalQuery) {
+    return createDirectAnswer({
+      agentId: "naia",
+      command: resultCommand,
+      crmLeads,
+      response:
+        "Pour protéger tes données personnelles et celles de Qarizmi, pose cette question en message privé à NAIA.",
+    });
+  }
+
+  if (isIdentityQuery(command)) {
+    const response = actor
+      ? formatIdentityAnswer(actor)
+      : "Je ne peux pas identifier ton profil dans cette session. Reconnecte-toi à Qarizmi OS avec ton compte professionnel.";
+    return createDirectAnswer({
+      agentId: "naia",
+      command: resultCommand,
+      crmLeads,
+      response,
+    });
+  }
+
+  if (isAssistantIdentityQuery(command)) {
+    return createDirectAnswer({
+      agentId: "naia",
+      command: resultCommand,
+      crmLeads,
+      response:
+        "Je suis NAIA, l'assistante opérationnelle de Qarizmi. Je comprends ta demande, consulte les sources autorisées et coordonne les agents spécialisés; toute écriture ou action externe reste soumise à ta validation.",
+    });
+  }
+
+  if (isCrmMeetingReadQuery(command)) {
+    return createDirectAnswer({
+      agentId: "crm",
+      command: resultCommand,
+      crmLeads,
+      response: formatCrmMeetingsAnswer(crmLeads),
+    });
+  }
+
+  if (isGoogleAccessQuery(command)) {
+    const capabilities =
+      await inspectGoogleWorkspaceCapabilities(googleContext);
+    return createDirectAnswer({
+      agentId: "integrations",
+      command: resultCommand,
+      crmLeads,
+      response: formatGoogleAccessAnswer(command, capabilities),
+    });
+  }
+
+  if (isGmailReadQuery(command)) {
+    try {
+      const urgent = isUrgentGmailQuery(command);
+      const normalized = normalizePersonalQuery(command);
+      const messages = await listGmailMessages(
+        {
+          maxResults: urgent ? 10 : 8,
+          query: urgent
+            ? "is:unread newer_than:14d {label:important subject:urgent subject:important}"
+            : undefined,
+          unreadOnly:
+            urgent ||
+            normalized.includes("non lu") ||
+            normalized.includes("unread"),
+        },
+        googleContext,
+      );
+      return createDirectAnswer({
+        agentId: "integrations",
+        command: resultCommand,
+        crmLeads,
+        response: formatGmailAnswer(messages, urgent),
+      });
+    } catch (error) {
+      return createDirectAnswer({
+        agentId: "integrations",
+        command: resultCommand,
+        crmLeads,
+        response: formatGoogleReadError("Gmail", error),
+      });
+    }
+  }
+
+  if (isCalendarReadQuery(command)) {
+    try {
+      const calendarWindow = resolvePersonalCalendarWindow(command);
+      const outsideCrm = wantsCalendarOutsideCrm(command);
+      const events = await listGoogleCalendarEvents(
+        {
+          daysAhead: calendarWindow.daysAhead,
+          maxResults: 20,
+          ...(calendarWindow.timeMax
+            ? { timeMax: calendarWindow.timeMax }
+            : {}),
+          ...(calendarWindow.timeMin
+            ? { timeMin: calendarWindow.timeMin }
+            : {}),
+        },
+        googleContext,
+      );
+      const visibleEvents = outsideCrm
+        ? filterCalendarEventsOutsideCrm(events, crmLeads)
+        : events;
+      return createDirectAnswer({
+        agentId: "meetings",
+        command: resultCommand,
+        crmLeads,
+        response: formatCalendarAnswer(
+          visibleEvents,
+          calendarWindow.label,
+          outsideCrm,
+        ),
+      });
+    } catch (error) {
+      return createDirectAnswer({
+        agentId: "meetings",
+        command: resultCommand,
+        crmLeads,
+        response: formatGoogleReadError("Google Calendar", error),
+      });
+    }
+  }
+
+  return null;
+}
+
+function resolvePersonalFollowUp(
+  command: string,
+  history: NaiaConversationMessage[],
+) {
+  const alreadyExplicit =
+    isIdentityQuery(command) ||
+    isAssistantIdentityQuery(command) ||
+    isPersonalGmailQuery(command) ||
+    isPersonalCalendarQuery(command) ||
+    isCrmMeetingReadQuery(command);
+  if (alreadyExplicit) return command;
+
+  const normalized = normalizePersonalQuery(command);
+  const looksLikeFollowUp =
+    /^(et|and)\b/.test(normalized) ||
+    /\b(ceux|celles|lesquels|lesquelles|them|those)\b/.test(normalized);
+  if (!looksLikeFollowUp) return command;
+
+  const previousUserCommand = [...history]
+    .reverse()
+    .find(
+      (message) =>
+        message.role === "user" &&
+        (isPersonalGmailQuery(message.content) ||
+          isPersonalCalendarQuery(message.content) ||
+          isCrmMeetingReadQuery(message.content)),
+    )?.content;
+
+  if (!previousUserCommand) return command;
+
+  // Keep the previous provider explicit so "hors CRM" is interpreted as a
+  // Calendar exclusion, not as a request to switch to CRM meetings.
+  const source = wantsCalendarOutsideCrm(command)
+    ? "Google Calendar"
+    : isPersonalCalendarQuery(previousUserCommand)
+      ? "Google Calendar"
+      : isPersonalGmailQuery(previousUserCommand)
+        ? "Gmail"
+        : "CRM";
+  return `${previousUserCommand} Source: ${source}. ${command}`;
+}
+
+function createDirectAnswer({
+  agentId,
+  command,
+  crmLeads,
+  response,
+}: {
+  agentId: "crm" | "integrations" | "meetings" | "naia";
+  command: string;
+  crmLeads: CrmLeadSummary[];
+  response: string;
+}): NaiaOrchestrationResult {
+  const base = orchestrateNaiaCommand({ command, crmLeads });
+  const agent = getNaiaAgent(agentId);
+
+  return {
+    ...base,
+    actions: [],
+    agent: {
+      id: agent.id,
+      name: agent.name,
+      role: agent.role,
+      route: agent.route,
+    },
+    confidence: 1,
+    intent:
+      agentId === "crm"
+        ? "crm"
+        : agentId === "meetings"
+          ? "meetings"
+          : agentId === "integrations"
+            ? "integrations"
+            : "overview",
+    response,
+    responseType: "answer",
+  };
+}
+
+function formatIdentityAnswer(actor: NaiaActorContext) {
+  const roleLabels: Record<NaiaActorContext["role"], string> = {
+    admin: "administrateur",
+    member: "membre",
+    owner: "propriétaire",
+    viewer: "lecteur",
+  };
+  const organization = actor.organizationName
+    ? ` de l'organisation ${actor.organizationName}`
+    : " de Qarizmi OS";
+
+  return `Tu es ${actor.name} (${actor.email}), ${roleLabels[actor.role]}${organization}.`;
+}
+
+function formatGoogleAccessAnswer(
+  command: string,
+  status: Awaited<ReturnType<typeof inspectGoogleWorkspaceCapabilities>>,
+) {
+  if (!status.connected) {
+    return "Non, ta connexion Google Workspace n'est pas utilisable actuellement. Reconnecte ton compte depuis https://os.qarizmi.com/integrations.";
+  }
+
+  const asksGmail = isPersonalGmailQuery(command);
+  const asksCalendar = isPersonalCalendarQuery(command);
+  const requestedCapabilities = [
+    asksGmail
+      ? status.gmail
+        ? "Gmail en lecture"
+        : "Gmail: scope manquant"
+      : null,
+    asksCalendar
+      ? status.calendar
+        ? "Google Calendar"
+        : "Calendar: scope manquant"
+      : null,
+  ].filter(Boolean);
+  const account = status.accountLabel ? ` ${status.accountLabel}` : "";
+
+  if ((asksGmail && !status.gmail) || (asksCalendar && !status.calendar)) {
+    return `Ton compte Google${account} est connecté, mais l'autorisation de lecture demandée manque. Reconnecte Google Workspace depuis https://os.qarizmi.com/integrations.`;
+  }
+
+  return `Oui, ton compte Google${account} est connecté. Accès disponible: ${requestedCapabilities.join(" et ") || "Google Workspace"}.`;
+}
+
+function formatCrmMeetingsAnswer(crmLeads: CrmLeadSummary[]) {
+  const meetings = crmLeads.filter((lead) => lead.status === "meeting-booked");
+  if (meetings.length === 0) {
+    return "Il n'y a aucun lead au statut Meeting fixé dans le CRM.";
+  }
+
+  const lines = meetings.slice(0, 12).map((lead) => {
+    const company = lead.companyName || lead.topic;
+    const contact = lead.contactName ? ` — ${lead.contactName}` : "";
+    const date = lead.leadDate
+      ? ` (${formatCrmMeetingDate(lead.leadDate)})`
+      : "";
+    return `• ${company}${contact}${date}`;
+  });
+
+  return [
+    meetings.length === 1
+      ? "1 lead est au statut Meeting fixé dans le CRM:"
+      : `${meetings.length} leads sont au statut Meeting fixé dans le CRM:`,
+    ...lines,
+  ].join("\n");
+}
+
+function formatGmailAnswer(messages: GmailMessageSummary[], urgent: boolean) {
+  if (messages.length === 0) {
+    return urgent
+      ? "Je n'ai trouvé aucun mail urgent non lu dans Gmail sur les 14 derniers jours."
+      : "Je n'ai trouvé aucun mail correspondant dans Gmail.";
+  }
+
+  const heading = urgent
+    ? messages.length === 1
+      ? "J'ai trouvé 1 mail urgent ou important non lu:"
+      : `J'ai trouvé ${messages.length} mails urgents ou importants non lus:`
+    : messages.length === 1
+      ? "J'ai trouvé 1 mail dans Gmail:"
+      : `J'ai trouvé ${messages.length} mails dans Gmail:`;
+  const lines = messages.slice(0, 8).map((message) => {
+    const sender = message.from ?? "Expéditeur inconnu";
+    const subject = message.subject ?? "Sans objet";
+    const date = formatMailDate(message.date);
+    return `• ${subject} — ${sender}${date ? ` (${date})` : ""}`;
+  });
+
+  return [heading, ...lines].join("\n").slice(0, 2800);
+}
+
+function formatCalendarAnswer(
+  events: GoogleCalendarEventSummary[],
+  rangeLabel: string,
+  outsideCrm: boolean,
+) {
+  const scope = outsideCrm ? " hors événements déjà reliés au CRM" : "";
+  if (events.length === 0) {
+    return `Je n'ai trouvé aucun événement Google Calendar${scope} ${rangeLabel}.`;
+  }
+
+  const lines = events
+    .slice(0, 12)
+    .map(
+      (event) =>
+        `• ${formatRealCalendarDate(event.start)} — ${event.title || "Événement sans titre"}`,
+    );
+  return [
+    events.length === 1
+      ? `J'ai trouvé 1 événement dans ton Google Calendar${scope} ${rangeLabel}:`
+      : `J'ai trouvé ${events.length} événements dans ton Google Calendar${scope} ${rangeLabel}:`,
+    ...lines,
+  ]
+    .join("\n")
+    .slice(0, 2800);
+}
+
+function resolvePersonalCalendarWindow(
+  command: string,
+  now = new Date(),
+  timeZone = REAL_CALENDAR_TIME_ZONE,
+) {
+  const normalized = normalizePersonalQuery(command);
+  const relativeDay = normalized.includes("demain")
+    ? 1
+    : normalized.includes("aujourd hui")
+      ? 0
+      : null;
+
+  if (relativeDay !== null) {
+    const targetDate = shiftLocalDate(getLocalDate(now, timeZone), relativeDay);
+    const nextDate = shiftLocalDate(targetDate, 1);
+    return {
+      daysAhead: 1,
+      label: relativeDay === 0 ? "aujourd'hui" : "demain",
+      timeMax: localMidnightToUtc(nextDate, timeZone).toISOString(),
+      timeMin: localMidnightToUtc(targetDate, timeZone).toISOString(),
+    };
+  }
+
+  const daysAhead = inferPersonalCalendarDays(command);
+  return {
+    daysAhead,
+    label:
+      daysAhead === 1
+        ? "sur le prochain jour"
+        : `sur les ${daysAhead} prochains jours`,
+  };
+}
+
+type LocalDate = { day: number; month: number; year: number };
+
+function getLocalDate(date: Date, timeZone: string): LocalDate {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric",
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return {
+    day: Number(values.day),
+    month: Number(values.month),
+    year: Number(values.year),
+  };
+}
+
+function shiftLocalDate(date: LocalDate, days: number): LocalDate {
+  const shifted = new Date(
+    Date.UTC(date.year, date.month - 1, date.day + days),
+  );
+  return {
+    day: shifted.getUTCDate(),
+    month: shifted.getUTCMonth() + 1,
+    year: shifted.getUTCFullYear(),
+  };
+}
+
+function localMidnightToUtc(date: LocalDate, timeZone: string) {
+  const target = Date.UTC(date.year, date.month - 1, date.day);
+  let guess = target;
+
+  for (let index = 0; index < 3; index += 1) {
+    const parts = new Intl.DateTimeFormat("en-CA", {
+      day: "2-digit",
+      hour: "2-digit",
+      hourCycle: "h23",
+      minute: "2-digit",
+      month: "2-digit",
+      second: "2-digit",
+      timeZone,
+      year: "numeric",
+    }).formatToParts(new Date(guess));
+    const values = Object.fromEntries(
+      parts.map((part) => [part.type, part.value]),
+    );
+    const represented = Date.UTC(
+      Number(values.year),
+      Number(values.month) - 1,
+      Number(values.day),
+      Number(values.hour),
+      Number(values.minute),
+      Number(values.second),
+    );
+    guess += target - represented;
+  }
+
+  return new Date(guess);
+}
+
+function filterCalendarEventsOutsideCrm(
+  events: GoogleCalendarEventSummary[],
+  crmLeads: CrmLeadSummary[],
+) {
+  const syncedIds = new Set<string>();
+  const syncedLinks = new Set<string>();
+
+  for (const lead of crmLeads) {
+    const id = lead.notes?.match(
+      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
+    )?.[1];
+    const link = lead.notes?.match(
+      /\[Google Calendar Event Link:\s*([^\]]+)\]/,
+    )?.[1];
+    if (id) syncedIds.add(id.trim());
+    if (link) syncedLinks.add(link.trim());
+  }
+
+  return events.filter((event) => {
+    const baseEventId = event.id.split("_")[0];
+    if (syncedIds.has(event.id) || syncedIds.has(baseEventId)) return false;
+    return !event.htmlLink || !syncedLinks.has(event.htmlLink);
+  });
+}
+
+function formatGoogleReadError(provider: string, error: unknown) {
+  void error;
+  return `Je ne peux pas lire ${provider} pour le moment. Vérifie ou reconnecte Google Workspace depuis https://os.qarizmi.com/integrations.`;
+}
+
+function formatCrmMeetingDate(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "date non précisée";
+  return new Intl.DateTimeFormat("fr-FR", {
+    dateStyle: "medium",
+    timeStyle: "short",
+    timeZone: REAL_CALENDAR_TIME_ZONE,
+  }).format(date);
+}
+
+function formatMailDate(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("fr-FR", {
+    day: "numeric",
+    month: "short",
+  }).format(date);
 }
 
 function buildSystemPrompt() {

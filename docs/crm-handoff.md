@@ -100,6 +100,8 @@ Build behind explicit human-review boundaries:
 
 Do not send external communications automatically.
 
+NAIA read routing must keep data sources explicit. Questions such as `quels sont mes meetings CRM ?` read only organization-scoped leads at `meeting-booked`; questions that name Google Calendar read the acting user's personal Calendar connection. Calendar events already linked to a CRM lead are identified through the `[Google Calendar Event ID: ...]` and `[Google Calendar Event Link: ...]` markers in lead notes, which allows `Calendar hors CRM` to exclude them without changing CRM rows. These reads never create or update a lead; every CRM mutation continues through a reviewed action.
+
 ## Google Drive Folder Structure
 
 One folder per client company (not per lead), created by the organization

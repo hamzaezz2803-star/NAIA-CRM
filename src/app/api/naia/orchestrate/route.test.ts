@@ -8,6 +8,8 @@ const mocks = vi.hoisted(() => ({
   fetchLeadsAction: vi.fn(),
   fetchTagsAction: vi.fn(),
   generateMayaPitchDraftForLeadAction: vi.fn(),
+  getAppSession: vi.fn(),
+  inspectGoogleWorkspaceCapabilities: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   updateLeadStatusAction: vi.fn(),
@@ -26,6 +28,10 @@ vi.mock("@/platform/auth/supabase-server", () => ({
   createServerSupabaseClient: vi.fn(),
 }));
 
+vi.mock("@/platform/auth/session", () => ({
+  getAppSession: mocks.getAppSession,
+}));
+
 vi.mock("@/features/maya/actions", () => ({
   generateMayaPitchDraftForLeadAction:
     mocks.generateMayaPitchDraftForLeadAction,
@@ -33,9 +39,13 @@ vi.mock("@/features/maya/actions", () => ({
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
   createGoogleCalendarReminder: mocks.createGoogleCalendarReminder,
+  inspectGoogleWorkspaceCapabilities: mocks.inspectGoogleWorkspaceCapabilities,
   listGmailMessages: mocks.listGmailMessages,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
+
+import type { NaiaActionDraft } from "@/features/naia/orchestrator";
+import { signAction } from "@/platform/naia/action-tokens";
 
 import { POST } from "./route";
 
@@ -44,6 +54,22 @@ describe("NAIA orchestrate route", () => {
     vi.stubEnv("GROQ_API_KEY", "");
     vi.stubEnv("NAIA_ACTION_APPROVAL_SECRET", "test-secret");
     mocks.fetchLeadsAction.mockResolvedValue([]);
+    mocks.getAppSession.mockResolvedValue({
+      authMode: "supabase",
+      isSupabaseConfigured: true,
+      organization: { name: "Qarizmi", slug: "qarizmi" },
+      user: {
+        email: "ali@qarizmi.com",
+        name: "Ali EL ABBASSY",
+        role: "owner",
+      },
+    });
+    mocks.inspectGoogleWorkspaceCapabilities.mockResolvedValue({
+      accountLabel: "ali@qarizmi.com",
+      calendar: true,
+      connected: true,
+      gmail: true,
+    });
     mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
       extracted: {
         companyName: "HPS",
@@ -192,6 +218,21 @@ describe("NAIA orchestrate route", () => {
     expect(body.actions).toHaveLength(0);
     expect(body.response).toContain("Je peux");
     expect(body.response).not.toContain("Salma");
+  });
+
+  it("answers identity questions from the authenticated Qarizmi profile", async () => {
+    const response = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command: "qui suis-je ?" }),
+        method: "POST",
+      }),
+    );
+    const body = await response.json();
+
+    expect(body.actions).toHaveLength(0);
+    expect(body.agent.id).toBe("naia");
+    expect(body.response).toContain("Ali EL ABBASSY");
+    expect(body.response).toContain("ali@qarizmi.com");
   });
 
   it("sends operating context to Groq and allows general non-action answers", async () => {
@@ -415,73 +456,45 @@ describe("NAIA orchestrate route", () => {
     );
   });
 
-  it("executes an approved Gmail read action", async () => {
+  it("reads Gmail directly for an explicit read-only request", async () => {
     const command = "NAIA lis mes emails Gmail non lus";
-    const draftResponse = await POST(
+    const response = await POST(
       new Request("http://localhost/api/naia/orchestrate", {
         body: JSON.stringify({ command }),
         method: "POST",
       }),
     );
-    const draftBody = await draftResponse.json();
-    const gmailAction = draftBody.actions.find(
-      (action: { kind: string }) => action.kind === "google.gmail.listMessages",
-    );
+    const body = await response.json();
 
-    const executeResponse = await POST(
-      new Request("http://localhost/api/naia/orchestrate", {
-        body: JSON.stringify({
-          actionId: gmailAction.id,
-          approvalToken: gmailAction.approvalToken,
-          command,
-          execute: true,
-        }),
-        method: "POST",
-      }),
+    expect(mocks.listGmailMessages).toHaveBeenCalledWith(
+      { maxResults: 8, query: undefined, unreadOnly: true },
+      undefined,
     );
-    const executeBody = await executeResponse.json();
-
-    expect(mocks.listGmailMessages).toHaveBeenCalledWith({
-      maxResults: 10,
-      unreadOnly: true,
-    });
-    expect(executeBody.execution).toBe("applied");
-    expect(executeBody.providerResult.messages).toHaveLength(1);
+    expect(body.actions).toHaveLength(0);
+    expect(body.response).toContain("Demo client");
   });
 
-  it("executes an approved Calendar read action", async () => {
+  it("reads Calendar directly for an explicit read-only request", async () => {
     const command = "NAIA check mon agenda demain matin";
-    const draftResponse = await POST(
+    const response = await POST(
       new Request("http://localhost/api/naia/orchestrate", {
         body: JSON.stringify({ command }),
         method: "POST",
       }),
     );
-    const draftBody = await draftResponse.json();
-    const calendarAction = draftBody.actions.find(
-      (action: { kind: string }) =>
-        action.kind === "google.calendar.listEvents",
-    );
+    const body = await response.json();
 
-    const executeResponse = await POST(
-      new Request("http://localhost/api/naia/orchestrate", {
-        body: JSON.stringify({
-          actionId: calendarAction.id,
-          approvalToken: calendarAction.approvalToken,
-          command,
-          execute: true,
-        }),
-        method: "POST",
+    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith(
+      expect.objectContaining({
+        daysAhead: 1,
+        maxResults: 20,
+        timeMax: expect.any(String),
+        timeMin: expect.any(String),
       }),
+      undefined,
     );
-    const executeBody = await executeResponse.json();
-
-    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith({
-      daysAhead: 1,
-      maxResults: 10,
-    });
-    expect(executeBody.execution).toBe("applied");
-    expect(executeBody.providerResult.events).toHaveLength(1);
+    expect(body.actions).toHaveLength(0);
+    expect(body.response).toContain("Point client");
   });
 
   it("executes an approved action even after the CRM state changed between plan and execute", async () => {
@@ -586,16 +599,7 @@ describe("NAIA orchestrate route", () => {
 
   it("rejects an approval token replayed with a different command", async () => {
     const command = "NAIA lis mes emails Gmail non lus";
-    const draftResponse = await POST(
-      new Request("http://localhost/api/naia/orchestrate", {
-        body: JSON.stringify({ command }),
-        method: "POST",
-      }),
-    );
-    const draftBody = await draftResponse.json();
-    const gmailAction = draftBody.actions.find(
-      (action: { kind: string }) => action.kind === "google.gmail.listMessages",
-    );
+    const gmailAction = signAction(gmailReadAction, command);
 
     const executeResponse = await POST(
       new Request("http://localhost/api/naia/orchestrate", {
@@ -617,16 +621,7 @@ describe("NAIA orchestrate route", () => {
 
   it("rejects a tampered approval token", async () => {
     const command = "NAIA lis mes emails Gmail non lus";
-    const draftResponse = await POST(
-      new Request("http://localhost/api/naia/orchestrate", {
-        body: JSON.stringify({ command }),
-        method: "POST",
-      }),
-    );
-    const draftBody = await draftResponse.json();
-    const gmailAction = draftBody.actions.find(
-      (action: { kind: string }) => action.kind === "google.gmail.listMessages",
-    );
+    const gmailAction = signAction(gmailReadAction, command);
     const [encodedPayload, signature] = gmailAction.approvalToken.split(".");
     const decoded = JSON.parse(
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
@@ -699,3 +694,14 @@ describe("NAIA orchestrate route", () => {
     expect(executeBody.providerResult.draftFileName).toContain("HPS");
   });
 });
+
+const gmailReadAction = {
+  agentId: "integrations",
+  approvalRequired: true,
+  description: "Lire Gmail",
+  id: "gmail-read-test",
+  kind: "google.gmail.listMessages",
+  label: "Lire Gmail",
+  payload: { maxResults: 10, unreadOnly: true },
+  risk: "low",
+} satisfies NaiaActionDraft;

@@ -47,6 +47,33 @@ const crmPipelineLeads: CrmLeadSummary[] = [
 ];
 
 describe("NAIA orchestrator", () => {
+  it.each([
+    ["quels sont mes meetings de la semaine ?", "meetings"],
+    ["vérifie mes disponibilités demain", "meetings"],
+    ["et les meetings de mon calendar hors CRM ?", "meetings"],
+    ["as-tu accès à mes mails ?", "integrations"],
+    ["quels sont mes mails urgents ?", "integrations"],
+    ["peux-tu consulter mon gmail ?", "integrations"],
+  ] as const)("routes personal data question %s to %s", (command, agentId) => {
+    const result = orchestrateNaiaCommand({ command, crmLeads });
+
+    expect(result.agent.id).toBe(agentId);
+    expect(
+      result.actions.some((action) => action.kind.startsWith("crm.")),
+    ).toBe(false);
+  });
+
+  it("keeps identity questions with NAIA instead of inventing a capability answer", () => {
+    const result = orchestrateNaiaCommand({
+      command: "qui suis-je ?",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("naia");
+    expect(result.actions).toHaveLength(0);
+    expect(result.responseType).toBe("handoff");
+  });
+
   it("answers a natural capability question with punctuation and hyphens", () => {
     const result = orchestrateNaiaCommand({
       command: "que sais-tu faire ?",

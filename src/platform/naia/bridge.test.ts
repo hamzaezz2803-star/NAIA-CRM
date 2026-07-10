@@ -7,6 +7,7 @@ const mocks = vi.hoisted(() => ({
   createLeadAction: vi.fn(),
   createServiceRoleSupabaseClient: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
+  inspectGoogleWorkspaceCapabilities: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   updateLeadStatusAction: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock("@/features/crm/actions", () => ({
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
   createGoogleCalendarReminder: mocks.createGoogleCalendarReminder,
+  inspectGoogleWorkspaceCapabilities: mocks.inspectGoogleWorkspaceCapabilities,
   listGmailMessages: mocks.listGmailMessages,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
@@ -136,6 +138,19 @@ describe("executeBridgeAction single-use approval tokens", () => {
     mocks.listGmailMessages.mockResolvedValue([
       { from: "nabil@qarizmi.com", id: "gmail-1", subject: "Demo client" },
     ]);
+    mocks.listGoogleCalendarEvents.mockResolvedValue([
+      {
+        id: "event-weekly",
+        start: "2026-07-14T09:00:00+01:00",
+        title: "Weekly Qarizmi",
+      },
+    ]);
+    mocks.inspectGoogleWorkspaceCapabilities.mockResolvedValue({
+      accountLabel: "ali@qarizmi.com",
+      calendar: true,
+      connected: true,
+      gmail: true,
+    });
     mocks.createGoogleCalendarReminder.mockResolvedValue({
       htmlLink: "https://calendar.google.com/reminder",
       id: "reminder-1",
@@ -285,6 +300,78 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(plan.actions).toHaveLength(0);
     expect(plan.response).toContain("modèle de langage");
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers identity questions from the resolved Slack user", async () => {
+    const plan = await planBridgeCommand(bridgeUser, "qui suis-je ?");
+
+    expect(plan.actions).toHaveLength(0);
+    expect(plan.agentName).toBe("NAIA");
+    expect(plan.response).toContain("Ali");
+    expect(plan.response).toContain("ali@qarizmi.com");
+    expect(plan.response).toContain("propriétaire");
+  });
+
+  it("reads the acting user's Calendar directly from Slack", async () => {
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "quels sont mes meetings de la semaine ?",
+    );
+
+    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith(
+      { daysAhead: 7, maxResults: 20 },
+      expect.objectContaining({
+        organizationId: "org-1",
+        profileId: "profile-ali",
+      }),
+    );
+    expect(plan.actions).toHaveLength(0);
+    expect(plan.agentName).toBe("Adam");
+    expect(plan.response).toContain("Weekly Qarizmi");
+  });
+
+  it("answers Gmail capability and urgent-mail questions from Slack", async () => {
+    const capability = await planBridgeCommand(
+      bridgeUser,
+      "as-tu accès à mes mails ?",
+    );
+    const urgent = await planBridgeCommand(
+      bridgeUser,
+      "quels sont mes mails urgents ?",
+    );
+
+    expect(capability.actions).toHaveLength(0);
+    expect(capability.response).toContain("Gmail en lecture");
+    expect(urgent.actions).toHaveLength(0);
+    expect(urgent.response).toContain("Demo client");
+    expect(mocks.listGmailMessages).toHaveBeenCalledWith(
+      expect.objectContaining({
+        query:
+          "is:unread newer_than:14d {label:important subject:urgent subject:important}",
+        unreadOnly: true,
+      }),
+      expect.objectContaining({
+        organizationId: "org-1",
+        profileId: "profile-ali",
+      }),
+    );
+  });
+
+  it("does not read personal providers for a shared Slack channel", async () => {
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "quels sont mes mails urgents ?",
+      undefined,
+      [],
+      { allowPersonalData: false },
+    );
+
+    expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+    expect(mocks.inspectGoogleWorkspaceCapabilities).not.toHaveBeenCalled();
+    expect(plan.actions).toHaveLength(0);
+    expect(plan.response).toContain("message privé");
+    expect(plan.response).not.toContain("Demo client");
+    expect(plan.response).not.toContain(bridgeUser.email);
   });
 
   it("keeps new lead contact capture in CRM even when a presentation is mentioned", async () => {

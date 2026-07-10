@@ -56,6 +56,66 @@ export type GoogleCalendarReminderResult = {
   title: string;
 };
 
+export type GoogleWorkspaceCapabilityStatus = {
+  accountLabel?: string;
+  calendar: boolean;
+  connected: boolean;
+  error?: string;
+  gmail: boolean;
+};
+
+export function inferGoogleWorkspaceReadCapabilities(scopes: string[]) {
+  return {
+    calendar: scopes.some((scope) =>
+      [
+        "https://www.googleapis.com/auth/calendar",
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.events.readonly",
+        "https://www.googleapis.com/auth/calendar.readonly",
+      ].includes(scope),
+    ),
+    gmail: scopes.some((scope) =>
+      [
+        "https://mail.google.com/",
+        "https://www.googleapis.com/auth/gmail.metadata",
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.readonly",
+      ].includes(scope),
+    ),
+  };
+}
+
+export async function inspectGoogleWorkspaceCapabilities(
+  context?: GoogleWorkspaceContext,
+): Promise<GoogleWorkspaceCapabilityStatus> {
+  try {
+    const connection = await getGoogleWorkspaceConnection(context);
+    const scopes = connection.scopes ?? [];
+    const { calendar, gmail } = inferGoogleWorkspaceReadCapabilities(scopes);
+
+    // Refreshing or resolving the token verifies that the stored connection
+    // is actually usable without exposing the token to the assistant.
+    await getGoogleAccessToken(connection, context?.supabase);
+
+    return {
+      accountLabel: connection.external_account_label ?? undefined,
+      calendar,
+      connected: true,
+      gmail,
+    };
+  } catch (error) {
+    return {
+      calendar: false,
+      connected: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "Google Workspace connection unavailable.",
+      gmail: false,
+    };
+  }
+}
+
 export async function createGoogleCalendarReminder(
   {
     durationMinutes = 15,
@@ -140,19 +200,30 @@ export async function listGoogleCalendarEvents(
     calendarId = "primary",
     daysAhead = 7,
     maxResults = 10,
+    timeMax: requestedTimeMax,
+    timeMin: requestedTimeMin,
   }: {
     calendarId?: string;
     daysAhead?: number;
     maxResults?: number;
+    timeMax?: string;
+    timeMin?: string;
   } = {},
   context?: GoogleWorkspaceContext,
 ): Promise<GoogleCalendarEventSummary[]> {
   const connection = await getGoogleWorkspaceConnection(context);
   const accessToken = await getGoogleAccessToken(connection, context?.supabase);
-  const timeMin = new Date();
-  const timeMax = new Date(
-    timeMin.getTime() + Math.max(daysAhead, 1) * 24 * 60 * 60 * 1000,
-  );
+  const timeMin = requestedTimeMin
+    ? parseCalendarBoundary(requestedTimeMin)
+    : new Date();
+  const timeMax = requestedTimeMax
+    ? parseCalendarBoundary(requestedTimeMax)
+    : new Date(
+        timeMin.getTime() + Math.max(daysAhead, 1) * 24 * 60 * 60 * 1000,
+      );
+  if (timeMax <= timeMin) {
+    throw new Error("Google Calendar date range is invalid.");
+  }
   const url = new URL(
     `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(calendarId)}/events`,
   );
@@ -190,6 +261,14 @@ export async function listGoogleCalendarEvents(
     start: event.start?.dateTime ?? event.start?.date,
     title: event.summary ?? "Evenement sans titre",
   }));
+}
+
+function parseCalendarBoundary(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    throw new Error("Google Calendar date range is invalid.");
+  }
+  return date;
 }
 
 function normalizeReminderDateTime(value: string) {

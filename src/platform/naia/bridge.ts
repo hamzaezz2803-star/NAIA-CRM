@@ -145,6 +145,7 @@ export async function planBridgeCommand(
   command: string,
   maxLength = SLACK_COMMAND_MAX_LENGTH,
   history: NaiaConversationMessage[] = [],
+  { allowPersonalData = true }: { allowPersonalData?: boolean } = {},
 ): Promise<NaiaBridgePlan> {
   // The commandHash inside the approval tokens is computed on this same
   // truncated string, so HMAC verification stays consistent per channel.
@@ -152,6 +153,12 @@ export async function planBridgeCommand(
   const crmLeads = await fetchBridgeLeads(user.organizationId);
   const supabase = createServiceRoleSupabaseClient();
   const { mode, result } = await planNaiaAssistant({
+    actor: {
+      email: user.email,
+      name: user.fullName || user.email.split("@")[0],
+      role: user.role,
+    },
+    allowPersonalData,
     command: cleanCommand,
     crmLeads,
     googleContext: supabase

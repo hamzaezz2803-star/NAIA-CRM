@@ -90,9 +90,17 @@ export async function POST(request: Request) {
     event.type === "app_mention"
       ? (event.thread_ts ?? event.ts)
       : event.thread_ts;
+  const allowPersonalData =
+    event.type === "message" && event.channel_type === "im";
 
   after(async () => {
-    await handleSlackCommand({ channel, command, slackUserId, threadTs });
+    await handleSlackCommand({
+      allowPersonalData,
+      channel,
+      command,
+      slackUserId,
+      threadTs,
+    });
   });
 
   return Response.json({ ok: true });
@@ -118,11 +126,13 @@ function stripSlackMentions(text: string) {
 }
 
 async function handleSlackCommand({
+  allowPersonalData,
   channel,
   command,
   slackUserId,
   threadTs,
 }: {
+  allowPersonalData: boolean;
   channel: string;
   command: string;
   slackUserId: string;
@@ -160,6 +170,7 @@ async function handleSlackCommand({
       command,
       undefined,
       priorHistory,
+      { allowPersonalData },
     );
     await postSlackMessage({
       blocks: buildPlanBlocks(plan),

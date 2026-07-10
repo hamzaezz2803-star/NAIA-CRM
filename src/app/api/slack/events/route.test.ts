@@ -197,6 +197,7 @@ describe("Slack events route", () => {
       "lis mes emails gmail non lus",
       undefined,
       [],
+      { allowPersonalData: true },
     );
   });
 
@@ -235,6 +236,7 @@ describe("Slack events route", () => {
       "lis mes emails gmail non lus",
       undefined,
       [],
+      { allowPersonalData: true },
     );
 
     const message = mocks.postSlackMessage.mock.calls[0][0];
@@ -278,6 +280,7 @@ describe("Slack events route", () => {
         { content: "Combien de leads avons-nous ?", role: "user" },
         { content: "Il y en a 14.", role: "assistant" },
       ],
+      { allowPersonalData: true },
     );
   });
 
@@ -364,12 +367,37 @@ describe("Slack events route", () => {
       "passe le lead HPS en meeting booked",
       undefined,
       [],
+      { allowPersonalData: false },
     );
     expect(mocks.postSlackMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "C0123456789",
         threadTs: "1234.5678",
       }),
+    );
+  });
+
+  it("marks channel mentions as unsafe for personal data", async () => {
+    const body = JSON.stringify({
+      event: {
+        channel: "C0123456789",
+        text: "<@U0BOT> quels sont mes mails urgents ?",
+        ts: "1234.5678",
+        type: "app_mention",
+        user: "U0123456789",
+      },
+      type: "event_callback",
+    });
+
+    await POST(slackRequest(body));
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "quels sont mes mails urgents ?",
+      undefined,
+      [],
+      { allowPersonalData: false },
     );
   });
 

@@ -8,6 +8,14 @@ import { crmLeadStatuses } from "@/features/crm/contracts";
 import { getNaiaAgent, type NaiaAgentId } from "./agents";
 import { extractLeadIdentity, inferReminderDate } from "./lead-understanding";
 import { buildOperationalAnalysisResponse } from "./operational-context";
+import {
+  inferPersonalCalendarDays,
+  isCalendarReadQuery,
+  isGmailReadQuery,
+  isPersonalCalendarQuery,
+  isPersonalGmailQuery,
+  isUrgentGmailQuery,
+} from "./personal-query-intents";
 
 export type NaiaActionRisk = "low" | "medium" | "high";
 
@@ -303,6 +311,14 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
 
   if (isCashFlowIntent(normalized)) {
     return "finance";
+  }
+
+  if (isPersonalGmailQuery(normalized)) {
+    return "integrations";
+  }
+
+  if (isPersonalCalendarQuery(normalized) && isCalendarReadQuery(normalized)) {
+    return "meetings";
   }
 
   if (wantsGmailRead(normalized) || wantsSlackMessage(normalized)) {
@@ -813,7 +829,10 @@ function buildWorkspaceActions(
         kind: "google.gmail.listMessages",
         label: "Lire Gmail",
         payload: {
-          maxResults: includesAny(normalized, ["urgent", "priorite"]) ? 15 : 10,
+          maxResults: isUrgentGmailQuery(normalized) ? 15 : 10,
+          query: isUrgentGmailQuery(normalized)
+            ? "is:unread newer_than:14d {label:important subject:urgent subject:important}"
+            : undefined,
           unreadOnly: includesAny(normalized, [
             "non lu",
             "non lus",
@@ -826,7 +845,7 @@ function buildWorkspaceActions(
     ];
   }
 
-  if (wantsCalendarRead(normalized, localAgentId)) {
+  if (wantsCalendarRead(normalized)) {
     return [
       {
         agentId: "meetings",
@@ -837,7 +856,7 @@ function buildWorkspaceActions(
         kind: "google.calendar.listEvents",
         label: "Lire l'agenda",
         payload: {
-          daysAhead: inferCalendarWindowDays(normalized),
+          daysAhead: inferPersonalCalendarDays(normalized),
           maxResults: 10,
         },
         risk: "low",
@@ -1414,6 +1433,7 @@ function buildMeetingTitle(
 
 function isPotentialClientMeeting(normalizedCommand: string) {
   if (isInternalReminderMeeting(normalizedCommand)) return false;
+  if (isCalendarReadQuery(normalizedCommand)) return false;
 
   const hasMeetingIntent = includesAny(normalizedCommand, [
     "meeting",
@@ -1609,66 +1629,11 @@ function isCashFlowIntent(normalizedCommand: string) {
 }
 
 function wantsGmailRead(normalizedCommand: string) {
-  const mentionsGmail = includesAny(normalizedCommand, [
-    "gmail",
-    "mes emails",
-    "mes email",
-    "mes mails",
-    "mes mail",
-    "boite mail",
-    "inbox",
-  ]);
-  const asksRead = includesAny(normalizedCommand, [
-    "lis",
-    "lire",
-    "check",
-    "verifie",
-    "verifier",
-    "resume",
-    "resumer",
-    "recap",
-    "analyse",
-    "priorise",
-    "prioriser",
-    "non lu",
-    "non lus",
-    "unread",
-  ]);
-
-  return mentionsGmail && asksRead;
+  return isGmailReadQuery(normalizedCommand);
 }
 
-function wantsCalendarRead(
-  normalizedCommand: string,
-  localAgentId: NaiaAgentId,
-) {
-  if (isPotentialClientMeeting(normalizedCommand)) return false;
-
-  const mentionsCalendar =
-    localAgentId === "meetings" ||
-    includesAny(normalizedCommand, [
-      "agenda",
-      "calendrier",
-      "calendar",
-      "dispo",
-      "disponibilite",
-      "disponibilites",
-    ]);
-  const asksRead = includesAny(normalizedCommand, [
-    "check",
-    "verifie",
-    "verifier",
-    "lis",
-    "lire",
-    "regarde",
-    "montre",
-    "quoi de prevu",
-    "creneau",
-    "creneaux",
-    "libre",
-  ]);
-
-  return mentionsCalendar && asksRead;
+function wantsCalendarRead(normalizedCommand: string) {
+  return isCalendarReadQuery(normalizedCommand);
 }
 
 function wantsSlackMessage(normalizedCommand: string) {
@@ -1712,13 +1677,6 @@ function isPitchGenerationIntent(normalizedCommand: string) {
   ]);
 
   return mentionsPitch && asksGenerate;
-}
-
-function inferCalendarWindowDays(normalizedCommand: string) {
-  if (includesAny(normalizedCommand, ["demain", "tomorrow"])) return 1;
-  if (includesAny(normalizedCommand, ["semaine", "week"])) return 7;
-  if (includesAny(normalizedCommand, ["mois", "month"])) return 31;
-  return 3;
 }
 
 function extractSlackMessageDraft(command: string) {
