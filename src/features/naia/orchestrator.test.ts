@@ -218,6 +218,30 @@ describe("NAIA orchestrator", () => {
     });
   });
 
+  it("routes contact capture with a presentation reminder to Salma instead of Maya", () => {
+    const result = orchestrateNaiaCommand({
+      command:
+        "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, je lui ai parlé au tel il me demander lui envoyer une présentation avant de se rencontrer - crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("crm");
+    expect(result.agent.name).toBe("Salma");
+    expect(result.actions).toHaveLength(1);
+    expect(result.actions[0]).toMatchObject({
+      approvalRequired: true,
+      kind: "crm.createLead",
+      payload: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        nextAction: "Envoyer la présentation avant le rendez-vous",
+        status: "contacted",
+      },
+    });
+  });
+
   it("still creates a CRM lead card when Whisper returns the same opportunity in English", () => {
     const result = orchestrateNaiaCommand({
       command:

@@ -268,6 +268,7 @@ export function classifyNaiaAgent(command: string): NaiaAgentId {
 
   if (
     isPitchGenerationIntent(normalized) &&
+    !isLeadCaptureIntent(normalized) &&
     !includesAny(normalized, [
       "meeting booked",
       "meeting fixe",
@@ -433,6 +434,7 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
   const tokens = tokenSet(normalized);
 
   if (
+    !isInternalReminderMeeting(normalized) &&
     includesAny(normalized, [
       "meeting booked",
       "meeting fixe",
@@ -552,9 +554,10 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
       label: "Creer le lead CRM",
       payload: {
         nextAction:
-          effectiveStatus === "meeting-booked"
+          inferLeadNextAction(normalized, effectiveStatus) ??
+          (effectiveStatus === "meeting-booked"
             ? "Preparer le meeting et confirmer le contexte avec le contact"
-            : "Qualifier le besoin et confirmer le prochain rendez-vous",
+            : "Qualifier le besoin et confirmer le prochain rendez-vous"),
         notes: command,
         source: "NAIA",
         status: effectiveStatus,
@@ -1116,6 +1119,21 @@ function extractSimpleLeadIdentity(command: string) {
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
     .trim()
     .replace(/[.!?]$/g, "");
+  const contactEmail = extractEmail(command);
+  const contactPhone = extractPhone(command);
+  const businessCardMatch = withoutPrefix.match(
+    /\b(?:lead|prospect)\s*:?\s*(.+?)\s+(?:directeur|directrice|ceo|cto|cfo|coo|dg|fondateur|fondatrice|founder|responsable|manager|head)\b.+?\s+(?:de|chez)\s+([^,.;\d-]+?)(?=\s+(?:\+?\d|0\d)|\s*[-,;.]|$)/i,
+  );
+
+  if (businessCardMatch) {
+    return {
+      companyName: businessCardMatch[2].trim().slice(0, 120),
+      contactEmail,
+      contactName: businessCardMatch[1].trim().slice(0, 120),
+      contactPhone,
+    };
+  }
+
   const contextualMatch =
     withoutPrefix.match(
       /\b(?:parle|parlé|contacte|contacté|appele|appelé|echange|échangé|discute|discuté)\s+(?:(?:a|à|avec)\s+)?(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
@@ -1132,7 +1150,9 @@ function extractSimpleLeadIdentity(command: string) {
 
   return {
     companyName: contextualMatch[2].trim().slice(0, 120),
+    contactEmail,
     contactName: contextualMatch[1].trim().slice(0, 120),
+    contactPhone,
   };
 }
 
@@ -1152,6 +1172,8 @@ function buildMeetingTitle(
 }
 
 function isPotentialClientMeeting(normalizedCommand: string) {
+  if (isInternalReminderMeeting(normalizedCommand)) return false;
+
   const hasMeetingIntent = includesAny(normalizedCommand, [
     "meeting",
     "rdv",
@@ -1251,6 +1273,63 @@ function isPotentialClientOpportunity(normalizedCommand: string) {
   ]);
 
   return hasCommercialConversation && hasCompanyPattern && hasBusinessSignal;
+}
+
+function isLeadCaptureIntent(normalizedCommand: string) {
+  return (
+    includesAny(normalizedCommand, [
+      "cree un lead",
+      "creer un lead",
+      "cree le lead",
+      "creer le lead",
+      "ajoute un lead",
+      "nouveau lead",
+      "nouveau prospect",
+      "nouvelle opportunite",
+      "contact d un nouveau lead",
+      "contact d un prospect",
+      "je viens d avoir le contact",
+      "j ai eu le contact",
+    ]) ||
+    (includesAny(normalizedCommand, ["lead", "prospect", "contact"]) &&
+      includesAny(normalizedCommand, ["email", "telephone", "tel"]) &&
+      /\b[\w.+-]+@[\w.-]+\.[a-z]{2,}\b/.test(normalizedCommand))
+  );
+}
+
+function isInternalReminderMeeting(normalizedCommand: string) {
+  return (
+    includesAny(normalizedCommand, [
+      "pour me rappeler",
+      "pour me souvenir",
+      "rappel de",
+      "reminder",
+      "me rappeler de",
+      "me rappeler d",
+    ]) &&
+    includesAny(normalizedCommand, ["meeting", "rdv", "rendez vous", "agenda"])
+  );
+}
+
+function inferLeadNextAction(normalizedCommand: string, status: CrmLeadStatus) {
+  if (
+    includesAny(normalizedCommand, [
+      "envoyer une presentation",
+      "envoyer la presentation",
+      "lui envoyer une presentation",
+      "lui envoyer la presentation",
+      "send a presentation",
+      "send the presentation",
+    ])
+  ) {
+    return "Envoyer la présentation avant le rendez-vous";
+  }
+
+  if (status === "to-follow-up") {
+    return "Préparer une relance commerciale personnalisée";
+  }
+
+  return undefined;
 }
 
 function isCashFlowIntent(normalizedCommand: string) {
@@ -1418,6 +1497,17 @@ function includesAny(value: string, needles: string[]) {
 
 function hasAnyToken(tokens: Set<string>, needles: string[]) {
   return needles.some((needle) => tokens.has(needle));
+}
+
+function extractEmail(value: string) {
+  return value.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i)?.[0];
+}
+
+function extractPhone(value: string) {
+  return value
+    .match(/(?:\+\d{1,3}[\s.-]?)?(?:0\d|\d)[\d\s.-]{7,}\d/)?.[0]
+    ?.replace(/\s+/g, "")
+    .trim();
 }
 
 function normalize(value: string) {

@@ -111,6 +111,52 @@ describe("NAIA orchestrate route", () => {
     expect(body.response).toContain("Valider et créer le lead");
   });
 
+  it("does not turn internal presentation reminders into booked client meetings", async () => {
+    mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
+      extracted: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        leadDate: "2026-07-10T09:00:00",
+        nextAction:
+          "Créer un meeting demain matin pour envoyer la présentation",
+        notes:
+          "Contact obtenu par téléphone. Envoyer une présentation avant de se rencontrer.",
+        source: "NAIA",
+        status: "meeting-booked",
+        topic: "Winxo - nouveau lead",
+      },
+      success: true,
+    });
+
+    const response = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({
+          command:
+            "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, je lui ai parlé au tel il me demander lui envoyer une présentation avant de se rencontrer - crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
+        }),
+        method: "POST",
+      }),
+    );
+    const body = await response.json();
+    const createLeadAction = body.actions.find(
+      (action: { kind: string }) => action.kind === "crm.createLead",
+    );
+
+    expect(body.agent.id).toBe("crm");
+    expect(createLeadAction.payload).toMatchObject({
+      companyName: "Winxo",
+      contactEmail: "Yzaidi@winxo.com",
+      contactName: "Youssef Zaidi",
+      contactPhone: "0661420960",
+      nextAction: "Envoyer la présentation avant le rendez-vous",
+      status: "contacted",
+      topic: "Winxo - nouveau lead",
+    });
+    expect(createLeadAction.payload.leadDate).toBeUndefined();
+  });
+
   it("keeps NAIA in charge for capability questions even when Groq is configured", async () => {
     vi.stubEnv("GROQ_API_KEY", "test-groq-key");
     const fetchMock = vi.fn();

@@ -244,6 +244,75 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(plan.actions[0].approvalToken).toEqual(expect.any(String));
   });
 
+  it("keeps new lead contact capture in CRM even when a presentation is mentioned", async () => {
+    mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
+      extracted: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        leadDate: "2026-07-10T09:00:00",
+        nextAction: "Envoyer la présentation avant le rendez-vous",
+        notes:
+          "Contact obtenu par téléphone. Envoyer une présentation avant de se rencontrer.",
+        source: "Slack",
+        status: "meeting-booked",
+        topic: "Winxo - nouveau lead",
+      },
+      success: true,
+    });
+
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, je lui ai parlé au tel il me demander lui envoyer une présentation avant de se rencontrer - crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
+    );
+
+    expect(plan.agentName).toBe("Salma");
+    expect(plan.response).toContain("Salma");
+    expect(plan.response).not.toContain("Maya");
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions[0]).toMatchObject({
+      kind: "crm.createLead",
+      payload: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        leadDate: undefined,
+        nextAction: "Envoyer la présentation avant le rendez-vous",
+        status: "contacted",
+        topic: "Winxo - nouveau lead",
+      },
+    });
+  });
+
+  it("keeps a useful CRM draft for contact capture when Groq extraction fails", async () => {
+    mocks.extractLeadFromNaturalTextAction.mockResolvedValue({
+      error: "temporary unavailable",
+      success: false,
+    });
+
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "je viens d'avoir le contact d'un nouveau lead: Youssef Zaidi Directeur d'exploitation de Winxo 0661420960 - Yzaidi@winxo.com, je lui ai parlé au tel il me demander lui envoyer une présentation avant de se rencontrer - crée un meeting demain matin pour me rappeler de lui envoyer la présentation",
+    );
+
+    expect(plan.agentName).toBe("Salma");
+    expect(plan.actions).toHaveLength(1);
+    expect(plan.actions[0]).toMatchObject({
+      kind: "crm.createLead",
+      payload: {
+        companyName: "Winxo",
+        contactEmail: "Yzaidi@winxo.com",
+        contactName: "Youssef Zaidi",
+        contactPhone: "0661420960",
+        nextAction: "Envoyer la présentation avant le rendez-vous",
+        status: "contacted",
+        topic: "Winxo - nouveau lead",
+      },
+    });
+  });
+
   it("creates Calendar events from signed hydrated CRM lead drafts", async () => {
     mocks.createLeadAction.mockResolvedValue({
       calendarLink: "https://calendar.google.com/event?eid=hps",

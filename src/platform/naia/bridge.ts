@@ -539,6 +539,7 @@ function hydrateLeadDraft(
   base: CrmLeadDraft,
   extracted: Partial<CrmLeadDraft>,
 ): CrmLeadDraft {
+  const internalReminder = isInternalReminderCommand(command);
   const status =
     coerceStatus(inferCrmStatus(command) ?? "") ??
     coerceStatus(extracted.status ?? "") ??
@@ -547,6 +548,11 @@ function hydrateLeadDraft(
   const merged = sanitizeLeadDraft({
     ...base,
     ...extracted,
+    leadDate: internalReminder
+      ? undefined
+      : (extracted.leadDate ?? base.leadDate),
+    nextAction:
+      inferBridgeNextAction(command) ?? extracted.nextAction ?? base.nextAction,
     source: extracted.source ?? base.source ?? "NAIA",
     status,
   });
@@ -562,10 +568,42 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
     .replace(/^(un\s+|une\s+)?(nouveau|nouvelle)\s+lead\s*[:,;-]?\s*/i, "")
     .trim()
     .replace(/[.!?]$/g, "");
+  const contactEmail = extractEmail(command);
+  const contactPhone = extractPhone(command);
   const isMeetingCommand =
     /\b(meeting|rdv|rendez[- ]vous|call|demo|démo|visio|reunion|réunion)\b/i.test(
       clean,
     );
+  const isInternalReminder =
+    /\b(pour me rappeler|me rappeler de|me rappeler d|reminder)\b/i.test(
+      clean,
+    ) && isMeetingCommand;
+  const nextAction = inferLocalNextAction(clean, isMeetingCommand);
+  const businessCardMatch = clean.match(
+    /\b(?:lead|prospect)\s*:?\s*(.+?)\s+(?:directeur|directrice|ceo|cto|cfo|coo|dg|fondateur|fondatrice|founder|responsable|manager|head)\b.+?\s+(?:de|chez)\s+([^,.;\d-]+?)(?=\s+(?:\+?\d|0\d)|\s*[-,;.]|$)/i,
+  );
+
+  if (businessCardMatch) {
+    const contactName = businessCardMatch[1].trim();
+    const companyName = businessCardMatch[2].trim();
+
+    return {
+      companyName,
+      contactEmail,
+      contactName,
+      contactPhone,
+      nextAction,
+      notes: clean,
+      source: "NAIA",
+      status: isInternalReminder
+        ? "contacted"
+        : isMeetingCommand
+          ? "meeting-booked"
+          : "contacted",
+      topic: `${companyName} - nouveau lead`,
+    };
+  }
+
   const prospectMatch =
     clean.match(
       /\b(?:parle|parlé|contacte|contacté|appele|appelé|echange|échangé|discute|discuté)\s+(?:(?:a|à|avec)\s+)?(.+?)\s+(?:de|chez)\s+([^,.;]+?)(?=\s+(?:et|qui|il|elle|pour|afin|and|with)\b|[,.;]|$)/i,
@@ -580,13 +618,17 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
 
     return {
       companyName,
+      contactEmail,
       contactName,
-      nextAction: isMeetingCommand
-        ? "Préparer le meeting et confirmer le contexte avec le contact"
-        : "Qualifier le besoin et confirmer le prochain rendez-vous",
+      contactPhone,
+      nextAction,
       notes: clean,
       source: "NAIA",
-      status: isMeetingCommand ? "meeting-booked" : "contacted",
+      status: isInternalReminder
+        ? "contacted"
+        : isMeetingCommand
+          ? "meeting-booked"
+          : "contacted",
       topic: `${companyName} - nouveau lead`,
     };
   }
@@ -601,26 +643,55 @@ function extractLeadDraftLocally(command: string): Partial<CrmLeadDraft> {
 
     return {
       companyName,
+      contactEmail,
       contactName,
-      nextAction: isMeetingCommand
-        ? "Préparer le meeting et confirmer le contexte avec le contact"
-        : "Qualifier le besoin et confirmer le prochain rendez-vous",
+      contactPhone,
+      nextAction,
       notes: clean,
       source: "NAIA",
-      status: isMeetingCommand ? "meeting-booked" : "lead-to-contact",
+      status: isInternalReminder
+        ? "contacted"
+        : isMeetingCommand
+          ? "meeting-booked"
+          : "lead-to-contact",
       topic: `${companyName} - nouveau lead`,
     };
   }
 
   return {
-    nextAction: isMeetingCommand
-      ? "Préparer le meeting et confirmer le contexte avec le contact"
-      : "Qualifier le besoin et confirmer le prochain rendez-vous",
+    contactEmail,
+    contactPhone,
+    nextAction,
     notes: clean,
     source: "NAIA",
-    status: isMeetingCommand ? "meeting-booked" : "lead-to-contact",
+    status: isInternalReminder
+      ? "contacted"
+      : isMeetingCommand
+        ? "meeting-booked"
+        : "lead-to-contact",
     topic: clean.slice(0, 160) || "Nouveau lead NAIA",
   };
+}
+
+function inferLocalNextAction(cleanCommand: string, isMeetingCommand: boolean) {
+  const bridgeNextAction = inferBridgeNextAction(cleanCommand);
+  if (bridgeNextAction) return bridgeNextAction;
+
+  return isMeetingCommand
+    ? "Préparer le meeting et confirmer le contexte avec le contact"
+    : "Qualifier le besoin et confirmer le prochain rendez-vous";
+}
+
+function inferBridgeNextAction(command: string) {
+  if (
+    /\b(envoyer une présentation|envoyer la présentation|lui envoyer une présentation|lui envoyer la présentation|send a presentation|send the presentation)\b/i.test(
+      command,
+    )
+  ) {
+    return "Envoyer la présentation avant le rendez-vous";
+  }
+
+  return undefined;
 }
 
 function sanitizeLeadDraft(input: Partial<CrmLeadDraft>): CrmLeadDraft {
@@ -682,6 +753,16 @@ function normalizeBridgeCommand(value: string | undefined) {
     .trim();
 }
 
+function isInternalReminderCommand(command: string) {
+  const clean = normalizeBridgeCommand(command);
+
+  return (
+    /\b(pour me rappeler|me rappeler de|me rappeler d|reminder)\b/i.test(
+      clean,
+    ) && /\b(meeting|rdv|rendez[- ]vous|agenda)\b/i.test(clean)
+  );
+}
+
 function cleanRequired(value: unknown, fallback: string, maxLength: number) {
   return typeof value === "string" && value.trim()
     ? value.trim().slice(0, maxLength)
@@ -692,6 +773,17 @@ function cleanOptional(value: unknown, maxLength: number) {
   return typeof value === "string" && value.trim()
     ? value.trim().slice(0, maxLength)
     : undefined;
+}
+
+function extractEmail(value: string) {
+  return value.match(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i)?.[0];
+}
+
+function extractPhone(value: string) {
+  return value
+    .match(/(?:\+\d{1,3}[\s.-]?)?(?:0\d|\d)[\d\s.-]{7,}\d/)?.[0]
+    ?.replace(/\s+/g, "")
+    .trim();
 }
 
 function formatDateForSlack(value: string) {

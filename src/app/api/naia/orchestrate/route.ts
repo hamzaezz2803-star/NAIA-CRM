@@ -666,6 +666,8 @@ async function hydrateCrmLeadDrafts({
 
   const extracted = await extractLeadDraft(command);
   const inferredStatus = inferCrmStatus(command);
+  const internalReminder = isInternalReminderCommand(command);
+  const nextActionOverride = inferLeadNextAction(command);
 
   const hasCalendarAction = result.actions.some(
     (action) => action.kind === "calendar.scheduleMeeting",
@@ -697,6 +699,13 @@ async function hydrateCrmLeadDrafts({
         payload: sanitizeLeadDraft({
           ...action.payload,
           ...extracted,
+          leadDate: internalReminder
+            ? undefined
+            : (extracted.leadDate ?? action.payload.leadDate),
+          nextAction:
+            nextActionOverride ??
+            extracted.nextAction ??
+            action.payload.nextAction,
           status: inferredStatus ?? extracted.status ?? action.payload.status,
           notes: extracted.notes
             ? [extracted.notes, `Commande NAIA: ${command}`].join("\n")
@@ -847,6 +856,26 @@ function buildLeadNotes(leadDraft: CrmLeadDraft) {
       .filter(Boolean)
       .join("\n") || undefined
   );
+}
+
+function isInternalReminderCommand(command: string) {
+  return (
+    /\b(pour me rappeler|me rappeler de|me rappeler d|reminder)\b/i.test(
+      command,
+    ) && /\b(meeting|rdv|rendez[- ]vous|agenda)\b/i.test(command)
+  );
+}
+
+function inferLeadNextAction(command: string) {
+  if (
+    /\b(envoyer une présentation|envoyer la présentation|lui envoyer une présentation|lui envoyer la présentation|send a presentation|send the presentation)\b/i.test(
+      command,
+    )
+  ) {
+    return "Envoyer la présentation avant le rendez-vous";
+  }
+
+  return undefined;
 }
 
 function cleanRequired(value: unknown, fallback: string, maxLength: number) {
