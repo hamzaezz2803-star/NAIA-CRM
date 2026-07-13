@@ -7,11 +7,14 @@ const mocks = vi.hoisted(() => ({
   claimInboundMessage: vi.fn(),
   claimPendingAction: vi.fn(),
   executeBridgeAction: vi.fn(),
+  fetchWhatsAppHistory: vi.fn(),
   planBridgeCommand: vi.fn(),
   resolveBridgeUser: vi.fn(),
   sendWhatsAppButtons: vi.fn(),
   sendWhatsAppText: vi.fn(),
   storePendingAction: vi.fn(),
+  storeWhatsAppMessage: vi.fn(),
+  transcribeWhatsAppAudio: vi.fn(),
 }));
 
 vi.mock("next/server", () => ({
@@ -32,6 +35,11 @@ vi.mock("@/platform/naia/pending-actions", () => ({
   storePendingAction: mocks.storePendingAction,
 }));
 
+vi.mock("@/platform/naia/whatsapp-memory", () => ({
+  fetchWhatsAppHistory: mocks.fetchWhatsAppHistory,
+  storeWhatsAppMessage: mocks.storeWhatsAppMessage,
+}));
+
 // Signature verification and the phone→email map stay real; only the
 // outbound Cloud API senders are mocked.
 vi.mock("@/platform/naia/whatsapp", async (importOriginal) => {
@@ -42,6 +50,7 @@ vi.mock("@/platform/naia/whatsapp", async (importOriginal) => {
     ...actual,
     sendWhatsAppButtons: mocks.sendWhatsAppButtons,
     sendWhatsAppText: mocks.sendWhatsAppText,
+    transcribeWhatsAppAudio: mocks.transcribeWhatsAppAudio,
   };
 });
 
@@ -51,6 +60,8 @@ const APP_SECRET = "test-app-secret";
 const VERIFY_TOKEN = "verify-token-123";
 const USER_MAP = "212661234567:ali@qarizmi.com, +33612345678:nabil@qarizmi.com";
 const KNOWN_PHONE = "212661234567";
+const PHONE_NUMBER_ID = "1234567890";
+const BUSINESS_ACCOUNT_ID = "waba-1";
 const DRAFT_ID = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
 const bridgeUser = {
@@ -70,6 +81,31 @@ const gmailAction = {
   label: "Lire Gmail",
   payload: { maxResults: 10, unreadOnly: true },
   risk: "low",
+};
+
+const crmLeadAction = {
+  agentId: "crm",
+  approvalRequired: true,
+  description: "Salma préparera le lead HPS avant validation.",
+  id: "crm-create-hps",
+  kind: "crm.createLead",
+  label: "Créer le lead CRM",
+  payload: {
+    companyName: "HPS",
+    contactEmail: "abdeslam@hps-worldwide.com",
+    contactJobTitle: "Directeur innovation",
+    contactLinkedinUrl: "https://linkedin.com/in/abdeslam",
+    contactName: "Abdeslam Alaoui Ismaili",
+    contactPhone: "+212600000000",
+    leadDate: "2026-07-17T11:00:00+01:00",
+    nextAction: "Préparer le meeting et confirmer l'invitation",
+    notes: "Échange sur le LLM local et les cas d'usage IA.",
+    source: "WhatsApp",
+    status: "meeting-booked",
+    topic: "Meeting HPS - LLM local",
+    tags: ["IA", "HPS"],
+  },
+  risk: "medium",
 };
 
 // The HMAC approval token embeds the approved action; the stored draft only
@@ -109,6 +145,9 @@ function webhookRequest(
 function inboundPayload(
   messages: unknown[],
   value: Record<string, unknown> = {},
+  phoneNumberId = PHONE_NUMBER_ID,
+  businessAccountId = BUSINESS_ACCOUNT_ID,
+  object = "whatsapp_business_account",
 ) {
   return JSON.stringify({
     entry: [
@@ -116,13 +155,20 @@ function inboundPayload(
         changes: [
           {
             field: "messages",
-            value: { messages, ...value },
+            value: {
+              messages,
+              metadata: {
+                display_phone_number: "+33123456789",
+                phone_number_id: phoneNumberId,
+              },
+              ...value,
+            },
           },
         ],
-        id: "waba-1",
+        id: businessAccountId,
       },
     ],
-    object: "whatsapp_business_account",
+    object,
   });
 }
 
@@ -139,6 +185,15 @@ function buttonReply(id: string, from = KNOWN_PHONE) {
       type: "button_reply",
     },
     type: "interactive",
+  };
+}
+
+function audioMessage(id = "media-audio-1", from = KNOWN_PHONE) {
+  return {
+    audio: { id, mime_type: "audio/ogg; codecs=opus" },
+    from,
+    id: "wamid.audio",
+    type: "audio",
   };
 }
 
@@ -208,10 +263,13 @@ describe("WhatsApp webhook verification (GET)", () => {
 describe("WhatsApp webhook (POST)", () => {
   beforeEach(() => {
     vi.stubEnv("WHATSAPP_APP_SECRET", APP_SECRET);
+    vi.stubEnv("WHATSAPP_BUSINESS_ACCOUNT_ID", BUSINESS_ACCOUNT_ID);
+    vi.stubEnv("WHATSAPP_PHONE_NUMBER_ID", PHONE_NUMBER_ID);
     vi.stubEnv("WHATSAPP_USER_MAP", USER_MAP);
     mocks.afterTasks = [];
     mocks.claimInboundMessage.mockResolvedValue(true);
     mocks.resolveBridgeUser.mockResolvedValue(bridgeUser);
+    mocks.fetchWhatsAppHistory.mockResolvedValue([]);
     mocks.planBridgeCommand.mockResolvedValue({
       actions: [{ ...gmailAction, approvalToken: "payload.signature" }],
       agentName: "Lina",
@@ -227,6 +285,10 @@ describe("WhatsApp webhook (POST)", () => {
     });
     mocks.sendWhatsAppText.mockResolvedValue(undefined);
     mocks.sendWhatsAppButtons.mockResolvedValue(undefined);
+    mocks.storeWhatsAppMessage.mockResolvedValue(undefined);
+    mocks.transcribeWhatsAppAudio.mockResolvedValue(
+      "crée un lead pour HPS avec Abdelslam",
+    );
   });
 
   afterEach(() => {
@@ -287,7 +349,16 @@ describe("WhatsApp webhook (POST)", () => {
       bridgeUser,
       "lis mes emails gmail non lus",
       2000,
+      [],
     );
+
+    expect(mocks.storeWhatsAppMessage).toHaveBeenCalledOnce();
+    expect(mocks.storeWhatsAppMessage).toHaveBeenCalledWith({
+      content: "lis mes emails gmail non lus",
+      organizationId: "org-1",
+      profileId: "profile-ali",
+      role: "user",
+    });
 
     expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
       body: "Lina prend le relais integrations.",
@@ -307,6 +378,142 @@ describe("WhatsApp webhook (POST)", () => {
       { id: `naia_approve:${DRAFT_ID}`, title: "✅ Valider" },
       { id: `naia_dismiss:${DRAFT_ID}`, title: "❌ Ignorer" },
     ]);
+  });
+
+  it("passes the founder's private history to the orchestrator", async () => {
+    const history = [
+      { content: "Crée un lead pour HPS.", role: "user" },
+      { content: "Abdeslam est le contact.", role: "user" },
+    ];
+    mocks.fetchWhatsAppHistory.mockResolvedValue(history);
+
+    const body = inboundPayload([textMessage("Abdeslam Alaoui Ismaili")]);
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    expect(mocks.fetchWhatsAppHistory).toHaveBeenCalledWith({
+      organizationId: "org-1",
+      profileId: "profile-ali",
+    });
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "Abdeslam Alaoui Ismaili",
+      2000,
+      history,
+    );
+  });
+
+  it("shows the complete CRM lead draft before approval", async () => {
+    mocks.planBridgeCommand.mockResolvedValue({
+      actions: [{ ...crmLeadAction, approvalToken: "payload.signature" }],
+      agentName: "Salma",
+      command: "crée le lead HPS avec Abdeslam et un meeting vendredi à 11h",
+      response: "Salma a préparé la fiche lead pour validation.",
+    });
+
+    const body = inboundPayload([
+      textMessage(
+        "crée le lead HPS avec Abdeslam et un meeting vendredi à 11h",
+      ),
+    ]);
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    const approvalMessage = mocks.sendWhatsAppButtons.mock.calls[0][0];
+    expect(approvalMessage.bodyText).toContain(
+      "Projet: Meeting HPS - LLM local",
+    );
+    expect(approvalMessage.bodyText).toContain("Entreprise: HPS");
+    expect(approvalMessage.bodyText).toContain(
+      "Contact: Abdeslam Alaoui Ismaili",
+    );
+    expect(approvalMessage.bodyText).toContain("Poste: Directeur innovation");
+    expect(approvalMessage.bodyText).toContain(
+      "Email: abdeslam@hps-worldwide.com",
+    );
+    expect(approvalMessage.bodyText).toContain("Téléphone: +212600000000");
+    expect(approvalMessage.bodyText).toContain(
+      "LinkedIn: https://linkedin.com/in/abdeslam",
+    );
+    expect(approvalMessage.bodyText).toContain("Statut: meeting-booked");
+    expect(approvalMessage.bodyText).toContain(
+      "Date: 2026-07-17T11:00:00+01:00",
+    );
+    expect(approvalMessage.bodyText).toContain("Source: WhatsApp");
+    expect(approvalMessage.bodyText).toContain(
+      "Action suivante: Préparer le meeting et confirmer l'invitation",
+    );
+    expect(approvalMessage.bodyText).toContain("Tags: IA, HPS");
+    expect(approvalMessage.bodyText).toContain(
+      "Notes: Échange sur le LLM local et les cas d'usage IA.",
+    );
+    expect(approvalMessage.buttons).toEqual([
+      { id: `naia_approve:${DRAFT_ID}`, title: "✅ Valider" },
+      { id: `naia_dismiss:${DRAFT_ID}`, title: "❌ Ignorer" },
+    ]);
+  });
+
+  it("shows a long CRM draft in full before sending a short approval prompt", async () => {
+    const notes = "Contexte confidentiel complet. ".repeat(45).trim();
+    mocks.planBridgeCommand.mockResolvedValue({
+      actions: [
+        {
+          ...crmLeadAction,
+          approvalToken: "payload.signature",
+          payload: { ...crmLeadAction.payload, notes },
+        },
+      ],
+      agentName: "Salma",
+      command: "crée le lead HPS avec toutes les notes",
+      response: "Salma a préparé la fiche lead pour validation.",
+    });
+
+    await POST(
+      webhookRequest(
+        inboundPayload([textMessage("crée le lead HPS avec toutes les notes")]),
+      ),
+    );
+    await flushAfterTasks();
+
+    const fullReview = mocks.sendWhatsAppText.mock.calls.find(([message]) =>
+      message.body.includes("Notes: Contexte confidentiel complet"),
+    )?.[0];
+    expect(fullReview?.body).toContain(notes);
+    expect(fullReview?.body.length).toBeGreaterThan(1024);
+
+    const approvalMessage = mocks.sendWhatsAppButtons.mock.calls[0][0];
+    expect(approvalMessage.bodyText).toContain("affichée ci-dessus");
+    expect(approvalMessage.bodyText.length).toBeLessThanOrEqual(1024);
+    expect(mocks.storePendingAction).toHaveBeenCalledOnce();
+  });
+
+  it("refuses an action that cannot be displayed completely", async () => {
+    mocks.planBridgeCommand.mockResolvedValue({
+      actions: [
+        {
+          ...gmailAction,
+          approvalToken: "payload.signature",
+          description: "x".repeat(5000),
+        },
+      ],
+      agentName: "Lina",
+      command: "prépare une action très longue",
+      response: "Lina a préparé une action.",
+    });
+
+    await POST(
+      webhookRequest(
+        inboundPayload([textMessage("prépare une action très longue")]),
+      ),
+    );
+    await flushAfterTasks();
+
+    expect(mocks.storePendingAction).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppButtons).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
+      body: expect.stringContaining("trop détaillée"),
+      to: KNOWN_PHONE,
+    });
   });
 
   it("skips a Meta redelivery of an already processed wamid", async () => {
@@ -341,6 +548,7 @@ describe("WhatsApp webhook (POST)", () => {
       bridgeUser,
       longCommand,
       2000,
+      [],
     );
   });
 
@@ -384,23 +592,87 @@ describe("WhatsApp webhook (POST)", () => {
     errorSpy.mockRestore();
   });
 
-  it("answers unknown numbers without planning or storing anything", async () => {
+  it("silently ignores unknown Airbnb guests before any processing", async () => {
     const body = inboundPayload([
       textMessage("lis mes emails", "999999999999"),
     ]);
     await POST(webhookRequest(body));
     await flushAfterTasks();
 
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
     expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.storePendingAction).not.toHaveBeenCalled();
-    expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
-      body: expect.stringContaining("Numéro non reconnu"),
-      to: "999999999999",
-    });
+    expect(mocks.storeWhatsAppMessage).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
-  it("answers mapped numbers without a Qarizmi profile and never plans", async () => {
+  it("ignores messages delivered to another business phone number id", async () => {
+    const body = inboundPayload(
+      [textMessage("lis mes emails")],
+      {},
+      "different-phone-number-id",
+    );
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
+  });
+
+  it("ignores payloads from another WABA or object type", async () => {
+    const wrongWabaBody = inboundPayload(
+      [textMessage("lis mes emails")],
+      {},
+      PHONE_NUMBER_ID,
+      "different-waba",
+    );
+    await POST(webhookRequest(wrongWabaBody));
+
+    const wrongObjectBody = inboundPayload(
+      [textMessage("lis mes emails")],
+      {},
+      PHONE_NUMBER_ID,
+      BUSINESS_ACCOUNT_ID,
+      "page",
+    );
+    await POST(webhookRequest(wrongObjectBody));
+    await flushAfterTasks();
+
+    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+  });
+
+  it("ignores messages without a Meta message id", async () => {
+    const message = textMessage("lis mes emails");
+    delete (message as { id?: string }).id;
+
+    await POST(webhookRequest(inboundPayload([message])));
+    await flushAfterTasks();
+
+    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+  });
+
+  it("transcribes an authorized voice note and plans it as a command", async () => {
+    const body = inboundPayload([audioMessage()]);
+    await POST(webhookRequest(body));
+    await flushAfterTasks();
+
+    expect(mocks.transcribeWhatsAppAudio).toHaveBeenCalledWith("media-audio-1");
+    expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
+      bridgeUser,
+      "crée un lead pour HPS avec Abdelslam",
+      2000,
+      [],
+    );
+  });
+
+  it("silently ignores mapped numbers without a Qarizmi profile", async () => {
     mocks.resolveBridgeUser.mockResolvedValue(null);
 
     const body = inboundPayload([textMessage("lis mes emails")]);
@@ -408,10 +680,25 @@ describe("WhatsApp webhook (POST)", () => {
     await flushAfterTasks();
 
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
-    expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
-      body: expect.stringContaining("Compte non reconnu"),
-      to: KNOWN_PHONE,
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
+  });
+
+  it("silently ignores a mapped non-owner before any database or provider work", async () => {
+    mocks.resolveBridgeUser.mockResolvedValue({
+      ...bridgeUser,
+      email: "member@qarizmi.com",
+      profileId: "profile-member",
+      role: "member",
     });
+
+    await POST(webhookRequest(inboundPayload([textMessage("lis mes emails")])));
+    await flushAfterTasks();
+
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.fetchWhatsAppHistory).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
   it("executes an approved action from a button reply and sends the result", async () => {
@@ -461,10 +748,7 @@ describe("WhatsApp webhook (POST)", () => {
 
     expect(mocks.claimPendingAction).not.toHaveBeenCalled();
     expect(mocks.executeBridgeAction).not.toHaveBeenCalled();
-    expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
-      body: expect.stringContaining("Numéro non reconnu"),
-      to: "999999999999",
-    });
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
   it("deletes the draft and confirms when the user dismisses", async () => {

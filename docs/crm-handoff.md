@@ -104,6 +104,8 @@ NAIA read routing must keep data sources explicit. Questions such as `quels sont
 
 Founder/company background is a separate read-only context, not CRM data. NAIA may index the latest generic deck from `MAYA_DRIVE_SOURCE_FOLDER_ID` only for an authenticated `owner` whose email passes the existing Maya cofounder allowlist. The bounded excerpts may enrich a private web, Slack DM, or private WhatsApp answer, but must never be copied into lead notes, approval payloads, shared-channel prompts, or CRM snapshots. A Drive timeout or parsing failure must fall back silently to the normal assistant path.
 
+The WhatsApp surface is private and fail-closed. `WHATSAPP_BUSINESS_ACCOUNT_ID` plus `WHATSAPP_PHONE_NUMBER_ID` pin the Meta account and destination number, while `WHATSAPP_USER_MAP` is the sender authorization boundary. Every mapped sender is re-resolved and must have the `owner` role. Unmapped, missing-profile, or non-owner numbers receive no NAIA response and trigger no dedup row, CRM/provider read, storage, or LLM call. Only founder commands live in `naia_private_whatsapp_messages`, scoped by `organization_id` plus `profile_id` and service-role only; assistant outputs are never copied into Supabase. See `docs/naia-private-whatsapp-setup.md` for onboarding and revocation.
+
 ## Google Drive Folder Structure
 
 One folder per client company (not per lead), created by the organization

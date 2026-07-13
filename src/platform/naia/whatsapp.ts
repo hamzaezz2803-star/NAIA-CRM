@@ -7,6 +7,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 // maps sender phone numbers to Qarizmi OS emails via WHATSAPP_USER_MAP.
 
 const WHATSAPP_GRAPH_BASE_URL = "https://graph.facebook.com/v21.0";
+const GROQ_TRANSCRIPTION_URL =
+  "https://api.groq.com/openai/v1/audio/transcriptions";
 
 // Cloud API hard limits.
 export const WHATSAPP_TEXT_BODY_LIMIT = 4096;
@@ -14,6 +16,7 @@ export const WHATSAPP_INTERACTIVE_BODY_LIMIT = 1024;
 export const WHATSAPP_BUTTON_TITLE_LIMIT = 20;
 export const WHATSAPP_BUTTON_ID_LIMIT = 256;
 export const WHATSAPP_MAX_BUTTONS = 3;
+export const WHATSAPP_MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 
 // Meta signs every webhook delivery with
 // `sha256=HMAC_SHA256(app_secret, raw_body)` in X-Hub-Signature-256. The raw
@@ -152,6 +155,11 @@ export async function sendWhatsAppButtons({
       `WhatsApp interactive messages need 1 to ${WHATSAPP_MAX_BUTTONS} buttons.`,
     );
   }
+  if (bodyText.length > WHATSAPP_INTERACTIVE_BODY_LIMIT) {
+    throw new Error(
+      `WhatsApp interactive body exceeds ${WHATSAPP_INTERACTIVE_BODY_LIMIT} characters.`,
+    );
+  }
 
   for (const button of buttons) {
     if (button.id.length > WHATSAPP_BUTTON_ID_LIMIT) {
@@ -173,13 +181,132 @@ export async function sendWhatsAppButtons({
         })),
       },
       body: {
-        text: truncateToLimit(bodyText, WHATSAPP_INTERACTIVE_BODY_LIMIT),
+        text: bodyText,
       },
       type: "button",
     },
     to,
     type: "interactive",
   });
+}
+
+export async function transcribeWhatsAppAudio(mediaId: string) {
+  const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
+  const groqApiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
+  const normalizedMediaId = mediaId.trim();
+
+  if (!accessToken) {
+    throw new Error("WHATSAPP_ACCESS_TOKEN is required to download audio.");
+  }
+  if (!groqApiKey) {
+    throw new Error("GROQ_API_KEY is required to transcribe WhatsApp audio.");
+  }
+  if (!normalizedMediaId || normalizedMediaId.length > 256) {
+    throw new Error("Invalid WhatsApp media id.");
+  }
+
+  const authorization = { Authorization: `Bearer ${accessToken}` };
+  const metadataResponse = await fetch(
+    `${WHATSAPP_GRAPH_BASE_URL}/${encodeURIComponent(normalizedMediaId)}`,
+    { headers: authorization },
+  );
+
+  if (!metadataResponse.ok) {
+    throw new Error(
+      `WhatsApp Cloud API could not resolve the audio: ${await readWhatsAppError(metadataResponse)}`,
+    );
+  }
+
+  const metadata = (await metadataResponse.json()) as {
+    file_size?: number | string;
+    mime_type?: string;
+    url?: string;
+  };
+  const mediaUrl = metadata.url?.trim();
+  const mimeType = (metadata.mime_type ?? "audio/ogg")
+    .split(";", 1)[0]
+    .trim()
+    .toLowerCase();
+  const declaredSize = Number(metadata.file_size ?? 0);
+
+  if (!mediaUrl || !mediaUrl.startsWith("https://")) {
+    throw new Error("WhatsApp returned an invalid media URL.");
+  }
+  if (!mimeType.startsWith("audio/")) {
+    throw new Error("The WhatsApp attachment is not an audio file.");
+  }
+  if (
+    Number.isFinite(declaredSize) &&
+    declaredSize > WHATSAPP_MAX_AUDIO_BYTES
+  ) {
+    throw new Error("The WhatsApp voice note is too large to transcribe.");
+  }
+
+  const audioResponse = await fetch(mediaUrl, { headers: authorization });
+  if (!audioResponse.ok) {
+    throw new Error(
+      `WhatsApp Cloud API could not download the audio: HTTP ${audioResponse.status}`,
+    );
+  }
+
+  const contentLength = Number(
+    audioResponse.headers.get("content-length") ?? 0,
+  );
+  if (
+    Number.isFinite(contentLength) &&
+    contentLength > WHATSAPP_MAX_AUDIO_BYTES
+  ) {
+    throw new Error("The WhatsApp voice note is too large to transcribe.");
+  }
+
+  const bytes = await audioResponse.arrayBuffer();
+  if (bytes.byteLength === 0 || bytes.byteLength > WHATSAPP_MAX_AUDIO_BYTES) {
+    throw new Error("The WhatsApp voice note is empty or too large.");
+  }
+
+  const groqForm = new FormData();
+  groqForm.append(
+    "file",
+    new Blob([bytes], { type: mimeType }),
+    `naia-whatsapp.${audioExtension(mimeType)}`,
+  );
+  groqForm.append(
+    "model",
+    process.env.GROQ_WHISPER_MODEL ?? "whisper-large-v3-turbo",
+  );
+
+  const language = process.env.GROQ_WHISPER_LANGUAGE?.trim().toLowerCase();
+  if (language && language !== "auto") {
+    groqForm.append("language", language);
+  }
+
+  groqForm.append(
+    "prompt",
+    "Commande vocale business pour Qarizmi OS. Transcris exactement ce qui est dit sans traduire. Conserve le mélange français-anglais, les termes CRM, les noms de sociétés, de personnes, les dates et les heures.",
+  );
+  groqForm.append("response_format", "json");
+  groqForm.append("temperature", "0");
+
+  const groqResponse = await fetch(GROQ_TRANSCRIPTION_URL, {
+    body: groqForm,
+    headers: { Authorization: `Bearer ${groqApiKey}` },
+    method: "POST",
+  });
+
+  if (!groqResponse.ok) {
+    throw new Error(
+      `Groq could not transcribe the WhatsApp audio: ${await readGroqError(groqResponse)}`,
+    );
+  }
+
+  const transcript = ((await groqResponse.json()) as { text?: string }).text
+    ?.replace(/\s+/g, " ")
+    .trim();
+  if (!transcript) {
+    throw new Error("Groq returned an empty WhatsApp transcription.");
+  }
+
+  return transcript;
 }
 
 async function postWhatsAppMessage(payload: Record<string, unknown>) {
@@ -227,4 +354,23 @@ async function readWhatsAppError(response: Response) {
   } catch {
     return `HTTP ${response.status}`;
   }
+}
+
+async function readGroqError(response: Response) {
+  try {
+    const payload = (await response.json()) as {
+      error?: { message?: string };
+    };
+    return payload.error?.message ?? `HTTP ${response.status}`;
+  } catch {
+    return `HTTP ${response.status}`;
+  }
+}
+
+function audioExtension(mimeType: string) {
+  if (mimeType.includes("mpeg")) return "mp3";
+  if (mimeType.includes("mp4") || mimeType.includes("m4a")) return "m4a";
+  if (mimeType.includes("wav")) return "wav";
+  if (mimeType.includes("webm")) return "webm";
+  return "ogg";
 }

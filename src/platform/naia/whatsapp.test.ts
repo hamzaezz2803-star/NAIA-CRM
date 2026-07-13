@@ -8,8 +8,10 @@ import {
   resolveWhatsAppEmail,
   sendWhatsAppButtons,
   sendWhatsAppText,
+  transcribeWhatsAppAudio,
   truncateToLimit,
   verifyWhatsAppSignature,
+  WHATSAPP_MAX_AUDIO_BYTES,
 } from "./whatsapp";
 
 const APP_SECRET = "test-app-secret";
@@ -259,6 +261,18 @@ describe("WhatsApp Cloud API senders", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("refuses an oversized interactive body instead of hiding its end", async () => {
+    await expect(
+      sendWhatsAppButtons({
+        bodyText: "x".repeat(1025),
+        buttons: [{ id: "naia_approve:uuid", title: "Ok" }],
+        to: "212661234567",
+      }),
+    ).rejects.toThrow(/1024/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("truncates a text body without splitting an emoji at the 4096 limit", async () => {
     // 4095 chars + a surrogate pair straddling the limit at index 4095/4096.
     await sendWhatsAppText({
@@ -292,6 +306,98 @@ describe("WhatsApp Cloud API senders", () => {
     await expect(
       sendWhatsAppText({ body: "Bonjour", to: "212661234567" }),
     ).rejects.toThrow(/WHATSAPP_ACCESS_TOKEN/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("WhatsApp Cloud API voice notes", () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "meta-access-token");
+    vi.stubEnv("GROQ_API_KEY", "groq-api-key");
+    vi.stubEnv("GROQ_WHISPER_LANGUAGE", "auto");
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.clearAllMocks();
+  });
+
+  it("downloads an authorized Meta audio attachment and transcribes it", async () => {
+    fetchMock
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            file_size: 4,
+            mime_type: "audio/ogg; codecs=opus",
+            url: "https://lookaside.fbsbx.com/whatsapp/audio-1",
+          }),
+          { status: 200 },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(new Uint8Array([1, 2, 3, 4]), {
+          headers: { "content-length": "4" },
+          status: 200,
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ text: "  Bonjour   HPS  " }), {
+          status: 200,
+        }),
+      );
+
+    await expect(transcribeWhatsAppAudio("media-1")).resolves.toBe(
+      "Bonjour HPS",
+    );
+
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://graph.facebook.com/v21.0/media-1",
+    );
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      "https://lookaside.fbsbx.com/whatsapp/audio-1",
+    );
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe(
+      "Bearer meta-access-token",
+    );
+    expect(fetchMock.mock.calls[2][0]).toBe(
+      "https://api.groq.com/openai/v1/audio/transcriptions",
+    );
+    expect(fetchMock.mock.calls[2][1].headers.Authorization).toBe(
+      "Bearer groq-api-key",
+    );
+
+    const groqForm = fetchMock.mock.calls[2][1].body as FormData;
+    expect(groqForm.get("model")).toBe("whisper-large-v3-turbo");
+    expect(groqForm.get("language")).toBeNull();
+  });
+
+  it("rejects an oversized attachment before downloading it", async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          file_size: WHATSAPP_MAX_AUDIO_BYTES + 1,
+          mime_type: "audio/ogg",
+          url: "https://lookaside.fbsbx.com/whatsapp/audio-1",
+        }),
+        { status: 200 },
+      ),
+    );
+
+    await expect(transcribeWhatsAppAudio("media-1")).rejects.toThrow(
+      /too large/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when Meta or Groq credentials are missing", async () => {
+    vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "");
+    await expect(transcribeWhatsAppAudio("media-1")).rejects.toThrow(
+      /WHATSAPP_ACCESS_TOKEN/,
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });

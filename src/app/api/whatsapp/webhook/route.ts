@@ -4,6 +4,7 @@ import {
   executeBridgeAction,
   planBridgeCommand,
   resolveBridgeUser,
+  type NaiaBridgePlan,
   type NaiaBridgeUser,
 } from "@/platform/naia/bridge";
 import {
@@ -12,17 +13,26 @@ import {
   storePendingAction,
 } from "@/platform/naia/pending-actions";
 import {
+  fetchWhatsAppHistory,
+  storeWhatsAppMessage,
+} from "@/platform/naia/whatsapp-memory";
+import {
   resolveWhatsAppEmail,
   sendWhatsAppButtons,
   sendWhatsAppText,
+  transcribeWhatsAppAudio,
   verifyWhatsAppSignature,
+  WHATSAPP_INTERACTIVE_BODY_LIMIT,
+  WHATSAPP_TEXT_BODY_LIMIT,
 } from "@/platform/naia/whatsapp";
 
 // WhatsApp Business Cloud API webhook for the NAIA bridge. Same contract as
 // the Slack routes: verify the transport signature, ack fast, do the real
 // work with after(), and keep every execution behind a human button tap.
 // Identity comes from the admin-controlled WHATSAPP_USER_MAP phone→email map
-// plus resolveBridgeUser; an unknown number never plans or executes anything.
+// plus resolveBridgeUser. The destination phone-number id and sender allowlist
+// are checked before after() is scheduled: unknown Airbnb guests are silently
+// ignored without a reply, database write, provider read, or LLM call.
 
 const APPROVE_PREFIX = "naia_approve:";
 const DISMISS_PREFIX = "naia_dismiss:";
@@ -32,6 +42,7 @@ const DISMISS_PREFIX = "naia_dismiss:";
 const WHATSAPP_COMMAND_MAX_LENGTH = 2000;
 
 type WhatsAppInboundMessage = {
+  audio?: { id?: string; mime_type?: string };
   from?: string;
   id?: string;
   interactive?: {
@@ -44,15 +55,26 @@ type WhatsAppInboundMessage = {
 
 type WhatsAppWebhookPayload = {
   entry?: Array<{
+    id?: string;
     changes?: Array<{
       field?: string;
       value?: {
+        metadata?: {
+          display_phone_number?: string;
+          phone_number_id?: string;
+        };
         messages?: WhatsAppInboundMessage[];
         statuses?: unknown[];
       };
     }>;
   }>;
   object?: string;
+};
+
+type AuthorizedWhatsAppInboundMessage = WhatsAppInboundMessage & {
+  authorizedEmail: string;
+  from: string;
+  id: string;
 };
 
 // Meta webhook verification handshake: echo hub.challenge as plain text when
@@ -117,22 +139,50 @@ export async function POST(request: Request) {
 
 function extractInboundMessages(
   payload: WhatsAppWebhookPayload,
-): WhatsAppInboundMessage[] {
-  const messages: WhatsAppInboundMessage[] = [];
+): AuthorizedWhatsAppInboundMessage[] {
+  const messages: AuthorizedWhatsAppInboundMessage[] = [];
+  const expectedPhoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID?.trim();
+  const expectedBusinessAccountId =
+    process.env.WHATSAPP_BUSINESS_ACCOUNT_ID?.trim();
+  if (
+    payload.object !== "whatsapp_business_account" ||
+    !expectedPhoneNumberId ||
+    !expectedBusinessAccountId
+  ) {
+    return messages;
+  }
 
   for (const entry of payload.entry ?? []) {
+    if (entry.id !== expectedBusinessAccountId) continue;
+
     for (const change of entry.changes ?? []) {
+      if (
+        change.field !== "messages" ||
+        change.value?.metadata?.phone_number_id !== expectedPhoneNumberId
+      ) {
+        continue;
+      }
+
       for (const message of change.value?.messages ?? []) {
-        if (!message.from) continue;
+        if (!message.id || !message.from) continue;
+
+        const authorizedEmail = resolveWhatsAppEmail(message.from);
+        if (!authorizedEmail) continue;
 
         const isText = message.type === "text" && Boolean(message.text?.body);
+        const isAudio = message.type === "audio" && Boolean(message.audio?.id);
         const isButtonReply =
           message.type === "interactive" &&
           message.interactive?.type === "button_reply" &&
           Boolean(message.interactive.button_reply?.id);
 
-        if (isText || isButtonReply) {
-          messages.push(message);
+        if (isText || isAudio || isButtonReply) {
+          messages.push({
+            ...message,
+            authorizedEmail,
+            from: message.from,
+            id: message.id,
+          });
         }
       }
     }
@@ -141,36 +191,29 @@ function extractInboundMessages(
   return messages;
 }
 
-async function handleInboundMessage(message: WhatsAppInboundMessage) {
-  const from = message.from as string;
+async function handleInboundMessage(message: AuthorizedWhatsAppInboundMessage) {
+  const from = message.from;
 
   try {
+    const user = await resolveBridgeUser(message.authorizedEmail);
+    if (!user || user.role !== "owner") {
+      return;
+    }
+
     // Meta delivers webhooks at least once: skip redeliveries of an already
     // processed wamid so a command is never planned (or executed) twice.
-    if (message.id && !(await claimInboundMessage(message.id))) {
-      return;
-    }
-
-    const email = resolveWhatsAppEmail(from);
-    if (!email) {
-      await sendWhatsAppText({
-        body: "Numéro non reconnu : ce numéro WhatsApp n'est relié à aucun compte Qarizmi OS. Contacte un admin pour l'ajouter.",
-        to: from,
-      });
-      return;
-    }
-
-    const user = await resolveBridgeUser(email);
-    if (!user) {
-      await sendWhatsAppText({
-        body: "Compte non reconnu : ton numéro pointe vers un email sans profil Qarizmi OS. Connecte-toi d'abord sur https://os.qarizmi.com avec ton compte Google Qarizmi.",
-        to: from,
-      });
+    if (!(await claimInboundMessage(message.id))) {
       return;
     }
 
     if (message.type === "text") {
       await handleTextCommand(user, from, message.text?.body ?? "");
+      return;
+    }
+
+    if (message.type === "audio") {
+      const transcript = await transcribeWhatsAppAudio(message.audio?.id ?? "");
+      await handleTextCommand(user, from, transcript);
       return;
     }
 
@@ -203,10 +246,22 @@ async function handleTextCommand(
     .slice(0, WHATSAPP_COMMAND_MAX_LENGTH);
   if (!command) return;
 
+  const history = await fetchWhatsAppHistory({
+    organizationId: user.organizationId,
+    profileId: user.profileId,
+  });
+  await storeWhatsAppMessage({
+    content: command,
+    organizationId: user.organizationId,
+    profileId: user.profileId,
+    role: "user",
+  });
+
   const plan = await planBridgeCommand(
     user,
     command,
     WHATSAPP_COMMAND_MAX_LENGTH,
+    history,
   );
   await sendWhatsAppText({ body: plan.response, to });
 
@@ -214,6 +269,15 @@ async function handleTextCommand(
     // Each action is delivered independently: a failure on one approval
     // message must not swallow the remaining actions of the plan.
     try {
+      const reviewText = formatWhatsAppAction(action);
+      if (reviewText.length > WHATSAPP_TEXT_BODY_LIMIT) {
+        await sendWhatsAppText({
+          body: `L'action "${action.label}" est trop détaillée pour être affichée intégralement dans WhatsApp. Ouvre NAIA dans Qarizmi OS pour la vérifier sans contenu masqué.`,
+          to,
+        });
+        continue;
+      }
+
       // The HMAC token embeds the full approved action; the stored draft only
       // needs the reference {actionId, approvalToken, command} plus a label
       // for the confirmation messages.
@@ -236,12 +300,21 @@ async function handleTextCommand(
         continue;
       }
 
+      const buttons = [
+        { id: `${APPROVE_PREFIX}${draftId}`, title: "✅ Valider" },
+        { id: `${DISMISS_PREFIX}${draftId}`, title: "❌ Ignorer" },
+      ];
+
+      if (reviewText.length > WHATSAPP_INTERACTIVE_BODY_LIMIT) {
+        await sendWhatsAppText({ body: reviewText, to });
+      }
+
       await sendWhatsAppButtons({
-        bodyText: `${action.label}\n${action.description}`,
-        buttons: [
-          { id: `${APPROVE_PREFIX}${draftId}`, title: "✅ Valider" },
-          { id: `${DISMISS_PREFIX}${draftId}`, title: "❌ Ignorer" },
-        ],
+        bodyText:
+          reviewText.length > WHATSAPP_INTERACTIVE_BODY_LIMIT
+            ? `Valider l'action « ${action.label} » affichée ci-dessus ?`
+            : reviewText,
+        buttons,
         to,
       });
     } catch (error) {
@@ -313,4 +386,30 @@ async function handleButtonReply(
     body: lines.join("\n"),
     to,
   });
+}
+
+function formatWhatsAppAction(action: NaiaBridgePlan["actions"][number]) {
+  if (action.kind !== "crm.createLead") {
+    return `${action.label}\n${action.description}`;
+  }
+
+  const draft = action.payload;
+  const lines = [
+    action.label,
+    `Projet: ${draft.topic || "À compléter"}`,
+    `Entreprise: ${draft.companyName || "À compléter"}`,
+    `Contact: ${draft.contactName || "À compléter"}`,
+    draft.contactJobTitle ? `Poste: ${draft.contactJobTitle}` : "",
+    draft.contactEmail ? `Email: ${draft.contactEmail}` : "",
+    draft.contactPhone ? `Téléphone: ${draft.contactPhone}` : "",
+    draft.contactLinkedinUrl ? `LinkedIn: ${draft.contactLinkedinUrl}` : "",
+    `Statut: ${draft.status || "À contacter"}`,
+    draft.leadDate ? `Date: ${draft.leadDate}` : "",
+    draft.source ? `Source: ${draft.source}` : "",
+    draft.nextAction ? `Action suivante: ${draft.nextAction}` : "",
+    draft.tags?.length ? `Tags: ${draft.tags.join(", ")}` : "",
+    draft.notes ? `Notes: ${draft.notes}` : "",
+  ].filter(Boolean);
+
+  return lines.join("\n");
 }
