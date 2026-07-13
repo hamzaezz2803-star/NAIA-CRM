@@ -402,32 +402,58 @@ export function MeetingsDashboard({
     <div className="space-y-6">
       {/* Overview Stats */}
       <div className="grid gap-4 sm:grid-cols-3">
-        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+        <div
+          className="rounded-lg border p-5 shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-md bg-cyan-50 text-cyan-600 dark:bg-cyan-950 dark:text-cyan-400">
               <CalendarRange className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-2xl font-bold text-stone-950 dark:text-stone-50">
+              <p
+                className="text-2xl font-bold"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {stats.totalBooked}
               </p>
-              <p className="text-xs text-stone-500">Meetings prévus</p>
+              <p
+                className="text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
+                Meetings prévus
+              </p>
             </div>
           </div>
         </div>
 
-        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+        <div
+          className="rounded-lg border p-5 shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-md bg-indigo-50 text-indigo-600 dark:bg-indigo-950 dark:text-indigo-400">
               <Clock className="h-5 w-5" />
             </span>
             <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-stone-950 dark:text-stone-50">
+              <p
+                className="truncate text-sm font-semibold"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {stats.nextMeeting
                   ? stats.nextMeeting.topic
                   : "Aucun meeting prévu"}
               </p>
-              <p className="text-xs text-stone-500">
+              <p
+                className="text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
                 {stats.timeRemaining
                   ? stats.timeRemaining
                   : "Pas d'événements à venir"}
@@ -436,16 +462,30 @@ export function MeetingsDashboard({
           </div>
         </div>
 
-        <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+        <div
+          className="rounded-lg border p-5 shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
           <div className="flex items-center gap-3">
             <span className="flex h-10 w-10 items-center justify-center rounded-md bg-emerald-50 text-emerald-600 dark:bg-emerald-950 dark:text-emerald-400">
               <CheckCircle2 className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-2xl font-bold text-stone-950 dark:text-stone-50">
+              <p
+                className="text-2xl font-bold"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {stats.completedCount}
               </p>
-              <p className="text-xs text-stone-500">Opportunités avancées</p>
+              <p
+                className="text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
+                Opportunités avancées
+              </p>
             </div>
           </div>
         </div>
@@ -455,12 +495,27 @@ export function MeetingsDashboard({
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Left Column: Agenda/Calendar */}
         <div className="lg:col-span-2 space-y-4">
-          <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+          <div
+            className="rounded-lg border p-5 shadow-sm"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+            }}
+          >
             {/* Header + Tabs */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-stone-100 pb-4 dark:border-stone-800">
+            <div
+              className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b pb-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
               <div className="flex items-center gap-2">
-                <Calendar className="h-5 w-5 text-teal-700 dark:text-teal-400" />
-                <h2 className="text-base font-bold text-stone-950 dark:text-stone-50">
+                <Calendar
+                  className="h-5 w-5"
+                  style={{ color: "var(--maison-brass)" }}
+                />
+                <h2
+                  className="text-base font-bold"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Planning des réunions
                 </h2>
               </div>
@@ -532,7 +587,11 @@ export function MeetingsDashboard({
                       return (
                         <div
                           key={meeting.id}
-                          className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm transition hover:shadow-md dark:border-stone-800 dark:bg-stone-900/40"
+                          className="rounded-lg border p-4 shadow-sm transition hover:shadow-md"
+                          style={{
+                            background: "var(--maison-page)",
+                            borderColor: "var(--maison-border)",
+                          }}
                         >
                           <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-4">
                             <div className="space-y-1">
@@ -782,11 +841,26 @@ export function MeetingsDashboard({
           )}
 
           {/* Réunions Terminées Panel */}
-          <div className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950 flex flex-col max-h-[700px]">
-            <div className="flex items-center justify-between border-b border-stone-100 pb-3 dark:border-stone-800">
+          <div
+            className="rounded-lg border p-5 shadow-sm flex flex-col max-h-[700px]"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b pb-3"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
               <div className="flex items-center gap-2">
-                <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
-                <h3 className="text-sm font-bold text-stone-950 dark:text-stone-50">
+                <CheckCircle2
+                  className="h-4 w-4"
+                  style={{ color: "var(--maison-brass)" }}
+                />
+                <h3
+                  className="text-sm font-bold"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Réunions terminées
                 </h3>
               </div>
@@ -838,7 +912,11 @@ export function MeetingsDashboard({
                   return (
                     <div
                       key={meeting.id}
-                      className="rounded-lg border border-stone-150 p-3 hover:border-stone-300 transition dark:border-stone-850 dark:hover:border-stone-750 bg-stone-50/30 dark:bg-stone-900/10"
+                      className="rounded-lg border p-3 hover:opacity-80 transition"
+                      style={{
+                        background: "var(--maison-page)",
+                        borderColor: "var(--maison-border)",
+                      }}
                     >
                       <div className="flex items-start justify-between gap-2">
                         <h4 className="text-xs font-semibold text-stone-900 dark:text-stone-100 line-clamp-1">

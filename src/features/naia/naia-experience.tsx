@@ -15,6 +15,8 @@ import {
   RefreshCw,
   Search,
   Send,
+  SlidersHorizontal,
+  Plus,
   Sparkles,
   Users,
   Volume2,
@@ -43,6 +45,8 @@ import {
   projectTimelineMonths,
   projects,
   staffingPlan,
+  costs,
+  paymentPlans,
   type NaiaSectionId,
   type RiskLevel,
 } from "./operating-data";
@@ -1024,73 +1028,650 @@ function CashPanel({
   maxBalance: number;
   onGenerate: (prompt: string) => void;
 }) {
+  const [cashHorizon, setCashHorizon] = useState<3 | 6 | 12>(6);
   const [delayedClients, setDelayedClients] = useState<Record<string, boolean>>(
     {},
   );
+  const visibleCashMonths = cashMonths.slice(0, cashHorizon);
+  const currentMonth = cashMonths[0];
+  const lowestBalanceMonth = visibleCashMonths.reduce((lowest, month) =>
+    month.balance < lowest.balance ? month : lowest,
+  );
+  const latePaymentCount = paymentPlans.filter(
+    (plan) => plan.status === "late",
+  ).length;
+  const nextPayment =
+    paymentPlans.find((plan) => plan.status === "on-track") ?? paymentPlans[0];
+  const currentCosts = costs.reduce((total, cost) => total + cost.amount, 0);
   const clientTotals = sumMonthlyCash(clientCashRows);
   const opexTotals = sumMonthlyCash(opexRows);
   const capexTotals = sumMonthlyCash(capexRows);
+  const flowScale = Math.max(
+    maxBalance,
+    ...visibleCashMonths.flatMap((month) => [month.inflow, month.outflow]),
+  );
+  const visibleNet = visibleCashMonths.reduce(
+    (total, month) => total + month.inflow - month.outflow,
+    0,
+  );
+  const cashKpis = [
+    {
+      dot: "var(--maison-brass)",
+      label: `SOLDE PROJETÉ · FIN ${currentMonth.month}`,
+      sub: `Creux ${lowestBalanceMonth.month} : ${formatMad(lowestBalanceMonth.balance)}`,
+      value: formatMad(currentMonth.balance),
+    },
+    {
+      dot: "#0d9488",
+      label: `ENCAISSEMENTS · ${currentMonth.month}`,
+      sub: "",
+      value: formatMad(currentMonth.inflow),
+    },
+    {
+      dot: "var(--maison-brass)",
+      label: `DÉCAISSEMENTS · ${currentMonth.month}`,
+      sub: "",
+      value: formatMad(currentMonth.outflow),
+    },
+    {
+      dot: "var(--maison-brass)",
+      label: "PROCHAIN ENCAISSEMENT",
+      sub: `${nextPayment.client} · ${nextPayment.dueDate}`,
+      value: formatMad(nextPayment.nextPayment),
+    },
+  ];
 
   return (
-    <div className="space-y-3">
-      <Panel>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-stone-950">
-              Cash forecast 12 mois
-            </h2>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.15em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            FINANCE
+          </p>
+          <div className="mt-1 flex flex-wrap items-baseline gap-3">
+            <h1
+              className="text-4xl font-serif tracking-tight"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              Cash
+            </h1>
+            <p
+              className="text-sm font-medium"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              prévision {cashHorizon} mois ·{" "}
+              <span className="font-bold text-rose-700">
+                {latePaymentCount} paiement
+                {latePaymentCount !== 1 ? "s" : ""} en retard
+              </span>{" "}
+              · creux {lowestBalanceMonth.month} à{" "}
+              {formatShortMad(lowestBalanceMonth.balance)}
+            </p>
           </div>
-          <ActionButton
-            icon={WandSparkles}
-            label="Optimiser cash"
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div
+            className="flex rounded-md border p-0.5"
+            style={{
+              borderColor: "var(--maison-border)",
+              background: "var(--maison-page)",
+            }}
+          >
+            {([3, 6, 12] as const).map((range) => (
+              <button
+                key={range}
+                aria-pressed={cashHorizon === range}
+                className={`rounded-md px-3 py-1 text-xs font-semibold ${cashHorizon === range ? "shadow-sm" : ""}`}
+                onClick={() => setCashHorizon(range)}
+                style={{
+                  background:
+                    cashHorizon === range
+                      ? "var(--maison-card)"
+                      : "transparent",
+                  color:
+                    cashHorizon === range
+                      ? "var(--maison-text-primary)"
+                      : "var(--maison-text-secondary)",
+                }}
+                type="button"
+              >
+                {range} mois
+              </button>
+            ))}
+          </div>
+          <button
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-semibold transition"
             onClick={() =>
               onGenerate(
-                "Predis le cash flow, priorise les relances et prepare les brouillons d'emails clients.",
+                `Analyse les prévisions de trésorerie des ${cashHorizon} prochains mois, les risques et les actions prioritaires.`,
               )
             }
-            variant="primary"
-          />
-        </div>
-        <div className="mt-5 overflow-x-auto">
-          <div
-            className="grid min-h-64 min-w-[980px] grid-cols-12 items-end gap-2"
-            role="img"
-            aria-label="Prevision de solde cash sur douze mois"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-secondary)",
+            }}
           >
-            {cashMonths.map((row) => (
-              <div
-                className="flex h-full min-w-0 flex-col justify-end gap-2"
-                key={row.month}
+            Analyser cash
+          </button>
+          <button
+            className="flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition text-teal-950 hover:opacity-90 shadow-sm"
+            onClick={() =>
+              onGenerate(
+                "Priorise les relances cash et prépare les brouillons d'emails clients, sans rien envoyer sans validation.",
+              )
+            }
+            style={{
+              background: "#5eead4",
+            }}
+          >
+            <WandSparkles className="h-4 w-4" />
+            Préparer relances
+          </button>
+        </div>
+      </div>
+
+      {/* KPIs */}
+      <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
+        {cashKpis.map((kpi) => (
+          <div
+            key={kpi.label}
+            className="rounded-xl border p-5 shadow-sm"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+            }}
+          >
+            <p
+              className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-2"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              <span
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ background: kpi.dot }}
+              />
+              {kpi.label}
+            </p>
+            <h3
+              className="mt-2 text-2xl font-bold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              {kpi.value}
+            </h3>
+            {kpi.sub && (
+              <p
+                className="mt-1 text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
               >
-                <div className="flex flex-1 items-end rounded-md bg-stone-100 p-2">
-                  <div
-                    className={`w-full rounded-sm ${row.risk === "high" ? "bg-rose-500" : row.risk === "medium" ? "bg-amber-500" : "bg-emerald-500"}`}
-                    style={{
-                      height: `${Math.max(18, (row.balance / maxBalance) * 100)}%`,
-                    }}
-                  />
+                {kpi.sub}
+              </p>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Middle Grid */}
+      <div className="grid gap-4 2xl:grid-cols-3">
+        {/* Chart */}
+        <div
+          className="lg:col-span-2 rounded-xl border p-6 shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
+          <div className="flex items-center justify-between mb-8">
+            <h3
+              className="text-[11px] font-bold uppercase tracking-wider"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              FLUX PRÉVISIONNELS · {visibleCashMonths[0].month} ➔{" "}
+              {visibleCashMonths.at(-1)?.month}
+            </h3>
+            <div
+              className="flex items-center gap-4 text-[10px] font-bold uppercase"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: "#14b8a6" }}
+                />{" "}
+                Encaissements
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: "#d6d3d1" }}
+                />{" "}
+                Décaissements
+              </span>
+            </div>
+          </div>
+
+          <div className="h-48 flex items-end justify-between px-4">
+            {visibleCashMonths.map((m) => {
+              const inHeight = (m.inflow / flowScale) * 100;
+              const outHeight = (m.outflow / flowScale) * 100;
+              const net = m.inflow - m.outflow;
+
+              return (
+                <div
+                  key={m.month}
+                  className="flex flex-col items-center gap-3 w-16"
+                >
+                  <div className="flex items-end gap-1.5 h-32 w-full justify-center">
+                    <div
+                      className="w-3 rounded-t-sm transition-all"
+                      style={{ height: `${inHeight}%`, background: "#14b8a6" }}
+                    />
+                    <div
+                      className="w-3 rounded-t-sm transition-all"
+                      style={{ height: `${outHeight}%`, background: "#d6d3d1" }}
+                    />
+                  </div>
+                  <div className="text-center">
+                    <p
+                      className="text-[11px] font-bold uppercase"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {m.month}
+                    </p>
+                    <p
+                      className={`text-[10px] font-bold mt-1 ${net >= 0 ? "text-emerald-600" : "text-rose-600"}`}
+                    >
+                      {net >= 0 ? "+" : ""}
+                      {net / 1000} k
+                    </p>
+                  </div>
                 </div>
-                <div className="text-center">
-                  <p className="text-xs font-semibold text-stone-950">
-                    {row.month}
+              );
+            })}
+          </div>
+          <div
+            className="mt-4 border-t pt-3 text-[10px]"
+            style={{
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-secondary)",
+            }}
+          >
+            Net = encaissements - décaissements · cumul {cashHorizon} mois :{" "}
+            {visibleNet >= 0 ? "+" : ""}
+            {formatShortMad(visibleNet)}
+          </div>
+        </div>
+
+        {/* Sorties */}
+        <div
+          className="rounded-xl border p-6 shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
+          <div
+            className="flex items-center justify-between border-b pb-3 mb-4"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
+            <h3
+              className="text-[11px] font-bold uppercase tracking-wider"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              SORTIES · {currentMonth.month}
+            </h3>
+            <span
+              className="text-[11px] font-bold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              {formatMad(currentCosts)}
+            </span>
+          </div>
+          <div className="space-y-4">
+            {costs.map((c) => (
+              <div key={c.name} className="flex items-center justify-between">
+                <div>
+                  <p
+                    className="text-sm font-bold"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
+                    {c.name}
                   </p>
-                  <p className="mt-1 text-xs text-stone-500">
-                    {formatShortMad(row.balance)}
+                  <p
+                    className="text-[10px] font-semibold uppercase mt-0.5"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
+                    {c.type} · {c.date}
                   </p>
+                </div>
+                <span
+                  className="text-sm font-semibold"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  {formatMad(c.amount).replace(" MAD", "")}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      {/* Tables Bottom */}
+      <div className="grid gap-4 2xl:grid-cols-2">
+        {/* Plans de paiement */}
+        <div
+          className="rounded-xl border p-6 shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
+          <div
+            className="grid border-b pb-3 mb-4 text-[10px] font-bold uppercase tracking-wider"
+            style={{
+              gridTemplateColumns: "3fr 2fr 2fr 1fr 1fr",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-secondary)",
+            }}
+          >
+            <div>PLANS DE PAIEMENT</div>
+            <div>PLAN</div>
+            <div className="text-right">PROCHAIN</div>
+            <div className="text-right">ÉCHÉANCE</div>
+            <div className="text-right">STATUT</div>
+          </div>
+          <div className="space-y-4">
+            {paymentPlans.map((p) => (
+              <div
+                key={p.client}
+                className="grid items-center text-sm"
+                style={{ gridTemplateColumns: "3fr 2fr 2fr 1fr 1fr" }}
+              >
+                <div>
+                  <p
+                    className="font-bold"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
+                    {p.client}
+                  </p>
+                  <p
+                    className="text-[10px]"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
+                    {p.project}
+                  </p>
+                </div>
+                <div
+                  className="text-xs font-semibold"
+                  style={{ color: "var(--maison-text-secondary)" }}
+                >
+                  {p.plan}
+                </div>
+                <div
+                  className="text-right font-bold"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  {formatMad(p.nextPayment).replace(" MAD", "")}
+                </div>
+                <div
+                  className="text-right text-xs"
+                  style={{ color: "var(--maison-text-secondary)" }}
+                >
+                  {p.dueDate}
+                </div>
+                <div className="text-right">
+                  <span
+                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                      p.status === "on-track"
+                        ? "bg-emerald-50 text-emerald-700"
+                        : p.status === "late"
+                          ? "bg-rose-50 text-rose-700"
+                          : "bg-amber-50 text-amber-700"
+                    }`}
+                  >
+                    {p.status === "on-track"
+                      ? "À l'heure"
+                      : p.status === "late"
+                        ? "En retard"
+                        : "À risque"}
+                  </span>
                 </div>
               </div>
             ))}
           </div>
         </div>
-      </Panel>
 
-      <div className="grid gap-3 xl:grid-cols-[minmax(0,1fr)_340px]">
+        {/* Détail du cash */}
+        <div
+          className="rounded-xl border p-6 shadow-sm flex flex-col overflow-hidden"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
+          <div
+            className="flex flex-col sm:flex-row sm:items-center justify-between border-b pb-3 mb-4 gap-2"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
+            <div className="flex items-center gap-3 text-[10px] font-bold uppercase tracking-wider flex-wrap">
+              <span style={{ color: "var(--maison-text-secondary)" }}>
+                DÉTAIL · {currentMonth.month}
+              </span>
+              <span className="text-emerald-600">
+                +{formatShortMad(currentMonth.inflow)}
+              </span>
+              <span className="text-rose-600">
+                -{formatShortMad(currentMonth.outflow)}
+              </span>
+              <span style={{ color: "var(--maison-text-primary)" }}>net</span>
+              <span
+                className={
+                  currentMonth.inflow - currentMonth.outflow >= 0
+                    ? "text-emerald-600"
+                    : "text-rose-600"
+                }
+              >
+                {currentMonth.inflow - currentMonth.outflow >= 0 ? "+" : ""}
+                {formatShortMad(currentMonth.inflow - currentMonth.outflow)}
+              </span>
+            </div>
+            <div className="flex gap-2">
+              <span
+                className="rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                style={{
+                  borderColor: "#14b8a6",
+                  color: "#0f766e",
+                  background: "#f0fdfa",
+                }}
+              >
+                CA clients
+              </span>
+              <span
+                className="rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                style={{
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-secondary)",
+                }}
+              >
+                OPEX
+              </span>
+              <span
+                className="rounded-full border px-2 py-0.5 text-[10px] font-bold"
+                style={{
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-secondary)",
+                }}
+              >
+                CAPEX
+              </span>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 flex-1 min-h-0">
+            {/* Col 1 */}
+            <div
+              className="space-y-4 sm:border-r sm:pr-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase mb-2">
+                <span
+                  className="flex items-center gap-1.5"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />{" "}
+                  CA CLIENTS
+                </span>
+                <span className="text-emerald-600">
+                  +{formatShortMad(clientTotals[0])}
+                </span>
+              </div>
+              {clientCashRows.slice(0, 3).map((c) => (
+                <div
+                  key={c.client}
+                  className="flex justify-between items-start text-xs"
+                >
+                  <div className="min-w-0 pr-2">
+                    <p
+                      className="font-bold truncate"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {c.client}
+                    </p>
+                    <p
+                      className="text-[10px] truncate"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
+                      {c.status}
+                    </p>
+                  </div>
+                  <span className="text-emerald-600 font-semibold whitespace-nowrap">
+                    {c.monthlyCash[0]
+                      ? `+${formatMad(c.monthlyCash[0]).replace(" MAD", "").replace(" 000", "k")}`
+                      : "-"}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {/* Col 2 */}
+            <div
+              className="space-y-4 sm:border-r sm:pr-4"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase mb-2">
+                <span
+                  className="flex items-center gap-1.5"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ background: "var(--maison-brass)" }}
+                  />{" "}
+                  OPEX
+                </span>
+                <span className="text-rose-600">
+                  -{formatShortMad(opexTotals[0])}
+                </span>
+              </div>
+              {costs.slice(0, 3).map((c) => (
+                <div
+                  key={c.name}
+                  className="flex justify-between items-start text-xs"
+                >
+                  <div className="min-w-0 pr-2">
+                    <p
+                      className="font-bold truncate"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {c.name}
+                    </p>
+                    <p
+                      className="text-[10px] truncate"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
+                      {c.type}
+                    </p>
+                  </div>
+                  <span className="text-rose-600 font-semibold whitespace-nowrap">
+                    -
+                    {formatMad(c.amount)
+                      .replace(" MAD", "")
+                      .replace(" 000", "k")}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {/* Col 3 */}
+            <div className="space-y-4">
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase mb-2">
+                <span
+                  className="flex items-center gap-1.5"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ background: "var(--maison-brass)" }}
+                  />{" "}
+                  CAPEX
+                </span>
+                <span className="text-rose-600">
+                  -{formatShortMad(capexTotals[0])}
+                </span>
+              </div>
+              {capexRows.slice(0, 2).map((c) => (
+                <div
+                  key={c.label}
+                  className="flex justify-between items-start text-xs"
+                >
+                  <div className="min-w-0 pr-2">
+                    <p
+                      className="font-bold truncate"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {c.label}
+                    </p>
+                  </div>
+                  <span className="text-rose-600 font-semibold whitespace-nowrap">
+                    -
+                    {formatMad(c.monthlyCash[0] || 0)
+                      .replace(" MAD", "")
+                      .replace(" 000", "k")}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div className="grid gap-4 2xl:grid-cols-[minmax(0,1fr)_340px]">
         <Panel>
-          <div className="overflow-x-auto">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h2
+                className="text-lg font-semibold"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
+                Détail 12 mois
+              </h2>
+              <p
+                className="mt-1 text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
+                Déplie chaque ligne pour retrouver les hypothèses clients, OPEX
+                et CAPEX.
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 overflow-x-auto">
             <div className="min-w-[1180px]">
               <div
-                className="grid items-center gap-2 border-b border-stone-200 pb-2 text-xs font-semibold uppercase text-stone-500"
+                className="grid items-center gap-2 border-b pb-2 text-xs font-semibold uppercase"
                 style={{
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-secondary)",
                   gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
                 }}
               >
@@ -1107,7 +1688,7 @@ function CashPanel({
                     label: row.client,
                     monthlyCash: row.monthlyCash,
                     note: delayedClients[row.client]
-                      ? "Encaissement decale"
+                      ? "Encaissement décalé"
                       : `${row.owner} · ${row.status}`,
                   }))}
                   label="Clients (revenus)"
@@ -1133,8 +1714,11 @@ function CashPanel({
 
         <Panel>
           <div className="flex items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold text-stone-950">
-              Clients a relancer
+            <h2
+              className="text-lg font-semibold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              Clients à relancer
             </h2>
             <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
               {clientRelances.length}
@@ -1143,12 +1727,16 @@ function CashPanel({
           <div className="mt-4 grid gap-3">
             {clientRelances.map((relance) => (
               <article
-                className="rounded-md border border-stone-200 p-3"
+                className="rounded-md border p-3"
                 key={relance.client}
+                style={{ borderColor: "var(--maison-border)" }}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="font-semibold text-stone-950">
+                    <p
+                      className="font-semibold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
                       {relance.client}
                     </p>
                     <p className="mt-1 text-xs font-semibold text-amber-700">
@@ -1156,29 +1744,36 @@ function CashPanel({
                     </p>
                   </div>
                   <button
-                    className="rounded-md border border-stone-200 px-2 py-1 text-xs font-semibold text-stone-700 transition hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                    className="rounded-md border px-2 py-1 text-xs font-semibold transition hover:opacity-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
                     onClick={() =>
                       setDelayedClients((current) => ({
                         ...current,
                         [relance.client]: !current[relance.client],
                       }))
                     }
+                    style={{
+                      borderColor: "var(--maison-border)",
+                      color: "var(--maison-text-secondary)",
+                    }}
                     type="button"
                   >
-                    {delayedClients[relance.client] ? "Retabli" : "Decaler"}
+                    {delayedClients[relance.client] ? "Rétablir" : "Décaler"}
                   </button>
                 </div>
-                <p className="mt-2 text-sm leading-6 text-stone-600">
+                <p
+                  className="mt-2 text-sm leading-6"
+                  style={{ color: "var(--maison-text-secondary)" }}
+                >
                   {relance.reason}
                 </p>
                 <MiniButton
                   onClick={() =>
                     onGenerate(
-                      `Prepare une relance cash pour ${relance.client}, montant ${formatMad(relance.amount)}, echeance ${relance.dueDate}.`,
+                      `Prépare une relance cash pour ${relance.client}, montant ${formatMad(relance.amount)}, échéance ${relance.dueDate}, sans l'envoyer sans validation.`,
                     )
                   }
                 >
-                  Preparer relance
+                  Préparer relance
                 </MiniButton>
               </article>
             ))}
@@ -1204,12 +1799,16 @@ function CashGroup({
 
   return (
     <details
-      className="rounded-md border border-stone-200 bg-white open:bg-stone-50"
+      className="rounded-md border open:bg-stone-50/40"
       open
+      style={{ borderColor: "var(--maison-border)" }}
     >
       <summary
-        className="grid cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-semibold text-stone-950"
-        style={{ gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))" }}
+        className="grid cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-semibold"
+        style={{
+          color: "var(--maison-text-primary)",
+          gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
+        }}
       >
         <span>{label}</span>
         {monthlyCash.map((value, index) => (
@@ -1225,20 +1824,27 @@ function CashGroup({
           </span>
         ))}
       </summary>
-      <div className="border-t border-stone-200 px-3 py-2">
+      <div
+        className="border-t px-3 py-2"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
         {detailRows.map((row) => (
           <div
-            className="grid items-center gap-2 py-1 text-xs text-stone-600"
+            className="grid items-center gap-2 py-1 text-xs"
             key={row.label}
             style={{
+              color: "var(--maison-text-secondary)",
               gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
             }}
           >
             <span className="min-w-0 truncate">
-              <span className="font-semibold text-stone-800">{row.label}</span>
-              {row.note ? (
-                <span className="ml-2 text-stone-500">{row.note}</span>
-              ) : null}
+              <span
+                className="font-semibold"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
+                {row.label}
+              </span>
+              {row.note ? <span className="ml-2">{row.note}</span> : null}
             </span>
             {row.monthlyCash.map((value, index) => (
               <span className="text-right" key={`${row.label}-${index}`}>
@@ -1331,147 +1937,415 @@ function ProjectsPanel({
 }: {
   onGenerate: (prompt: string) => void;
 }) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [filterRisk, setFilterRisk] = useState("all");
+  const [showFilters, setShowFilters] = useState(false);
+
+  const filteredProjects = projects.filter((p) => {
+    const matchesSearch =
+      p.project.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      p.client.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesRisk = filterRisk === "all" || p.risk === filterRisk;
+    return matchesSearch && matchesRisk;
+  });
+  const highRiskProjectCount = projects.filter(
+    (project) => project.risk === "high",
+  ).length;
+  const averageProgress = Math.round(
+    projects.reduce((total, project) => total + project.progress, 0) /
+      projects.length,
+  );
+
   return (
-    <div className="space-y-3">
-      <Panel>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-          <div>
-            <h2 className="text-xl font-semibold text-stone-950">
-              Gantt delivery 12 mois
-            </h2>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
+        <div>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.15em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            PROJETS
+          </p>
+          <div className="mt-1 flex items-baseline gap-3">
+            <h1
+              className="text-4xl font-serif tracking-tight"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              Delivery
+            </h1>
+            <p
+              className="text-sm font-medium"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              {projects.length} projets ·{" "}
+              <span className="font-bold text-rose-700">
+                {highRiskProjectCount} à risque élevé
+              </span>{" "}
+              · progression moy. {averageProgress} %
+            </p>
           </div>
-          <ActionButton
-            icon={AlertTriangle}
-            label="Analyser risques"
-            onClick={() =>
-              onGenerate(
-                "Analyse les projets en retard, cite les causes et flague les mois critiques.",
-              )
-            }
-            variant="primary"
-          />
         </div>
-        <div className="mt-5 overflow-x-auto">
-          <div className="min-w-[1180px]">
-            <div
-              className="grid gap-2 border-b border-stone-200 pb-2 text-xs font-semibold uppercase text-stone-500"
+        <div className="relative flex flex-wrap items-center gap-3">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-stone-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Rechercher un projet..."
+              className="w-64 pl-9 pr-4 py-2 text-sm rounded-md border focus:outline-none focus:ring-1 focus:ring-stone-300"
               style={{
-                gridTemplateColumns: `220px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                background: "var(--maison-card)",
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-text-primary)",
+              }}
+            />
+          </div>
+          <button
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-semibold transition"
+            onClick={() => setShowFilters(!showFilters)}
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-secondary)",
+            }}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+            Filtres
+          </button>
+
+          {showFilters && (
+            <div
+              className="absolute right-0 top-12 z-50 w-56 rounded-md border p-4 shadow-lg"
+              style={{
+                borderColor: "var(--maison-border)",
+                background: "var(--maison-card)",
+                color: "var(--maison-text-primary)",
               }}
             >
-              <div>Projet</div>
+              <h3
+                className="text-xs font-bold uppercase mb-3 tracking-wider"
+                style={{ color: "var(--maison-brass)" }}
+              >
+                Filtrer par risque
+              </h3>
+              <div className="space-y-2">
+                <label className="flex items-center gap-2 text-sm cursor-pointer hover:opacity-80">
+                  <input
+                    type="radio"
+                    checked={filterRisk === "all"}
+                    onChange={() => setFilterRisk("all")}
+                    className="accent-rose-700"
+                  />{" "}
+                  Tous
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer hover:opacity-80">
+                  <input
+                    type="radio"
+                    checked={filterRisk === "high"}
+                    onChange={() => setFilterRisk("high")}
+                    className="accent-rose-700"
+                  />{" "}
+                  Risque élevé
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer hover:opacity-80">
+                  <input
+                    type="radio"
+                    checked={filterRisk === "medium"}
+                    onChange={() => setFilterRisk("medium")}
+                    className="accent-rose-700"
+                  />{" "}
+                  À surveiller
+                </label>
+                <label className="flex items-center gap-2 text-sm cursor-pointer hover:opacity-80">
+                  <input
+                    type="radio"
+                    checked={filterRisk === "low"}
+                    onChange={() => setFilterRisk("low")}
+                    className="accent-rose-700"
+                  />{" "}
+                  Sécurisé
+                </label>
+              </div>
+            </div>
+          )}
+
+          <button
+            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-semibold transition hover:opacity-80"
+            onClick={() =>
+              onGenerate(
+                "Analyse les projets en retard, cite les causes, les use cases concernés et les mois critiques.",
+              )
+            }
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-primary)",
+            }}
+            type="button"
+          >
+            <AlertTriangle className="h-4 w-4" />
+            Analyser risques
+          </button>
+
+          <Link
+            href="/dashboard/leads"
+            className="flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition text-white hover:opacity-90 shadow-sm"
+            style={{
+              background: "var(--maison-text-primary)",
+            }}
+          >
+            <Plus className="h-4 w-4" />
+            Nouveau projet
+          </Link>
+        </div>
+      </div>
+
+      {/* Gantt Table */}
+      <div
+        className="rounded-xl border shadow-sm overflow-hidden"
+        style={{
+          background: "var(--maison-card)",
+          borderColor: "var(--maison-border)",
+        }}
+      >
+        <div className="w-full overflow-x-auto">
+          <div className="min-w-[900px]">
+            {/* Table Header */}
+            <div
+              className="grid border-b text-[10px] font-bold uppercase tracking-wider px-6 py-4"
+              style={{
+                gridTemplateColumns: `minmax(180px, 2fr) repeat(${projectTimelineMonths.length}, minmax(40px, 1fr)) minmax(180px, 2fr)`,
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-text-secondary)",
+              }}
+            >
+              <div>PROJET · CLIENT</div>
               {projectTimelineMonths.map((month) => (
                 <div className="text-center" key={month}>
                   {month}
                 </div>
               ))}
+              <div className="text-right">RISQUE · BLOCAGE</div>
             </div>
-            <div className="mt-3 grid gap-2">
-              {projects.map((project) => (
+
+            {/* Table Body */}
+            <div
+              className="divide-y divide-stone-200"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
+              {filteredProjects.map((project) => (
                 <div
-                  className="grid items-center gap-2"
+                  className="grid items-center px-6 py-5 relative"
                   key={project.project}
                   style={{
-                    gridTemplateColumns: `220px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                    gridTemplateColumns: `minmax(180px, 2fr) repeat(${projectTimelineMonths.length}, minmax(40px, 1fr)) minmax(180px, 2fr)`,
                   }}
                 >
-                  <div className="min-w-0">
-                    <p className="truncate font-semibold text-stone-950">
+                  {/* Column: Projet / Client */}
+                  <div className="min-w-0 pr-4">
+                    <h3
+                      className="truncate text-[15px] font-bold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {project.project}
+                    </h3>
+                    <p
+                      className="truncate text-xs font-medium mt-0.5"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
                       {project.client}
                     </p>
-                    <p className="truncate text-sm text-stone-500">
-                      {project.project}
-                    </p>
-                    <p className="truncate text-xs text-stone-500">
-                      {project.startDate} - {project.endDate}
-                    </p>
+                    <div className="mt-2.5 flex flex-wrap gap-1.5">
+                      {project.useCases?.map((uc) => (
+                        <span
+                          key={uc}
+                          className="rounded border px-2 py-0.5 text-[10px] font-semibold"
+                          style={{
+                            background: "var(--maison-page)",
+                            borderColor: "var(--maison-border)",
+                            color: "var(--maison-text-secondary)",
+                          }}
+                        >
+                          {uc}
+                        </span>
+                      ))}
+                    </div>
+                    <details className="relative z-20 mt-2 text-xs">
+                      <summary
+                        className="cursor-pointer font-semibold"
+                        style={{ color: "var(--maison-brass)" }}
+                      >
+                        Détail des use cases
+                      </summary>
+                      <div className="mt-2 grid gap-1.5">
+                        {project.useCaseDetails.map((useCase) => (
+                          <div
+                            className="rounded border px-2 py-1.5"
+                            key={useCase.name}
+                            style={{
+                              background: "var(--maison-page)",
+                              borderColor: "var(--maison-border)",
+                            }}
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span
+                                className="truncate font-semibold"
+                                style={{ color: "var(--maison-text-primary)" }}
+                              >
+                                {useCase.name}
+                              </span>
+                              <span
+                                className="shrink-0"
+                                style={{
+                                  color: "var(--maison-text-secondary)",
+                                }}
+                              >
+                                {useCase.progress}%
+                              </span>
+                            </div>
+                            <p
+                              className="mt-0.5 truncate text-[10px]"
+                              style={{ color: "var(--maison-text-secondary)" }}
+                            >
+                              {useCase.startDate} - {useCase.endDate}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   </div>
+
+                  {/* Column: Gantt Background Lines */}
                   <div
-                    className="grid"
+                    className="absolute inset-y-0 pointer-events-none grid"
+                    style={{
+                      left: 0,
+                      right: 0,
+                      paddingLeft: "1.5rem", // matching px-6
+                      paddingRight: "1.5rem",
+                      gridTemplateColumns: `minmax(180px, 2fr) repeat(${projectTimelineMonths.length}, minmax(40px, 1fr)) minmax(180px, 2fr)`,
+                    }}
+                  >
+                    <div /> {/* Skip first column (projet) */}
+                    {projectTimelineMonths.map((_, i) => (
+                      <div
+                        key={i}
+                        className="border-l h-full"
+                        style={{
+                          borderColor: "var(--maison-border)",
+                          opacity: 0.5,
+                        }}
+                      />
+                    ))}
+                    <div /> {/* Skip last column (risk) */}
+                  </div>
+
+                  {/* Column: Gantt Bar */}
+                  <div
+                    className="grid relative z-10"
                     style={{
                       gridColumn: `2 / span ${projectTimelineMonths.length}`,
-                      gridTemplateColumns: `repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
+                      gridTemplateColumns: `repeat(${projectTimelineMonths.length}, minmax(40px, 1fr))`,
                     }}
                   >
                     <div
-                      className={`h-9 rounded-md border px-3 py-2 text-xs font-semibold ${riskClasses[project.risk]}`}
+                      className="flex h-7 items-center justify-end rounded-full px-3 text-[10px] font-bold transition-all"
                       style={{
                         gridColumn: `${project.start + 1} / span ${project.duration}`,
+                        background:
+                          project.risk === "high"
+                            ? "#a05252"
+                            : project.risk === "medium"
+                              ? "#c69243"
+                              : "#0d9488",
+                        color: "white",
                       }}
                     >
-                      {project.progress}% · {project.month}
+                      {project.progress} %
                     </div>
+                  </div>
+
+                  {/* Column: Risk / Blocker */}
+                  <div className="pl-6 text-right flex flex-col items-end">
+                    <div
+                      className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-bold"
+                      style={{
+                        color:
+                          project.risk === "high"
+                            ? "#a05252"
+                            : project.risk === "medium"
+                              ? "#c69243"
+                              : "#0d9488",
+                      }}
+                    >
+                      <span
+                        className="h-1.5 w-1.5 rounded-full"
+                        style={{
+                          background:
+                            project.risk === "high"
+                              ? "#a05252"
+                              : project.risk === "medium"
+                                ? "#c69243"
+                                : "#0d9488",
+                        }}
+                      />
+                      {riskLabel[project.risk]} · {project.month}
+                    </div>
+                    <p
+                      className="mt-1 text-xs truncate max-w-full"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
+                      {project.blocker}
+                    </p>
                   </div>
                 </div>
               ))}
+              {filteredProjects.length === 0 ? (
+                <div
+                  className="px-6 py-12 text-center text-sm"
+                  style={{ color: "var(--maison-text-secondary)" }}
+                >
+                  Aucun projet ne correspond aux filtres.
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Footer legend */}
+          <div
+            className="flex flex-wrap items-center justify-between gap-3 border-t px-6 py-4 text-[10px] font-bold tracking-wider"
+            style={{
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-secondary)",
+            }}
+          >
+            <div className="flex items-center gap-5">
+              <span className="flex items-center gap-2">
+                <span className="h-2 w-2 rounded-full bg-emerald-600" />{" "}
+                Maîtrisé
+              </span>
+              <span className="flex items-center gap-2">
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: "#c69243" }}
+                />{" "}
+                À surveiller
+              </span>
+              <span className="flex items-center gap-2">
+                <span
+                  className="h-2 w-2 rounded-full"
+                  style={{ background: "#a05252" }}
+                />{" "}
+                Risque élevé
+              </span>
+            </div>
+            <div>
+              ⚑ mois où la livraison peut glisser - barre pleine = progression
             </div>
           </div>
         </div>
-      </Panel>
-
-      <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3">
-        {projects.map((project) => (
-          <Panel key={project.project}>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-stone-500">
-                  {project.client}
-                </p>
-                <h3 className="mt-1 text-lg font-semibold text-stone-950">
-                  {project.project}
-                </h3>
-                <p className="mt-1 text-xs font-semibold text-stone-500">
-                  {project.startDate} - {project.endDate} · {project.progress}%
-                </p>
-              </div>
-              <span
-                className={`rounded-full border px-3 py-1 text-xs font-semibold ${riskClasses[project.risk]}`}
-              >
-                {riskLabel[project.risk]}
-              </span>
-            </div>
-            <div className="mt-4 h-2 rounded-full bg-stone-100">
-              <div
-                className="h-2 rounded-full bg-stone-950"
-                style={{ width: `${project.progress}%` }}
-              />
-            </div>
-            <p className="mt-3 text-sm leading-6 text-stone-700">
-              {project.blocker}
-            </p>
-            <details className="mt-4 rounded-md border border-stone-200 bg-stone-50 p-3">
-              <summary className="cursor-pointer text-sm font-semibold text-stone-800">
-                Details par use case
-              </summary>
-              <div className="mt-3 grid gap-2">
-                {project.useCaseDetails.map((useCase) => (
-                  <div
-                    className="rounded-md border border-stone-200 bg-white p-2"
-                    key={useCase.name}
-                  >
-                    <div className="flex items-start justify-between gap-3 text-sm">
-                      <span className="font-semibold text-stone-950">
-                        {useCase.name}
-                      </span>
-                      <span className="text-xs font-semibold text-stone-500">
-                        {useCase.progress}%
-                      </span>
-                    </div>
-                    <p className="mt-1 text-xs text-stone-500">
-                      {useCase.startDate} - {useCase.endDate}
-                    </p>
-                    <div className="mt-2 h-1.5 rounded-full bg-stone-100">
-                      <div
-                        className="h-1.5 rounded-full bg-stone-950"
-                        style={{ width: `${useCase.progress}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </details>
-          </Panel>
-        ))}
       </div>
     </div>
   );
@@ -1658,7 +2532,13 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
 
 function Panel({ children }: { children: ReactNode }) {
   return (
-    <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-white">
+    <section
+      className="rounded-lg border p-5 shadow-sm"
+      style={{
+        background: "var(--maison-card)",
+        borderColor: "var(--maison-border)",
+      }}
+    >
       {children}
     </section>
   );

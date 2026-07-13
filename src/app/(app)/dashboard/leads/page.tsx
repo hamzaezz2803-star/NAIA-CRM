@@ -1394,24 +1394,42 @@ export default function LeadsPage() {
   );
 
   return (
-    <div className="space-y-3">
-      <div className="flex flex-col gap-3 border-b border-stone-200 pb-3 dark:border-stone-800 lg:flex-row lg:items-end lg:justify-between">
+    <div className="space-y-4">
+      <div
+        className="flex flex-col gap-3 border-b pb-4 lg:flex-row lg:items-end lg:justify-between"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
         {/* Left: breadcrumb + title */}
         <div className="min-w-0">
-          <p className="text-[11px] font-semibold uppercase tracking-widest text-teal-700 dark:text-teal-400">
-            CRM · ESPACE INTERNE
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            CRM · Espace Interne
           </p>
-          <div className="flex items-baseline gap-3 flex-wrap">
-            <h1 className="font-serif text-2xl font-bold italic leading-tight text-stone-950 dark:text-stone-50">
+          <div className="flex items-baseline gap-3 flex-wrap mt-1">
+            <h1
+              className="text-2xl font-semibold tracking-tight md:text-3xl font-serif"
+              style={{
+                fontFamily: "var(--font-playfair), Georgia, serif",
+                color: "var(--maison-text-primary)",
+              }}
+            >
               Pipeline
             </h1>
-            <p className="text-sm text-stone-500 dark:text-stone-400">
+            <p
+              className="text-sm"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
               {activeLeads.length} lead{activeLeads.length !== 1 ? "s" : ""}{" "}
               actif{activeLeads.length !== 1 ? "s" : ""}
               {overdueLeads.length > 0 && (
                 <>
                   {" · "}
-                  <span className="font-semibold text-red-600 dark:text-red-400">
+                  <span
+                    className="font-semibold"
+                    style={{ color: "var(--maison-brass)" }}
+                  >
                     {overdueLeads.length} relance
                     {overdueLeads.length !== 1 ? "s" : ""} en retard
                   </span>
@@ -1425,37 +1443,70 @@ export default function LeadsPage() {
         <div className="flex flex-wrap items-center gap-2 shrink-0">
           {/* Google connection */}
           {isGoogleConnected ? (
-            <div className="flex h-8 items-center gap-2 rounded-lg border border-teal-200 bg-teal-50 px-2.5 text-xs font-medium text-teal-800 dark:border-teal-900/50 dark:bg-teal-950/30 dark:text-teal-400">
-              <span className="h-1.5 w-1.5 rounded-full bg-teal-500" />
+            <div
+              className="flex h-8 items-center gap-2 rounded-lg border px-2.5 text-xs font-medium"
+              style={{
+                background: "var(--maison-page)",
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-text-primary)",
+              }}
+            >
+              <span
+                className="h-1.5 w-1.5 rounded-full"
+                style={{ background: "var(--maison-brass)" }}
+              />
               Google connecté
               <button
                 onClick={handleDisconnectGoogle}
                 title="Déconnecter Google"
-                className="ml-1 text-teal-600 hover:text-red-600 transition"
+                className="ml-1 transition"
+                style={{ color: "var(--maison-text-muted)" }}
               >
-                <LogOut className="h-3.5 w-3.5" />
+                <LogOut className="h-3.5 w-3.5 hover:text-red-500" />
               </button>
             </div>
           ) : (
             <Button
               onClick={handleConnectGoogle}
               variant="outline"
-              className="h-8 border-stone-200 text-xs text-stone-700 hover:bg-stone-50"
+              className="h-8 text-xs"
+              style={{
+                background: "var(--maison-card)",
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-text-primary)",
+              }}
             >
-              <Globe className="mr-1.5 h-3.5 w-3.5 text-teal-600" />
+              <Globe
+                className="mr-1.5 h-3.5 w-3.5"
+                style={{ color: "var(--maison-brass)" }}
+              />
               Google
             </Button>
           )}
 
           {/* View toggle */}
-          <div className="flex h-8 items-center gap-0.5 rounded-lg border border-stone-200 bg-stone-100 p-0.5 dark:border-stone-800 dark:bg-stone-900">
+          <div
+            className="flex h-8 items-center gap-0.5 rounded-lg border p-0.5"
+            style={{
+              borderColor: "var(--maison-border)",
+              background: "var(--maison-page)",
+            }}
+          >
             <button
               onClick={() => setViewMode("kanban")}
               className={`flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold transition ${
                 viewMode === "kanban"
-                  ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
-                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
+                  ? "shadow-sm"
+                  : "opacity-60 hover:opacity-100"
               }`}
+              style={{
+                background:
+                  viewMode === "kanban" ? "var(--maison-card)" : "transparent",
+                color:
+                  viewMode === "kanban"
+                    ? "var(--maison-text-primary)"
+                    : "var(--maison-text-secondary)",
+              }}
             >
               <LayoutGrid className="h-3.5 w-3.5" />
               Kanban
@@ -1464,9 +1515,19 @@ export default function LeadsPage() {
               onClick={() => setViewMode("calendar")}
               className={`flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold transition ${
                 viewMode === "calendar"
-                  ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
-                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
+                  ? "shadow-sm"
+                  : "opacity-60 hover:opacity-100"
               }`}
+              style={{
+                background:
+                  viewMode === "calendar"
+                    ? "var(--maison-card)"
+                    : "transparent",
+                color:
+                  viewMode === "calendar"
+                    ? "var(--maison-text-primary)"
+                    : "var(--maison-text-secondary)",
+              }}
             >
               <CalendarDays className="h-3.5 w-3.5" />
               Calendrier
@@ -1475,9 +1536,17 @@ export default function LeadsPage() {
               onClick={() => setViewMode("list")}
               className={`flex h-7 items-center gap-1 rounded-md px-2.5 text-xs font-semibold transition ${
                 viewMode === "list"
-                  ? "bg-white text-stone-900 shadow-sm dark:bg-stone-800 dark:text-stone-50"
-                  : "text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
+                  ? "shadow-sm"
+                  : "opacity-60 hover:opacity-100"
               }`}
+              style={{
+                background:
+                  viewMode === "list" ? "var(--maison-card)" : "transparent",
+                color:
+                  viewMode === "list"
+                    ? "var(--maison-text-primary)"
+                    : "var(--maison-text-secondary)",
+              }}
             >
               <List className="h-3.5 w-3.5" />
               Liste
@@ -1490,9 +1559,18 @@ export default function LeadsPage() {
               type="button"
               onClick={() => openCategoryModal(null)}
               variant="outline"
-              className="h-8 gap-1.5 border-dashed border-stone-300 text-xs text-stone-600 shadow-sm hover:bg-stone-50 hover:text-stone-950"
+              className="h-8 gap-1.5 text-xs shadow-sm"
+              style={{
+                background: "var(--maison-card)",
+                borderColor: "var(--maison-border)",
+                borderStyle: "dashed",
+                color: "var(--maison-text-primary)",
+              }}
             >
-              <Plus className="h-3.5 w-3.5 text-teal-600" />
+              <Plus
+                className="h-3.5 w-3.5"
+                style={{ color: "var(--maison-brass)" }}
+              />
               Colonne
             </Button>
           )}
@@ -1504,7 +1582,18 @@ export default function LeadsPage() {
               resetForm();
               setIsAddOpen(true);
             }}
-            className="h-8 gap-1.5 bg-stone-900 text-xs text-white hover:bg-stone-800 dark:bg-stone-50 dark:text-stone-900 dark:hover:bg-stone-100"
+            className="h-8 gap-1.5 text-xs shadow-sm transition-colors"
+            style={{
+              background: "var(--maison-brass)",
+              color: "var(--maison-brass-text)",
+              border: "none",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "var(--maison-brass-hover)";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "var(--maison-brass)";
+            }}
           >
             <Plus className="h-3.5 w-3.5" />
             Nouveau lead
@@ -1513,13 +1602,7 @@ export default function LeadsPage() {
       </div>
 
       {overdueLeads.length > 0 && (
-        <section
-          className="flex items-center gap-3 rounded-xl px-3 py-2"
-          style={{
-            background: "#fff5f5",
-            border: "1px solid #fecaca",
-          }}
-        >
+        <section className="flex items-center gap-3 rounded-xl px-3 py-2 shadow-sm border border-red-200 bg-red-50">
           <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-red-700">
             <AlertCircle className="h-3.5 w-3.5 text-red-600" />
             Retards ({overdueLeads.length})
@@ -1544,24 +1627,14 @@ export default function LeadsPage() {
                   type="button"
                   key={lead.id}
                   onClick={() => openEditModal(lead)}
-                  className="flex min-w-[190px] max-w-[240px] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:shadow-sm"
-                  style={{
-                    background: "var(--maison-card)",
-                    border: "1px solid #fca5a5",
-                  }}
+                  className="flex min-w-[190px] max-w-[240px] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:opacity-80 border border-red-200 bg-red-100/60"
                 >
                   <Calendar className="h-3.5 w-3.5 shrink-0 text-red-500" />
                   <div className="min-w-0">
-                    <p
-                      className="truncate text-[11px] font-semibold"
-                      style={{ color: "var(--maison-text-primary)" }}
-                    >
+                    <p className="truncate text-[11px] font-semibold text-red-950">
                       {companyName}
                     </p>
-                    <p
-                      className="truncate text-[10px]"
-                      style={{ color: "var(--maison-text-muted)" }}
-                    >
+                    <p className="truncate text-[10px] text-red-800">
                       {contactName ? `${contactName} · ` : ""}
                       {formatLeadDateForDisplay(lead.leadDate)}
                     </p>
@@ -1744,13 +1817,28 @@ export default function LeadsPage() {
           </div>
         </div>
       ) : viewMode === "list" ? (
-        <div className="rounded-xl border border-stone-200 bg-white shadow-sm">
+        <div
+          className="rounded-xl border shadow-sm"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
           {/* Filters Bar */}
-          <div className="flex flex-wrap items-center gap-4 border-b border-stone-200 bg-stone-50/50 p-4">
+          <div
+            className="flex flex-wrap items-center gap-4 border-b p-4"
+            style={{
+              background: "var(--maison-page)",
+              borderColor: "var(--maison-border)",
+              borderTopLeftRadius: "12px",
+              borderTopRightRadius: "12px",
+            }}
+          >
             <div className="flex flex-col gap-1">
               <label
                 htmlFor="filter-status"
-                className="text-[10px] font-bold text-stone-500 uppercase tracking-wider"
+                className="text-[10px] font-bold uppercase tracking-wider"
+                style={{ color: "var(--maison-text-secondary)" }}
               >
                 Filtre par Statut
               </label>
@@ -1758,7 +1846,12 @@ export default function LeadsPage() {
                 id="filter-status"
                 value={filterStatus}
                 onChange={(e) => setFilterStatus(e.target.value)}
-                className="h-9 min-w-[180px] rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs text-stone-700 shadow-sm focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600 transition"
+                className="h-9 min-w-[180px] rounded-lg border px-3 py-1.5 text-xs shadow-sm focus:outline-none transition"
+                style={{
+                  background: "var(--maison-card)",
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-primary)",
+                }}
               >
                 <option value="all">Tous les statuts</option>
                 {categories.map((c) => (
@@ -1772,7 +1865,8 @@ export default function LeadsPage() {
             <div className="flex flex-col gap-1">
               <label
                 htmlFor="filter-company"
-                className="text-[10px] font-bold text-stone-500 uppercase tracking-wider"
+                className="text-[10px] font-bold uppercase tracking-wider"
+                style={{ color: "var(--maison-text-secondary)" }}
               >
                 Filtre par Entreprise
               </label>
@@ -1780,7 +1874,12 @@ export default function LeadsPage() {
                 id="filter-company"
                 value={filterCompany}
                 onChange={(e) => setFilterCompany(e.target.value)}
-                className="h-9 min-w-[180px] rounded-lg border border-stone-200 bg-white px-3 py-1.5 text-xs text-stone-700 shadow-sm focus:border-teal-600 focus:outline-none focus:ring-1 focus:ring-teal-600 transition"
+                className="h-9 min-w-[180px] rounded-lg border px-3 py-1.5 text-xs shadow-sm focus:outline-none transition"
+                style={{
+                  background: "var(--maison-card)",
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-primary)",
+                }}
               >
                 <option value="all">Toutes les entreprises</option>
                 {uniqueCompanies.map((c) => (
@@ -1798,7 +1897,8 @@ export default function LeadsPage() {
                   setFilterStatus("all");
                   setFilterCompany("all");
                 }}
-                className="mt-4 text-xs font-semibold text-teal-650 hover:text-teal-850 hover:underline transition"
+                className="mt-4 text-xs font-semibold hover:underline transition"
+                style={{ color: "var(--maison-brass)" }}
               >
                 Réinitialiser les filtres
               </button>
@@ -1807,47 +1907,62 @@ export default function LeadsPage() {
 
           <div className="overflow-x-auto">
             <table className="w-full min-w-[800px] border-collapse text-left text-sm">
-              <thead className="border-b border-stone-200 bg-stone-50/75">
+              <thead
+                className="border-b"
+                style={{
+                  borderColor: "var(--maison-border)",
+                  background: "var(--maison-page)",
+                }}
+              >
                 <tr>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--maison-text-secondary)" }}
                   >
                     Sujet
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--maison-text-secondary)" }}
                   >
                     Entreprise / Contact
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--maison-text-secondary)" }}
                   >
                     Statut
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--maison-text-secondary)" }}
                   >
                     Prochaine Action
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider text-stone-500"
+                    className="px-6 py-3.5 text-xs font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--maison-text-secondary)" }}
                   >
                     Créé le
                   </th>
                   <th
                     scope="col"
-                    className="px-6 py-3.5 text-right text-xs font-semibold uppercase tracking-wider text-stone-500"
+                    className="px-6 py-3.5 text-right text-xs font-semibold uppercase tracking-wider"
+                    style={{ color: "var(--maison-text-secondary)" }}
                   >
                     Actions
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-stone-100">
+              <tbody
+                className="divide-y divide-stone-200"
+                style={{ borderColor: "var(--maison-border)" }}
+              >
                 {filteredLeads.length === 0 ? (
                   <tr>
                     <td
@@ -2028,29 +2143,57 @@ export default function LeadsPage() {
             calendarDate.getFullYear() === today.getFullYear();
 
           return (
-            <div className="rounded-xl border border-stone-200 bg-white overflow-hidden shadow-sm">
+            <div
+              className="rounded-xl border overflow-hidden shadow-sm"
+              style={{
+                background: "var(--maison-card)",
+                borderColor: "var(--maison-border)",
+              }}
+            >
               {/* Calendar control header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-5 py-4 border-b border-stone-200 bg-stone-50/30">
+              <div
+                className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 px-5 py-4 border-b"
+                style={{
+                  background: "var(--maison-page)",
+                  borderColor: "var(--maison-border)",
+                }}
+              >
                 <div className="flex items-center gap-3">
                   <div className="flex items-center gap-1">
                     <button
                       onClick={handlePrevCalendar}
-                      className="p-1.5 rounded-lg border border-stone-250 bg-white hover:bg-stone-50 text-stone-550 hover:text-stone-900 transition shadow-sm"
+                      className="p-1.5 rounded-lg border transition shadow-sm opacity-80 hover:opacity-100"
+                      style={{
+                        background: "var(--maison-card)",
+                        borderColor: "var(--maison-border)",
+                        color: "var(--maison-text-secondary)",
+                      }}
                     >
                       <ChevronLeft className="h-4 w-4" />
                     </button>
                     <button
                       onClick={handleNextCalendar}
-                      className="p-1.5 rounded-lg border border-stone-250 bg-white hover:bg-stone-50 text-stone-550 hover:text-stone-900 transition shadow-sm"
+                      className="p-1.5 rounded-lg border transition shadow-sm opacity-80 hover:opacity-100"
+                      style={{
+                        background: "var(--maison-card)",
+                        borderColor: "var(--maison-border)",
+                        color: "var(--maison-text-secondary)",
+                      }}
                     >
                       <ChevronRight className="h-4 w-4" />
                     </button>
                   </div>
                   <div className="text-left">
-                    <h3 className="text-sm font-bold text-stone-900 capitalize">
+                    <h3
+                      className="text-sm font-bold capitalize"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
                       {getPeriodLabel()}
                     </h3>
-                    <p className="text-xs text-stone-500">
+                    <p
+                      className="text-xs"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
                       {leads.length} lead{leads.length !== 1 ? "s" : ""} au
                       total
                     </p>
@@ -2058,14 +2201,34 @@ export default function LeadsPage() {
                 </div>
 
                 {/* Calendar View Mode Selectors */}
-                <div className="flex items-center gap-1 rounded-lg border border-stone-200 bg-stone-100 p-1 self-start sm:self-auto">
+                <div
+                  className="flex items-center gap-1 rounded-lg border p-1 self-start sm:self-auto"
+                  style={{
+                    borderColor: "var(--maison-border)",
+                    background: "var(--maison-page)",
+                  }}
+                >
                   <button
                     onClick={() => setCalendarMode("month")}
                     className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
                       calendarMode === "month"
-                        ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
-                        : "text-stone-500 hover:text-stone-900"
+                        ? "shadow-sm border"
+                        : "opacity-70 hover:opacity-100"
                     }`}
+                    style={{
+                      background:
+                        calendarMode === "month"
+                          ? "var(--maison-card)"
+                          : "transparent",
+                      borderColor:
+                        calendarMode === "month"
+                          ? "var(--maison-border)"
+                          : "transparent",
+                      color:
+                        calendarMode === "month"
+                          ? "var(--maison-text-primary)"
+                          : "var(--maison-text-secondary)",
+                    }}
                   >
                     Mois
                   </button>
@@ -2073,9 +2236,23 @@ export default function LeadsPage() {
                     onClick={() => setCalendarMode("week")}
                     className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
                       calendarMode === "week"
-                        ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
-                        : "text-stone-500 hover:text-stone-900"
+                        ? "shadow-sm border"
+                        : "opacity-70 hover:opacity-100"
                     }`}
+                    style={{
+                      background:
+                        calendarMode === "week"
+                          ? "var(--maison-card)"
+                          : "transparent",
+                      borderColor:
+                        calendarMode === "week"
+                          ? "var(--maison-border)"
+                          : "transparent",
+                      color:
+                        calendarMode === "week"
+                          ? "var(--maison-text-primary)"
+                          : "var(--maison-text-secondary)",
+                    }}
                   >
                     Semaine
                   </button>
@@ -2083,9 +2260,23 @@ export default function LeadsPage() {
                     onClick={() => setCalendarMode("day")}
                     className={`px-3 py-1 rounded-md text-xs font-semibold transition ${
                       calendarMode === "day"
-                        ? "bg-white text-stone-900 shadow-sm border border-stone-200/50"
-                        : "text-stone-500 hover:text-stone-900"
+                        ? "shadow-sm border"
+                        : "opacity-70 hover:opacity-100"
                     }`}
+                    style={{
+                      background:
+                        calendarMode === "day"
+                          ? "var(--maison-card)"
+                          : "transparent",
+                      borderColor:
+                        calendarMode === "day"
+                          ? "var(--maison-border)"
+                          : "transparent",
+                      color:
+                        calendarMode === "day"
+                          ? "var(--maison-text-primary)"
+                          : "var(--maison-text-secondary)",
+                    }}
                   >
                     Jour
                   </button>
@@ -2096,12 +2287,19 @@ export default function LeadsPage() {
               {calendarMode === "month" && (
                 <>
                   {/* Day Labels */}
-                  <div className="grid grid-cols-7 border-b border-stone-200 bg-stone-50/55">
+                  <div
+                    className="grid grid-cols-7 border-b"
+                    style={{
+                      borderColor: "var(--maison-border)",
+                      background: "var(--maison-page)",
+                    }}
+                  >
                     {["Lun", "Mar", "Mer", "Jeu", "Ven", "Sam", "Dim"].map(
                       (d) => (
                         <div
                           key={d}
-                          className="py-2 text-center text-[10px] font-bold text-stone-500 uppercase tracking-wider"
+                          className="py-2 text-center text-[10px] font-bold uppercase tracking-wider"
+                          style={{ color: "var(--maison-text-secondary)" }}
                         >
                           {d}
                         </div>
@@ -2114,7 +2312,8 @@ export default function LeadsPage() {
                     {Array.from({ length: paddedStart }).map((_, i) => (
                       <div
                         key={`empty-${i}`}
-                        className="min-h-[100px] border-b border-r border-stone-100 bg-stone-50/20"
+                        className="min-h-[100px] border-b border-r"
+                        style={{ borderColor: "var(--maison-border)" }}
                       />
                     ))}
 
@@ -2127,19 +2326,25 @@ export default function LeadsPage() {
                         return (
                           <div
                             key={day}
-                            className={`min-h-[120px] border-b border-r border-stone-150 p-2 flex flex-col gap-1.5 ${
-                              isCurrentDay
-                                ? "bg-teal-50/30"
-                                : "hover:bg-stone-50/30"
-                            } transition-colors group relative`}
+                            className={`min-h-[120px] border-b border-r p-2 flex flex-col gap-1.5 transition-colors group relative`}
+                            style={{
+                              borderColor: "var(--maison-border)",
+                              background: isCurrentDay
+                                ? "var(--maison-page)"
+                                : "transparent",
+                            }}
                           >
                             <div className="flex items-center justify-between">
                               <span
-                                className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full ${
-                                  isCurrentDay
-                                    ? "bg-teal-750 text-white shadow-sm font-extrabold"
-                                    : "text-stone-550"
-                                }`}
+                                className={`text-xs font-bold w-6 h-6 flex items-center justify-center rounded-full ${isCurrentDay ? "shadow-sm font-extrabold" : ""}`}
+                                style={{
+                                  background: isCurrentDay
+                                    ? "var(--maison-brass)"
+                                    : "transparent",
+                                  color: isCurrentDay
+                                    ? "var(--maison-brass-text)"
+                                    : "var(--maison-text-secondary)",
+                                }}
                               >
                                 {day}
                               </span>
@@ -4334,7 +4539,7 @@ function LeadCard({
 
       {/* Clickable card body */}
       <button type="button" className="w-full text-left" onClick={onSelect}>
-        <div className="p-3 pb-2">
+        <div className="p-2.5 pb-1.5">
           {/* Tag bars */}
           {lead.tags && lead.tags.length > 0 && (
             <div className="mb-2 flex gap-1">
@@ -4349,15 +4554,15 @@ function LeadCard({
           )}
 
           {/* Company name + Dark avatar (2-letter initials) */}
-          <div className="flex items-start justify-between gap-2">
+          <div className="flex items-start justify-between gap-1.5">
             <p
-              className="flex-1 truncate text-[13px] font-semibold leading-snug"
+              className="min-w-0 flex-1 truncate text-[12px] font-semibold leading-snug"
               style={{ color: "var(--maison-text-primary)" }}
             >
               {companyName}
             </p>
             <span
-              className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-[10px] font-bold leading-none"
+              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold leading-none"
               style={{
                 background: darkAvatarColor.bg,
                 color: darkAvatarColor.text,
@@ -4370,7 +4575,7 @@ function LeadCard({
           {/* Topic / subtitle — 1 line truncated */}
           {showProject && (
             <p
-              className="mt-0.5 truncate text-[11px]"
+              className="mt-0.5 min-w-0 truncate text-[10px]"
               style={{ color: "var(--maison-text-secondary)" }}
             >
               {displayTopic}
@@ -4380,29 +4585,31 @@ function LeadCard({
           {/* Next action — 1 line max for compact uniform height */}
           {lead.nextAction && (
             <p
-              className="mt-1.5 flex items-start gap-1.5 text-[11px] leading-snug"
+              className="mt-1 flex items-start gap-1 text-[10px] leading-snug"
               style={{ color: "var(--maison-text-muted)" }}
             >
               <span className="mt-px shrink-0">→</span>
-              <span className="truncate">{lead.nextAction}</span>
+              <span className="min-w-0 flex-1 truncate">{lead.nextAction}</span>
             </p>
           )}
         </div>
 
         {/* Footer — date + source, no separator */}
-        <div className="flex items-center justify-between gap-2 px-3 pb-3 pt-1">
+        <div className="flex flex-wrap items-center justify-between gap-1 px-2.5 pb-2.5 pt-1">
           {/* Date: compact "18 juil." with calendar icon; red if overdue */}
           {cardDateDisplay ? (
             <span
-              className="inline-flex shrink-0 items-center gap-1 whitespace-nowrap text-[11px]"
+              className="inline-flex min-w-0 max-w-full items-center gap-1 text-[9px]"
               style={{
                 color: isOverdue ? "#dc2626" : "var(--maison-text-muted)",
               }}
             >
-              <Calendar className="h-3 w-3 shrink-0" />
-              {cardDateDisplay}
+              <Calendar className="h-2.5 w-2.5 shrink-0" />
+              <span className="truncate">{cardDateDisplay}</span>
               {isOverdue && (
-                <span className="font-semibold text-red-600">· retard</span>
+                <span className="shrink-0 font-semibold text-red-600">
+                  · retard
+                </span>
               )}
             </span>
           ) : (
@@ -4412,16 +4619,18 @@ function LeadCard({
           {/* Source: plain uppercase text, no box */}
           {sourceDisplay ? (
             <span
-              className="shrink-0 text-[10px] font-semibold uppercase tracking-wide"
+              className="min-w-0 truncate text-[9px] font-semibold uppercase tracking-wide"
               style={{ color: "var(--maison-text-muted)" }}
             >
               {sourceDisplay}
             </span>
           ) : (
-            <div className="flex shrink-0 items-center gap-1">
-              <span className={`h-1.5 w-1.5 rounded-full ${statusDotBg}`} />
+            <div className="flex min-w-0 shrink-0 items-center gap-1">
               <span
-                className="text-[10px] font-semibold uppercase tracking-wide"
+                className={`h-1 w-1 shrink-0 rounded-full ${statusDotBg}`}
+              />
+              <span
+                className="min-w-0 truncate text-[9px] font-semibold uppercase tracking-wide"
                 style={{ color: "var(--maison-text-muted)" }}
               >
                 {statusLabels[lead.status] || lead.status}

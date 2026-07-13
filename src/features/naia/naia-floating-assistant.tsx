@@ -23,6 +23,7 @@ import type { NaiaActionDraft, NaiaOrchestrationResult } from "./orchestrator";
 import {
   createVoiceSilenceDetector,
   playElevenLabsVoice,
+  primeVoicePlayback,
   type VoicePlaybackHandle,
   VOICE_RECORDING_MAX_MS,
 } from "./voice-client";
@@ -280,6 +281,7 @@ export function NaiaFloatingAssistant() {
     action: SignedNaiaAction,
     leadInput?: Partial<CrmLeadDraft>,
   ) => {
+    primeVoicePlayback();
     setIsApplyingAction(true);
     setNotice("");
 
@@ -331,6 +333,7 @@ export function NaiaFloatingAssistant() {
   };
 
   const startVoiceControl = () => {
+    primeVoicePlayback();
     setIsOpen(true);
     if (canRecordAudio) {
       void startMediaRecorderControl();
@@ -618,6 +621,7 @@ export function NaiaFloatingAssistant() {
             className="mt-3"
             onSubmit={(event) => {
               event.preventDefault();
+              primeVoicePlayback();
               void runCommand(command, { speak: true });
             }}
           >
@@ -637,6 +641,7 @@ export function NaiaFloatingAssistant() {
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
+                  primeVoicePlayback();
                   void runCommand(command, { speak: true });
                 }
               }}

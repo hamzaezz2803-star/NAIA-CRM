@@ -47,7 +47,13 @@ export default async function MeetingsPage() {
         actions={<StatusBadge status="live" />}
       />
 
-      <section className="rounded-lg border border-stone-200 bg-white p-4 shadow-sm dark:border-stone-800 dark:bg-stone-950">
+      <section
+        className="rounded-lg border p-4 shadow-sm"
+        style={{
+          background: "var(--maison-card)",
+          borderColor: "var(--maison-border)",
+        }}
+      >
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="flex items-start gap-3">
             <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md bg-teal-50 text-teal-700 dark:bg-teal-400/10 dark:text-teal-200">
