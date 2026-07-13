@@ -4,12 +4,17 @@ const mocks = vi.hoisted(() => ({
   inspectGoogleWorkspaceCapabilities: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
+  loadNaiaPrivateKnowledge: vi.fn(),
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
   inspectGoogleWorkspaceCapabilities: mocks.inspectGoogleWorkspaceCapabilities,
   listGmailMessages: mocks.listGmailMessages,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
+}));
+
+vi.mock("@/platform/naia/private-knowledge", () => ({
+  loadNaiaPrivateKnowledge: mocks.loadNaiaPrivateKnowledge,
 }));
 
 import type { CrmLeadSummary } from "@/features/crm/contracts";
@@ -49,6 +54,7 @@ describe("NAIA personal context answers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("GROQ_API_KEY", "");
+    mocks.loadNaiaPrivateKnowledge.mockResolvedValue(undefined);
     mocks.inspectGoogleWorkspaceCapabilities.mockResolvedValue({
       accountLabel: "ali@qarizmi.com",
       calendar: true,
@@ -92,6 +98,31 @@ describe("NAIA personal context answers", () => {
     expect(result.response).toContain("Ali EL ABBASSY");
     expect(result.response).toContain("ali@qarizmi.com");
     expect(result.response).toContain("propriétaire");
+  });
+
+  it("enriches the authenticated cofounder's identity from the private deck", async () => {
+    mocks.loadNaiaPrivateKnowledge.mockResolvedValue({
+      actorProfile:
+        "Ali El Abbassy — Co-founder, Head of Technology. École Polytechnique, HEC Paris, Roland Berger et Artefact.",
+      snippets: [],
+      sourceFileName: "Qarizmi_Generic.pptx",
+      sourceModifiedAt: "2026-07-13T10:00:00.000Z",
+    });
+
+    const { result } = await planNaiaAssistant({
+      actor,
+      command: "que sais-tu sur moi ?",
+      crmLeads,
+      googleContext,
+    });
+
+    expect(mocks.loadNaiaPrivateKnowledge).toHaveBeenCalledWith({
+      actor,
+      allowPersonalData: true,
+      command: "que sais-tu sur moi ?",
+    });
+    expect(result.response).toContain("Head of Technology");
+    expect(result.response).toContain("dernier deck générique Qarizmi");
   });
 
   it("explains who NAIA is without exposing actor details", async () => {
@@ -288,6 +319,7 @@ describe("NAIA personal context answers", () => {
 
     expect(mocks.listGmailMessages).not.toHaveBeenCalled();
     expect(mocks.inspectGoogleWorkspaceCapabilities).not.toHaveBeenCalled();
+    expect(mocks.loadNaiaPrivateKnowledge).not.toHaveBeenCalled();
     expect(result.response).toContain("message privé");
     expect(result.response).not.toContain(actor.email);
   });
@@ -335,6 +367,12 @@ describe("NAIA personal context answers", () => {
         crmLeads,
         googleContext,
         history: [{ content: "Le meeting HPS est demain.", role: "assistant" }],
+        privateKnowledge: {
+          actorProfile: "CONTEXTE PRIVE",
+          snippets: [],
+          sourceFileName: "Qarizmi_Generic.pptx",
+          sourceModifiedAt: "2026-07-13T10:00:00.000Z",
+        },
       });
 
       const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
@@ -344,8 +382,116 @@ describe("NAIA personal context answers", () => {
       expect(userContext.contextSources.crm).toBe(
         "not loaded on shared surfaces",
       );
+      expect(userContext.contextSources.qarizmiKnowledge).toBe("not loaded");
+      expect(userContext.privateKnowledge).toBeUndefined();
       expect(userContext.realGoogleCalendar).toBeUndefined();
       expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
+      expect(mocks.loadNaiaPrivateKnowledge).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not load the private deck for an unrelated general question", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "naia",
+                confidence: 0.9,
+                response: "Paris est la capitale de la France.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await planNaiaAssistant({
+        actor,
+        command: "Quelle est la capitale de la France ?",
+        crmLeads,
+        googleContext,
+      });
+
+      expect(mocks.loadNaiaPrivateKnowledge).not.toHaveBeenCalled();
+      const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      const userContext = JSON.parse(requestBody.messages[1].content);
+      expect(userContext.privateKnowledge).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("does not load company knowledge when Groq is unavailable", async () => {
+    await planNaiaAssistant({
+      actor,
+      command: "Que sais-tu sur Qarizmi ?",
+      crmLeads,
+      googleContext,
+    });
+
+    expect(mocks.loadNaiaPrivateKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("sends only bounded private-deck snippets to Groq in an owner DM", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const privateKnowledge = {
+      snippets: [
+        {
+          section: "presentation",
+          slideNumber: 6,
+          text: "Qarizmi combine stratégie, exécution et pilotage ROI.",
+        },
+      ],
+      sourceFileName: "Qarizmi_Generic.pptx",
+      sourceModifiedAt: "2026-07-13T10:00:00.000Z",
+    };
+    mocks.loadNaiaPrivateKnowledge.mockResolvedValue(privateKnowledge);
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "naia",
+                confidence: 0.95,
+                response: "Qarizmi combine stratégie et exécution.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const { result } = await planNaiaAssistant({
+        actor,
+        command: "Que sais-tu sur Qarizmi ?",
+        crmLeads,
+        googleContext,
+      });
+
+      expect(mocks.loadNaiaPrivateKnowledge).toHaveBeenCalledWith({
+        actor,
+        allowPersonalData: true,
+        command: "Que sais-tu sur Qarizmi ?",
+      });
+      const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      const userContext = JSON.parse(requestBody.messages[1].content);
+      expect(userContext.privateKnowledge).toEqual(privateKnowledge);
+      expect(userContext.contextSources.qarizmiKnowledge).toContain(
+        "Qarizmi_Generic.pptx",
+      );
+      expect(result.response).toContain("stratégie et exécution");
     } finally {
       vi.unstubAllGlobals();
     }

@@ -16,7 +16,10 @@ export function isIdentityQuery(command: string) {
     "quel est mon profil",
     "quelle est mon identite",
     "quel est mon role",
+    "que sais tu sur moi",
+    "qu est ce que tu sais sur moi",
     "who am i",
+    "what do you know about me",
     "what is my profile",
     "what is my role",
   ]);

@@ -34,6 +34,10 @@ import {
   type GoogleCalendarEventSummary,
   type GoogleWorkspaceContext,
 } from "@/platform/integrations/google-workspace";
+import {
+  loadNaiaPrivateKnowledge,
+  type NaiaPrivateKnowledgeContext,
+} from "@/platform/naia/private-knowledge";
 
 export type NaiaAssistantMode = "groq-orchestrated" | "local-orchestrated";
 export type NaiaConversationMessage = {
@@ -54,6 +58,7 @@ export async function planNaiaAssistant({
   crmLeads,
   googleContext,
   history = [],
+  privateKnowledge,
 }: {
   actor?: NaiaActorContext;
   allowPersonalData?: boolean;
@@ -61,6 +66,7 @@ export async function planNaiaAssistant({
   crmLeads: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
   history?: NaiaConversationMessage[];
+  privateKnowledge?: NaiaPrivateKnowledgeContext | null;
 }): Promise<{ mode: NaiaAssistantMode; result: NaiaOrchestrationResult }> {
   const localResult = orchestrateNaiaCommand({ command, crmLeads });
   if (
@@ -81,19 +87,30 @@ export async function planNaiaAssistant({
     };
   }
   const personalCommand = resolvePersonalFollowUp(command, history);
+  const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
+  const resolvedPrivateKnowledge = !allowPersonalData
+    ? undefined
+    : privateKnowledge === undefined &&
+        (Boolean(apiKey) || isIdentityQuery(personalCommand)) &&
+        shouldLoadPrivateKnowledge(personalCommand, localResult)
+      ? await loadNaiaPrivateKnowledge({
+          actor,
+          allowPersonalData,
+          command: personalCommand,
+        })
+      : (privateKnowledge ?? undefined);
   const personalAnswer = await answerPersonalQuery({
     actor,
     allowPersonalData,
     command: personalCommand,
     crmLeads,
     googleContext,
+    privateKnowledge: resolvedPrivateKnowledge,
     resultCommand: command,
   });
   if (personalAnswer) {
     return { mode: "local-orchestrated", result: personalAnswer };
   }
-
-  const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
 
   // Deterministic answers and every write plan stay authoritative. The LLM is
   // used for open questions, never to invent or mutate an action payload.
@@ -141,6 +158,9 @@ export async function planNaiaAssistant({
                   googleCalendar: realGoogleCalendar
                     ? "live connected user data"
                     : "not loaded",
+                  qarizmiKnowledge: resolvedPrivateKnowledge
+                    ? `private internal deck: ${resolvedPrivateKnowledge.sourceFileName}`
+                    : "not loaded",
                   operations:
                     "simulated working data; always disclose this when used",
                 },
@@ -158,6 +178,7 @@ export async function planNaiaAssistant({
                   })),
                 suggestedAgentId: localResult.agent.id,
                 operatingContext: buildNaiaOperatingContext(),
+                privateKnowledge: resolvedPrivateKnowledge,
                 realGoogleCalendar: realGoogleCalendar ?? undefined,
               }),
               role: "user",
@@ -210,6 +231,7 @@ async function answerPersonalQuery({
   command,
   crmLeads,
   googleContext,
+  privateKnowledge,
   resultCommand,
 }: {
   actor?: NaiaActorContext;
@@ -217,6 +239,7 @@ async function answerPersonalQuery({
   command: string;
   crmLeads: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
+  privateKnowledge?: NaiaPrivateKnowledgeContext;
   resultCommand: string;
 }): Promise<NaiaOrchestrationResult | null> {
   const personalQuery =
@@ -238,7 +261,7 @@ async function answerPersonalQuery({
 
   if (isIdentityQuery(command)) {
     const response = actor
-      ? formatIdentityAnswer(actor)
+      ? formatIdentityAnswer(actor, privateKnowledge)
       : "Je ne peux pas identifier ton profil dans cette session. Reconnecte-toi à Qarizmi OS avec ton compte professionnel.";
     return createDirectAnswer({
       agentId: "naia",
@@ -433,7 +456,10 @@ function createDirectAnswer({
   };
 }
 
-function formatIdentityAnswer(actor: NaiaActorContext) {
+function formatIdentityAnswer(
+  actor: NaiaActorContext,
+  privateKnowledge?: NaiaPrivateKnowledgeContext,
+) {
   const roleLabels: Record<NaiaActorContext["role"], string> = {
     admin: "administrateur",
     member: "membre",
@@ -444,7 +470,13 @@ function formatIdentityAnswer(actor: NaiaActorContext) {
     ? ` de l'organisation ${actor.organizationName}`
     : " de Qarizmi OS";
 
-  return `Tu es ${actor.name} (${actor.email}), ${roleLabels[actor.role]}${organization}.`;
+  const identity = `Tu es ${actor.name} (${actor.email}), ${roleLabels[actor.role]}${organization}.`;
+  if (!privateKnowledge?.actorProfile) return identity;
+
+  return [
+    identity,
+    `Le dernier deck générique Qarizmi précise ce contexte professionnel: ${privateKnowledge.actorProfile}`,
+  ].join("\n\n");
 }
 
 function formatGoogleAccessAnswer(
@@ -704,11 +736,61 @@ function buildSystemPrompt() {
     "Le crmSnapshot contient des données CRM réelles de l'organisation. N'invente jamais un lead, un chiffre ou une action.",
     "operatingContext contient encore des données de travail simulées pour Finance, Projects et HR. Si tu les utilises, commence explicitement par dire qu'il s'agit de données simulées.",
     "realGoogleCalendar, lorsqu'il est présent, contient les vrais événements Google Calendar de l'utilisateur et prime sur tout exemple.",
+    "privateKnowledge, lorsqu'il est présent, provient du dernier deck générique du Drive privé Qarizmi. Utilise uniquement les extraits fournis et n'invente aucun parcours, credential, chiffre ou offre absent de cette source.",
+    "Le contexte privé est réservé aux cofondateurs en conversation privée. Ne le répète jamais comme une information publique et ne prétends pas avoir lu d'autres documents.",
     "Pour une question générale, choisis naia et réponds comme un assistant compétent.",
     "Réponds toujours au fond de la question. Ne réponds jamais seulement qu'un agent prend le relais, peut lire un module ou peut préparer une action.",
     "Pour une information insuffisante, pose une seule question de clarification utile.",
     "Ne prétends jamais avoir exécuté une écriture, envoyé un message, créé un événement ou modifié le CRM.",
   ].join(" ");
+}
+
+function shouldLoadPrivateKnowledge(
+  command: string,
+  localResult: NaiaOrchestrationResult,
+) {
+  if (isIdentityQuery(command)) return true;
+  if (isNaiaOverviewQuestion(command)) return false;
+  if (
+    isGoogleAccessQuery(command) ||
+    isGmailReadQuery(command) ||
+    isCalendarReadQuery(command) ||
+    isCrmMeetingReadQuery(command)
+  ) {
+    return false;
+  }
+
+  return (
+    localResult.responseType === "handoff" && isQarizmiKnowledgeQuery(command)
+  );
+}
+
+function isQarizmiKnowledgeQuery(command: string) {
+  const normalized = normalizePersonalQuery(command);
+  return [
+    "qarizmi",
+    "qui sommes nous",
+    "notre entreprise",
+    "notre cabinet",
+    "notre offre",
+    "nos offres",
+    "nos services",
+    "notre positionnement",
+    "notre proposition de valeur",
+    "nos references",
+    "nos credentials",
+    "notre expertise",
+    "nos expertises",
+    "who are we",
+    "our company",
+    "our firm",
+    "our offer",
+    "our services",
+    "our positioning",
+    "our value proposition",
+    "our credentials",
+    "our expertise",
+  ].some((phrase) => normalized.includes(phrase));
 }
 
 function parseGroqDecision(content: string | undefined) {

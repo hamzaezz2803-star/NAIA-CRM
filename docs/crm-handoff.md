@@ -102,6 +102,8 @@ Do not send external communications automatically.
 
 NAIA read routing must keep data sources explicit. Questions such as `quels sont mes meetings CRM ?` read only organization-scoped leads at `meeting-booked`; questions that name Google Calendar read the acting user's personal Calendar connection. Calendar events already linked to a CRM lead are identified through the `[Google Calendar Event ID: ...]` and `[Google Calendar Event Link: ...]` markers in lead notes, which allows `Calendar hors CRM` to exclude them without changing CRM rows. These reads never create or update a lead; every CRM mutation continues through a reviewed action.
 
+Founder/company background is a separate read-only context, not CRM data. NAIA may index the latest generic deck from `MAYA_DRIVE_SOURCE_FOLDER_ID` only for an authenticated `owner` whose email passes the existing Maya cofounder allowlist. The bounded excerpts may enrich a private web, Slack DM, or private WhatsApp answer, but must never be copied into lead notes, approval payloads, shared-channel prompts, or CRM snapshots. A Drive timeout or parsing failure must fall back silently to the normal assistant path.
+
 ## Google Drive Folder Structure
 
 One folder per client company (not per lead), created by the organization
