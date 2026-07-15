@@ -1,10 +1,7 @@
 export type IntegrationProvider = "google" | "slack" | "whatsapp" | "microsoft";
 
 export type IntegrationConnectionStatus =
-  | "not-connected"
-  | "connected"
-  | "needs-review"
-  | "revoked";
+  "not-connected" | "connected" | "needs-review" | "revoked";
 
 export type IntegrationConnection = {
   id: string;

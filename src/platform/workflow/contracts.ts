@@ -1,11 +1,7 @@
 import type { PlatformModuleId } from "@/platform/core/modules";
 
 export type ApprovalRequestStatus =
-  | "draft"
-  | "pending"
-  | "approved"
-  | "rejected"
-  | "cancelled";
+  "draft" | "pending" | "approved" | "rejected" | "cancelled";
 
 export type ExternalActionKind =
   | "send-email"

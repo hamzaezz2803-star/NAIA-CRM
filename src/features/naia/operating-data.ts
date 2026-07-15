@@ -14,12 +14,7 @@ import {
 } from "lucide-react";
 
 export type NaiaSectionId =
-  | "overview"
-  | "leads"
-  | "cash-flow"
-  | "crm"
-  | "projects"
-  | "hr";
+  "overview" | "leads" | "cash-flow" | "crm" | "projects" | "hr";
 
 export type RiskLevel = "low" | "medium" | "high";
 

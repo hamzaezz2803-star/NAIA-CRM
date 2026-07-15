@@ -334,8 +334,7 @@ async function loadMayaPitchLibrary() {
         sourceFolderId: driveConfig.sourceFolderId,
       });
       const genericDriveDeckFile = findLatestGenericDeck(driveDeckFiles) as
-        | (typeof driveDeckFiles)[number]
-        | null;
+        (typeof driveDeckFiles)[number] | null;
       const genericDeckFile = genericDriveDeckFile
         ? await downloadMayaDriveDeckToTemp(genericDriveDeckFile)
         : null;

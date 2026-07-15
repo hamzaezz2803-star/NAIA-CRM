@@ -3,12 +3,7 @@ import type { PlatformModuleId } from "@/platform/core/modules";
 export type OrganizationRole = "owner" | "admin" | "member" | "viewer";
 
 export type PermissionAction =
-  | "read"
-  | "create"
-  | "update"
-  | "delete"
-  | "approve"
-  | "manage";
+  "read" | "create" | "update" | "delete" | "approve" | "manage";
 
 export type Permission = {
   module: PlatformModuleId | "platform";

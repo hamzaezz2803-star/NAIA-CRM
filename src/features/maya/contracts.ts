@@ -55,10 +55,7 @@ export const mayaLearningEventTypes = [
 export type MayaLearningEventType = (typeof mayaLearningEventTypes)[number];
 
 export type MayaClientType =
-  | "single-company"
-  | "group"
-  | "holding"
-  | "portfolio";
+  "single-company" | "group" | "holding" | "portfolio";
 
 export type MayaDeckFile = {
   fileName: string;
