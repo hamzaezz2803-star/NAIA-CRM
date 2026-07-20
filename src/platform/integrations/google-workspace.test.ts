@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { inferGoogleWorkspaceReadCapabilities } from "./google-workspace";
+import {
+  googleCalendarIdempotencyId,
+  inferGoogleWorkspaceReadCapabilities,
+} from "./google-workspace";
 
 describe("Google Workspace read capabilities", () => {
   it("recognizes the configured read scopes", () => {
@@ -19,5 +22,15 @@ describe("Google Workspace read capabilities", () => {
         "https://www.googleapis.com/auth/gmail.send",
       ]),
     ).toEqual({ calendar: false, gmail: false });
+  });
+});
+
+describe("Google Calendar idempotency", () => {
+  it("derives a stable Google-compatible event id", () => {
+    const first = googleCalendarIdempotencyId("meeting-action-123");
+    const second = googleCalendarIdempotencyId("meeting-action-123");
+
+    expect(first).toBe(second);
+    expect(first).toMatch(/^[0-9a-v]{5,1024}$/);
   });
 });

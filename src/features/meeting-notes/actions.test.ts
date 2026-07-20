@@ -1,0 +1,139 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  requireMeetingNotesAccess: vi.fn(),
+  revalidatePath: vi.fn(),
+}));
+
+vi.mock("next/cache", () => ({
+  revalidatePath: mocks.revalidatePath,
+}));
+
+vi.mock("./access", () => ({
+  requireMeetingNotesAccess: mocks.requireMeetingNotesAccess,
+}));
+
+import { queueMeetingProcessingAction } from "./actions";
+
+const organizationId = "11111111-1111-4111-8111-111111111111";
+const meetingId = "22222222-2222-4222-8222-222222222222";
+const sessionId = "33333333-3333-4333-8333-333333333333";
+const chunkPath = `${organizationId}/${meetingId}/${sessionId}/chunk-0000.m4a`;
+const manifest = {
+  chunks: [{ path: chunkPath, sha256: "a".repeat(64), sizeBytes: 1 }],
+  mimeType: "audio/mp4",
+  originalFileName: "meeting.m4a",
+  totalBytes: 1,
+};
+
+describe("meeting intelligence queue action", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("removes uploaded audio after an atomic queue rejection", async () => {
+    const fixture = makeSupabaseFixture({
+      assetRecovery: null,
+      rpcResult: {
+        data: null,
+        error: { message: "processing job insert failed" },
+      },
+    });
+    grantAccess(fixture.supabase);
+
+    const result = await queueMeetingProcessingAction(meetingId, manifest);
+
+    expect(result).toMatchObject({
+      discardUploadedAudio: true,
+      error: "processing job insert failed",
+      success: false,
+    });
+    expect(fixture.remove).toHaveBeenCalledWith([chunkPath]);
+  });
+
+  it("recovers a committed job when the RPC response is lost", async () => {
+    const fixture = makeSupabaseFixture({
+      assetRecovery: { id: "44444444-4444-4444-8444-444444444444" },
+      jobRecovery: { id: "55555555-5555-4555-8555-555555555555" },
+      rpcError: new Error("response lost after commit"),
+    });
+    grantAccess(fixture.supabase);
+
+    const result = await queueMeetingProcessingAction(meetingId, manifest);
+
+    expect(result).toEqual({
+      jobId: "55555555-5555-4555-8555-555555555555",
+      success: true,
+    });
+    expect(fixture.remove).not.toHaveBeenCalled();
+    expect(mocks.revalidatePath).toHaveBeenCalledWith("/meetings");
+  });
+});
+
+function grantAccess(supabase: unknown) {
+  mocks.requireMeetingNotesAccess.mockResolvedValue({
+    organizationId,
+    supabase,
+    user: { id: "66666666-6666-4666-8666-666666666666" },
+  });
+}
+
+function makeSupabaseFixture({
+  assetRecovery,
+  jobRecovery = null,
+  rpcError,
+  rpcResult = { data: "77777777-7777-4777-8777-777777777777", error: null },
+}: {
+  assetRecovery: { id: string } | null;
+  jobRecovery?: { id: string } | null;
+  rpcError?: Error;
+  rpcResult?: { data: string | null; error: { message: string } | null };
+}) {
+  const meetingQuery = makeQuery({ data: { id: meetingId }, error: null });
+  const activeJobQuery = makeQuery({ data: null, error: null });
+  const assetRecoveryQuery = makeQuery({
+    data: assetRecovery,
+    error: null,
+  });
+  const jobRecoveryQuery = makeQuery({ data: jobRecovery, error: null });
+  let processingQueryCount = 0;
+  const remove = vi.fn().mockResolvedValue({ data: [], error: null });
+  const rpc = rpcError
+    ? vi.fn().mockRejectedValue(rpcError)
+    : vi.fn().mockResolvedValue(rpcResult);
+
+  return {
+    remove,
+    supabase: {
+      from: vi.fn((table: string) => {
+        if (table === "meetings") return meetingQuery;
+        if (table === "meeting_assets") return assetRecoveryQuery;
+        if (table === "meeting_processing_jobs") {
+          processingQueryCount += 1;
+          return processingQueryCount === 1 ? activeJobQuery : jobRecoveryQuery;
+        }
+        throw new Error(`Unexpected table ${table}`);
+      }),
+      rpc,
+      storage: {
+        from: vi.fn(() => ({
+          list: vi.fn().mockResolvedValue({
+            data: [{ name: "chunk-0000.m4a" }],
+            error: null,
+          }),
+          remove,
+        })),
+      },
+    },
+  };
+}
+
+function makeQuery(result: { data: unknown; error: unknown }) {
+  const query: Record<string, ReturnType<typeof vi.fn>> = {};
+  for (const method of ["eq", "in", "select"]) {
+    query[method] = vi.fn(() => query);
+  }
+  query.maybeSingle = vi.fn().mockResolvedValue(result);
+  query.single = vi.fn().mockResolvedValue(result);
+  return query;
+}

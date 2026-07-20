@@ -101,14 +101,17 @@ export async function ensureClientDriveFolder(
   if (inFlight) return inFlight;
 
   const task = (async () => {
-    const existing = await findChildFolderByName(rootFolderId, normalizedName);
+    const existing = await findDriveChildFolderByName(
+      rootFolderId,
+      normalizedName,
+    );
     const folderId =
       existing ?? (await createDriveFolder(rootFolderId, normalizedName));
 
     // Idempotent: also repairs client folders whose subfolders were never
     // fully created (partial earlier run, or folder created by hand).
     for (const subfolderName of CLIENT_DRIVE_SUBFOLDERS) {
-      if (!(await findChildFolderByName(folderId, subfolderName))) {
+      if (!(await findDriveChildFolderByName(folderId, subfolderName))) {
         await createDriveFolder(folderId, subfolderName);
       }
     }
@@ -269,7 +272,44 @@ export async function uploadDriveFile({
   return (await response.json()) as DriveFileSummary;
 }
 
-async function findChildFolderByName(parentFolderId: string, name: string) {
+/** Replaces a Drive file's binary content while preserving its id and parent. */
+export async function updateDriveFileContent({
+  content,
+  fileId,
+  mimeType,
+}: {
+  content: ArrayBuffer | Buffer;
+  fileId: string;
+  mimeType: string;
+}): Promise<DriveFileSummary> {
+  const body =
+    content instanceof ArrayBuffer ? content : Uint8Array.from(content).buffer;
+  const url = new URL(
+    `https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(fileId)}`,
+  );
+  url.searchParams.set("uploadType", "media");
+  url.searchParams.set("supportsAllDrives", "true");
+  url.searchParams.set("fields", "id,name,mimeType,webViewLink");
+
+  const response = await fetch(url, {
+    body,
+    headers: {
+      ...(await driveAuthHeaders()),
+      "Content-Type": mimeType,
+    },
+    method: "PATCH",
+  });
+
+  if (!response.ok) {
+    throw new Error(await driveError(response));
+  }
+  return (await response.json()) as DriveFileSummary;
+}
+
+export async function findDriveChildFolderByName(
+  parentFolderId: string,
+  name: string,
+) {
   const url = new URL(DRIVE_FILES_URL);
   url.searchParams.set(
     "q",
@@ -292,7 +332,7 @@ async function findChildFolderByName(parentFolderId: string, name: string) {
   return payload.files?.[0]?.id ?? null;
 }
 
-async function createDriveFolder(parentFolderId: string, name: string) {
+export async function createDriveFolder(parentFolderId: string, name: string) {
   const url = new URL(DRIVE_FILES_URL);
   url.searchParams.set("fields", "id");
 
@@ -310,6 +350,16 @@ async function createDriveFolder(parentFolderId: string, name: string) {
   }
 
   return payload.id;
+}
+
+export async function ensureDriveChildFolder(
+  parentFolderId: string,
+  name: string,
+) {
+  return (
+    (await findDriveChildFolderByName(parentFolderId, name)) ??
+    createDriveFolder(parentFolderId, name)
+  );
 }
 
 async function driveRequest(url: URL, init: RequestInit = {}) {

@@ -7,6 +7,7 @@ import {
   getClientsRootFolderId,
   getPitchSourceFolderId,
   isDriveServiceConfigured,
+  updateDriveFileContent,
 } from "./google-drive-service";
 
 // Valid unused 512-bit RSA test key: real signing without a real credential.
@@ -203,6 +204,38 @@ describe("google-drive-service", () => {
     expect(metadataCalls).toBe(1);
     expect(downloadUrls).toHaveLength(1);
     expect(downloadUrls[0]).toContain("/files/slides-file-id/export");
+  });
+
+  it("updates an existing Drive file in place", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+        }
+        return jsonResponse({
+          id: "reviewed-notes-id",
+          mimeType: "text/markdown",
+          name: "meeting_notes_reviewed.md",
+        });
+      });
+
+    const updated = await updateDriveFileContent({
+      content: Buffer.from("notes corrigées", "utf8"),
+      fileId: "reviewed-notes-id",
+      mimeType: "text/markdown",
+    });
+
+    expect(updated.id).toBe("reviewed-notes-id");
+    const updateCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/upload/drive/v3/files/reviewed-notes-id"),
+    );
+    expect(updateCall?.[1]?.method).toBe("PATCH");
+    expect(String(updateCall?.[0])).toContain("uploadType=media");
+    expect(updateCall?.[1]?.headers).toMatchObject({
+      "Content-Type": "text/markdown",
+    });
   });
 
   it("turns 403 cannotDownloadFile into an actionable message", async () => {

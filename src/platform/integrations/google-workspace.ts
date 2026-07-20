@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -119,11 +120,13 @@ export async function inspectGoogleWorkspaceCapabilities(
 export async function createGoogleCalendarReminder(
   {
     durationMinutes = 15,
+    idempotencyKey,
     scheduledAt,
     timeZone = "Africa/Casablanca",
     title,
   }: {
     durationMinutes?: number;
+    idempotencyKey?: string;
     scheduledAt: string;
     timeZone?: string;
     title: string;
@@ -137,10 +140,14 @@ export async function createGoogleCalendarReminder(
     start,
     Math.max(5, Math.min(durationMinutes, 120)),
   );
+  const eventId = idempotencyKey
+    ? googleCalendarIdempotencyId(idempotencyKey)
+    : undefined;
   const response = await fetch(
     "https://www.googleapis.com/calendar/v3/calendars/primary/events",
     {
       body: JSON.stringify({
+        ...(eventId ? { id: eventId } : {}),
         end: { dateTime: end, timeZone },
         reminders: {
           overrides: [{ method: "popup", minutes: 0 }],
@@ -158,6 +165,9 @@ export async function createGoogleCalendarReminder(
     },
   );
 
+  if (response.status === 409 && eventId) {
+    return fetchGoogleCalendarReminderById(eventId, accessToken);
+  }
   if (!response.ok) {
     throw new Error(await providerError("Google Calendar", response));
   }
@@ -173,6 +183,35 @@ export async function createGoogleCalendarReminder(
     id: payload.id ?? crypto.randomUUID(),
     start: payload.start?.dateTime ?? start,
     title: payload.summary ?? title,
+  };
+}
+
+export function googleCalendarIdempotencyId(key: string) {
+  return `naia${createHash("sha256").update(key).digest("hex").slice(0, 48)}`;
+}
+
+async function fetchGoogleCalendarReminderById(
+  eventId: string,
+  accessToken: string,
+): Promise<GoogleCalendarReminderResult> {
+  const response = await fetch(
+    `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(eventId)}`,
+    { headers: { Authorization: `Bearer ${accessToken}` } },
+  );
+  if (!response.ok) {
+    throw new Error(await providerError("Google Calendar", response));
+  }
+  const payload = (await response.json()) as {
+    htmlLink?: string;
+    id?: string;
+    start?: { dateTime?: string };
+    summary?: string;
+  };
+  return {
+    htmlLink: payload.htmlLink,
+    id: payload.id ?? eventId,
+    start: payload.start?.dateTime ?? "",
+    title: payload.summary ?? "Rappel NAIA",
   };
 }
 

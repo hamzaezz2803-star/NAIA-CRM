@@ -212,6 +212,15 @@ Safe defaults:
   `public.is_org_contributor()` so only `owner`, `admin`, and `member` roles can
   write records.
 
+## Meeting Intelligence handoff
+
+- `meeting-booked` leads with a date are synchronized into `meetings` by the database trigger in `20260717090000_meeting_intelligence.sql`; do not add channel-specific meeting creation code.
+- Recording and transcript data are founder-only. Intern/member CRM screens must not query `meeting_outputs`, `meeting_assets`, or `meeting-recordings`.
+- The transcript is authoritative. Deck slides and historical CRM notes are supporting context and must never be presented as statements made during the meeting without timestamped transcript evidence.
+- Recommendations are typed (`crm-note`, `crm-next-action`, `crm-status`, `task`, `calendar-follow-up`, `proposal-input`) and are inert until Ali or Nabil reviews and selects them.
+- A selected CRM recommendation intentionally crosses from the private meeting workspace into the organization-visible CRM. Keep this explicit in UI wording and do not auto-copy full private notes.
+- Local processing setup and operations live in `docs/meeting-notes-companion.md`.
+
 When a lead moves to `meeting-booked`, NAIA prepares a decision-maker pitch
 through Maya / Docs Generator. When a lead moves to `proposal-sent`, Maya
 prepares the proposal next action. The CRM action itself remains

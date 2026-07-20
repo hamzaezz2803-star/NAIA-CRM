@@ -4,6 +4,10 @@ import { GoogleConnectButton } from "@/components/integrations/google-connect-bu
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { fetchLeadsAction } from "@/features/crm/actions";
+import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
+import { fetchMeetingIntelligenceAction } from "@/features/meeting-notes/actions";
+import type { MeetingIntelligenceState } from "@/features/meeting-notes/contracts";
+import { MeetingIntelligenceWorkspace } from "@/features/meeting-notes/meeting-intelligence-workspace";
 import { MeetingsDashboard } from "@/features/meetings/meetings-dashboard";
 import { getAppSession } from "@/platform/auth/session";
 import {
@@ -24,6 +28,21 @@ async function fetchGoogleCalendarEvents(): Promise<
   }
 }
 
+async function fetchFounderMeetingIntelligence(): Promise<MeetingIntelligenceState> {
+  try {
+    return await fetchMeetingIntelligenceAction();
+  } catch (error) {
+    return {
+      configured: false,
+      error:
+        error instanceof Error
+          ? error.message
+          : "L'intelligence meeting est momentanément indisponible.",
+      meetings: [],
+    };
+  }
+}
+
 export default async function MeetingsPage() {
   const [leads, integrations, session, googleEvents] = await Promise.all([
     fetchLeadsAction(),
@@ -37,6 +56,10 @@ export default async function MeetingsPage() {
   );
   const isGoogleConnected = google?.status === "connected";
   const userName = session.user.name.split(" ")[0] ?? "Ali";
+  const isMeetingNotesCofounder = canUseMeetingNotesEmail(session.user.email);
+  const meetingIntelligence = isMeetingNotesCofounder
+    ? await fetchFounderMeetingIntelligence()
+    : undefined;
 
   return (
     <div className="space-y-6">
@@ -46,6 +69,10 @@ export default async function MeetingsPage() {
         description="Planifiez vos réunions clients, préparez vos pitchs de vente avec l'IA et synchronisez vos événements."
         actions={<StatusBadge status="live" />}
       />
+
+      {meetingIntelligence ? (
+        <MeetingIntelligenceWorkspace initialState={meetingIntelligence} />
+      ) : null}
 
       <section
         className="rounded-lg border p-4 shadow-sm"

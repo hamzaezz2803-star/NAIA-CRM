@@ -8,17 +8,17 @@ import {
   isSupabaseConfigured,
 } from "@/platform/auth/config";
 
-// /api/slack/events, /api/slack/interactions, and /api/whatsapp/webhook are
-// called by Slack/Meta without a Supabase session; each route authenticates
-// every request itself (timing-safe X-Slack-Signature v0 HMAC + replay window
-// for Slack; verify token on GET and timing-safe X-Hub-Signature-256 HMAC on
-// POST for WhatsApp) and never executes without a verified human approval.
+// Slack, WhatsApp, and the local meeting companion are called without a
+// Supabase browser session. Every route authenticates its own request: Slack
+// and WhatsApp verify signed webhook payloads, while the local companion uses
+// a server-only bearer token and only claims jobs queued by a cofounder.
 const PUBLIC_PATH_PREFIXES = [
   "/login",
   "/auth",
   "/api/slack/events",
   "/api/slack/interactions",
   "/api/whatsapp/webhook",
+  "/api/meeting-notes/worker",
 ];
 
 export async function middleware(request: NextRequest) {

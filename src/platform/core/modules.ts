@@ -59,10 +59,10 @@ export const platformModules = [
     name: "Meetings",
     shortName: "Meetings",
     href: "/meetings",
-    status: "guarded",
-    owner: "future",
+    status: "live",
+    owner: "platform",
     summary:
-      "Calendar groundwork exists; transcripts, Gemini notes, and summaries are guarded.",
+      "Calendar, private recording, transcript-first notes, and reviewed CRM follow-ups.",
   },
   {
     id: "proposals",
