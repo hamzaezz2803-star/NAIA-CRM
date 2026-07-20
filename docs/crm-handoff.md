@@ -100,6 +100,8 @@ Build behind explicit human-review boundaries:
 
 Do not send external communications automatically.
 
+The shared Groq client lives in `src/platform/ai/groq.ts`. CRM extraction uses Qwen 3.6 in fast non-reasoning mode, validates the complete result with Zod, and falls back once to GPT-OSS 120B strict JSON Schema. Follow-up copy uses GPT-OSS 20B with the same strict fallback. Do not add model IDs directly to CRM actions: configure `GROQ_ORCHESTRATOR_MODEL`, `GROQ_FAST_MODEL`, and `GROQ_STRUCTURED_FALLBACK_MODEL`. After extraction, `src/features/crm/extraction.ts` remains authoritative for pipeline status and planned-date normalization; relative French/English dates are resolved in `Africa/Casablanca`, and a model-proposed date is rejected when the user never mentioned one.
+
 NAIA read routing must keep data sources explicit. Questions such as `quels sont mes meetings CRM ?` read only organization-scoped leads at `meeting-booked`; questions that name Google Calendar read the acting user's personal Calendar connection. Calendar events already linked to a CRM lead are identified through the `[Google Calendar Event ID: ...]` and `[Google Calendar Event Link: ...]` markers in lead notes, which allows `Calendar hors CRM` to exclude them without changing CRM rows. These reads never create or update a lead; every CRM mutation continues through a reviewed action.
 
 Founder/company background is a separate read-only context, not CRM data. NAIA may index the latest generic deck from `MAYA_DRIVE_SOURCE_FOLDER_ID` only for an authenticated `owner` whose email passes the existing Maya cofounder allowlist. The bounded excerpts may enrich a private web, Slack DM, or private WhatsApp answer, but must never be copied into lead notes, approval payloads, shared-channel prompts, or CRM snapshots. A Drive timeout or parsing failure must fall back silently to the normal assistant path.
@@ -187,6 +189,12 @@ Safe defaults:
 - Preserve deterministic contact-card fields when an LLM extraction is
   partial. An explicit email, phone, person, company, or job title in the
   command takes precedence over an omitted or conflicting model field.
+- Keep model routing inside `src/platform/ai/groq.ts`; CRM code must not
+  hard-code a provider model or bypass Zod/schema validation and the strict
+  fallback.
+- Normalize relative dates and CRM statuses after model extraction. The model
+  can propose fields, but code decides that a personal reminder is not a
+  client meeting and that a spoken contact is not `lead-to-contact`.
 - Show the complete structured lead draft before approval. Slack uses the
   "Vérifier / modifier" modal; the web cockpit uses the inline editable card.
   Execution must use the reviewed payload, not a newly generated draft.

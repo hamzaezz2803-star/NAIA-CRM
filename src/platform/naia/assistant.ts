@@ -1,5 +1,6 @@
 import "server-only";
 
+import { z } from "zod";
 import type { CrmLeadSummary } from "@/features/crm/contracts";
 import {
   getNaiaAgent,
@@ -34,6 +35,7 @@ import {
   type GoogleCalendarEventSummary,
   type GoogleWorkspaceContext,
 } from "@/platform/integrations/google-workspace";
+import { completeGroqJson, getGroqApiKey } from "@/platform/ai/groq";
 import {
   loadNaiaPrivateKnowledge,
   type NaiaPrivateKnowledgeContext,
@@ -49,6 +51,26 @@ export type NaiaActorContext = {
   name: string;
   organizationName?: string;
   role: "owner" | "admin" | "member" | "viewer";
+};
+
+const naiaDecisionSchema = z.object({
+  agentId: z.custom<NaiaAgentId>((value) => parseAgentId(value) !== null),
+  confidence: z.number().min(0).max(1),
+  response: z.string().trim().min(1).max(1600),
+});
+
+const naiaDecisionJsonSchema = {
+  additionalProperties: false,
+  properties: {
+    agentId: {
+      enum: naiaAgents.map((agent) => agent.id),
+      type: "string",
+    },
+    confidence: { maximum: 1, minimum: 0, type: "number" },
+    response: { maxLength: 1600, minLength: 1, type: "string" },
+  },
+  required: ["agentId", "confidence", "response"],
+  type: "object",
 };
 
 export async function planNaiaAssistant({
@@ -87,7 +109,7 @@ export async function planNaiaAssistant({
     };
   }
   const personalCommand = resolvePersonalFollowUp(command, history);
-  const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
+  const apiKey = getGroqApiKey();
   const resolvedPrivateKnowledge = !allowPersonalData
     ? undefined
     : privateKnowledge === undefined &&
@@ -128,101 +150,79 @@ export async function planNaiaAssistant({
       ? await buildRealGoogleCalendarContext(googleContext)
       : null;
 
-  try {
-    const groqResponse = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
+  const completion = await completeGroqJson({
+    jsonSchema: naiaDecisionJsonSchema,
+    maxTokens: 800,
+    messages: [
       {
-        body: JSON.stringify({
-          max_tokens: 800,
-          messages: [
-            {
-              content: buildSystemPrompt(),
-              role: "system",
-            },
-            {
-              content: JSON.stringify({
-                agents: naiaAgents.map((agent) => ({
-                  id: agent.id,
-                  label: agent.label,
-                  mission: agent.mission,
-                  name: agent.name,
-                  role: agent.role,
-                  status: agent.status,
-                })),
-                command,
-                conversationHistory: allowPersonalData ? history.slice(-8) : [],
-                contextSources: {
-                  crm: allowPersonalData
-                    ? "live organization data"
-                    : "not loaded on shared surfaces",
-                  googleCalendar: realGoogleCalendar
-                    ? "live connected user data"
-                    : "not loaded",
-                  qarizmiKnowledge: resolvedPrivateKnowledge
-                    ? `private internal deck: ${resolvedPrivateKnowledge.sourceFileName}`
-                    : "not loaded",
-                  operations:
-                    "simulated working data; always disclose this when used",
-                },
-                crmSnapshot: (allowPersonalData ? crmLeads : [])
-                  .slice(0, 30)
-                  .map((lead) => ({
-                    companyName: lead.companyName,
-                    contactName: lead.contactName,
-                    id: lead.id,
-                    leadDate: lead.leadDate,
-                    nextAction: lead.nextAction,
-                    notes: lead.notes,
-                    status: lead.status,
-                    topic: lead.topic,
-                  })),
-                suggestedAgentId: localResult.agent.id,
-                operatingContext: buildNaiaOperatingContext(),
-                privateKnowledge: resolvedPrivateKnowledge,
-                realGoogleCalendar: realGoogleCalendar ?? undefined,
-              }),
-              role: "user",
-            },
-          ],
-          model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
-          response_format: { type: "json_object" },
-          temperature: 0.15,
-        }),
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        method: "POST",
+        content: buildSystemPrompt(),
+        role: "system",
       },
-    );
-
-    if (!groqResponse.ok) {
-      return { mode: "local-orchestrated", result: localResult };
-    }
-
-    const payload = (await groqResponse.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const decision = parseGroqDecision(payload.choices?.[0]?.message?.content);
-    if (!decision) {
-      return { mode: "local-orchestrated", result: localResult };
-    }
-
-    const result = orchestrateNaiaCommand({
-      agentIdOverride: decision.agentId,
-      command,
-      confidenceOverride: decision.confidence,
-      crmLeads,
-      responseOverride: decision.response,
-    });
-
-    return {
-      mode: "groq-orchestrated",
-      result: { ...result, responseType: "answer" },
-    };
-  } catch {
+      {
+        content: JSON.stringify({
+          agents: naiaAgents.map((agent) => ({
+            id: agent.id,
+            label: agent.label,
+            mission: agent.mission,
+            name: agent.name,
+            role: agent.role,
+            status: agent.status,
+          })),
+          command,
+          conversationHistory: allowPersonalData ? history.slice(-8) : [],
+          contextSources: {
+            crm: allowPersonalData
+              ? "live organization data"
+              : "not loaded on shared surfaces",
+            googleCalendar: realGoogleCalendar
+              ? "live connected user data"
+              : "not loaded",
+            qarizmiKnowledge: resolvedPrivateKnowledge
+              ? `private internal deck: ${resolvedPrivateKnowledge.sourceFileName}`
+              : "not loaded",
+            operations:
+              "simulated working data; always disclose this when used",
+          },
+          crmSnapshot: (allowPersonalData ? crmLeads : [])
+            .slice(0, 30)
+            .map((lead) => ({
+              companyName: lead.companyName,
+              contactName: lead.contactName,
+              id: lead.id,
+              leadDate: lead.leadDate,
+              nextAction: lead.nextAction,
+              notes: lead.notes,
+              status: lead.status,
+              topic: lead.topic,
+            })),
+          suggestedAgentId: localResult.agent.id,
+          operatingContext: buildNaiaOperatingContext(),
+          privateKnowledge: resolvedPrivateKnowledge,
+          realGoogleCalendar: realGoogleCalendar ?? undefined,
+        }),
+        role: "user",
+      },
+    ],
+    schema: naiaDecisionSchema,
+    schemaName: "naia_orchestration_decision",
+    temperature: 0.15,
+  });
+  if (!completion) {
     return { mode: "local-orchestrated", result: localResult };
   }
+
+  const result = orchestrateNaiaCommand({
+    agentIdOverride: completion.data.agentId,
+    command,
+    confidenceOverride: completion.data.confidence,
+    crmLeads,
+    responseOverride: completion.data.response,
+  });
+
+  return {
+    mode: "groq-orchestrated",
+    result: { ...result, responseType: "answer" },
+  };
 }
 
 async function answerPersonalQuery({
@@ -791,35 +791,6 @@ function isQarizmiKnowledgeQuery(command: string) {
     "our credentials",
     "our expertise",
   ].some((phrase) => normalized.includes(phrase));
-}
-
-function parseGroqDecision(content: string | undefined) {
-  if (!content) return null;
-
-  try {
-    const parsed = JSON.parse(content) as {
-      agentId?: unknown;
-      confidence?: unknown;
-      response?: unknown;
-    };
-    const agentId = parseAgentId(parsed.agentId);
-    const response =
-      typeof parsed.response === "string" ? parsed.response.trim() : "";
-    if (!agentId || !response) return null;
-
-    return {
-      agentId,
-      confidence:
-        typeof parsed.confidence === "number" &&
-        parsed.confidence >= 0 &&
-        parsed.confidence <= 1
-          ? parsed.confidence
-          : undefined,
-      response: response.slice(0, 1600),
-    };
-  } catch {
-    return null;
-  }
 }
 
 function parseAgentId(value: unknown): NaiaAgentId | null {

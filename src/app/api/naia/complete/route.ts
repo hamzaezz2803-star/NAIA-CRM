@@ -2,6 +2,7 @@ import {
   naiaSections,
   type NaiaSectionId,
 } from "@/features/naia/operating-data";
+import { completeGroqText, getGroqApiKey } from "@/platform/ai/groq";
 
 type CompletePayload = {
   context?: unknown;
@@ -35,7 +36,7 @@ export async function POST(request: Request) {
 
   const sectionId = parseSectionId(payload.sectionId);
   const prompt = parsePrompt(payload.prompt);
-  const apiKey = process.env.GROQ_API_KEY ?? process.env.GROQ_KEY;
+  const apiKey = getGroqApiKey();
 
   if (!apiKey) {
     return Response.json({
@@ -44,60 +45,30 @@ export async function POST(request: Request) {
     });
   }
 
-  try {
-    const groqResponse = await fetch(
-      "https://api.groq.com/openai/v1/chat/completions",
+  const completion = await completeGroqText({
+    maxTokens: 700,
+    messages: [
       {
-        body: JSON.stringify({
-          max_tokens: 700,
-          messages: [
-            {
-              content:
-                "Tu es NAIA, l'agent operating-system interne de Qarizmi. Reponds en francais, concret, oriente produit et operations. Ne pretends pas avoir scrape LinkedIn ou envoye des emails: parle de signaux, brouillons et actions pretes a valider. Structure en 3 a 5 puces courtes.",
-              role: "system",
-            },
-            {
-              content: JSON.stringify({
-                context: payload.context,
-                module: sectionLabels[sectionId],
-                prompt,
-              }),
-              role: "user",
-            },
-          ],
-          model: process.env.GROQ_MODEL ?? "llama-3.3-70b-versatile",
-          temperature: 0.35,
-        }),
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-        },
-        method: "POST",
+        content:
+          "Tu es NAIA, l'agent operating-system interne de Qarizmi. Reponds en francais, concret, oriente produit et operations. Ne pretends pas avoir scrape LinkedIn ou envoye des emails: parle de signaux, brouillons et actions pretes a valider. Structure en 3 a 5 puces courtes.",
+        role: "system",
       },
-    );
+      {
+        content: JSON.stringify({
+          context: payload.context,
+          module: sectionLabels[sectionId],
+          prompt,
+        }),
+        role: "user",
+      },
+    ],
+    temperature: 0.35,
+  });
 
-    if (!groqResponse.ok) {
-      return Response.json({
-        output: fallbackAnswer(sectionId, prompt),
-        mode: "local",
-      });
-    }
-
-    const data = (await groqResponse.json()) as {
-      choices?: Array<{ message?: { content?: string } }>;
-    };
-    const output = data.choices?.[0]?.message?.content?.trim();
-
-    return Response.json({
-      mode: output ? "groq" : "local",
-      output: output || fallbackAnswer(sectionId, prompt),
-    });
-  } catch {
-    return Response.json({
-      output: fallbackAnswer(sectionId, prompt),
-      mode: "local",
-    });
-  }
+  return Response.json({
+    mode: completion ? "groq" : "local",
+    output: completion?.data ?? fallbackAnswer(sectionId, prompt),
+  });
 }
 
 function fallbackAnswer(sectionId: NaiaSectionId, prompt: string) {

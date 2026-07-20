@@ -65,31 +65,8 @@ import type {
   CrmTag,
   CrmLeadNote,
 } from "@/features/crm/contracts";
+import { formatCrmDateTimeForInput } from "@/features/crm/date-time";
 import toast from "react-hot-toast";
-
-// Helper functions for date formatting
-function formatForInput(dateStr: string): string {
-  if (!dateStr) return "";
-  if (dateStr.length === 10) {
-    // YYYY-MM-DD
-    return `${dateStr}T12:00`; // default to noon
-  }
-  if (dateStr.includes("T")) {
-    return dateStr.substring(0, 16); // YYYY-MM-DDTHH:mm
-  }
-  try {
-    const d = new Date(dateStr);
-    if (!isNaN(d.getTime())) {
-      const Y = d.getFullYear();
-      const M = String(d.getMonth() + 1).padStart(2, "0");
-      const D = String(d.getDate()).padStart(2, "0");
-      const H = String(d.getHours()).padStart(2, "0");
-      const Min = String(d.getMinutes()).padStart(2, "0");
-      return `${Y}-${M}-${D}T${H}:${Min}`;
-    }
-  } catch {}
-  return dateStr;
-}
 
 function formatLeadDateForDisplay(dateStr?: string): string {
   if (!dateStr) return "";
@@ -457,7 +434,7 @@ export default function LeadsPage() {
 
   const handleCellClick = (dateStr: string) => {
     resetForm();
-    setFormLeadDate(formatForInput(dateStr));
+    setFormLeadDate(formatCrmDateTimeForInput(dateStr));
     setFormStatus("to-follow-up");
     setIsAddOpen(true);
   };
@@ -562,7 +539,7 @@ export default function LeadsPage() {
     setEditPhone(phone);
     setEditSource(lead.source ?? "");
     setEditNextAction(lead.nextAction ?? "");
-    setEditLeadDate(formatForInput(lead.leadDate ?? ""));
+    setEditLeadDate(formatCrmDateTimeForInput(lead.leadDate ?? ""));
     setEditNotes(notesOnly);
     setEditStatus(lead.status);
 
@@ -1042,7 +1019,7 @@ export default function LeadsPage() {
       setFormSource(e.source ?? "");
       setFormNotes(e.notes ?? "");
       setFormNextAction(e.nextAction ?? "");
-      setFormLeadDate(e.leadDate ? formatForInput(e.leadDate) : "");
+      setFormLeadDate(e.leadDate ? formatCrmDateTimeForInput(e.leadDate) : "");
       if (e.status) {
         setFormStatus(e.status);
       }

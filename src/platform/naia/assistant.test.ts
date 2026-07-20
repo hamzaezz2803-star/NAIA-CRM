@@ -429,6 +429,65 @@ describe("NAIA personal context answers", () => {
     }
   });
 
+  it("retries invalid orchestration through the strict structured fallback", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  agentId: "unknown-agent",
+                  confidence: 0.9,
+                  response: "Réponse invalide.",
+                }),
+              },
+            },
+          ],
+        }),
+        ok: true,
+      })
+      .mockResolvedValueOnce({
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  agentId: "naia",
+                  confidence: 0.95,
+                  response: "Paris est la capitale de la France.",
+                }),
+              },
+            },
+          ],
+        }),
+        ok: true,
+      });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      const answer = await planNaiaAssistant({
+        actor,
+        command: "Quelle est la capitale de la France ?",
+        crmLeads,
+        googleContext,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(answer.mode).toBe("groq-orchestrated");
+      expect(answer.result.response).toContain("Paris");
+      const fallbackRequest = JSON.parse(
+        fetchMock.mock.calls[1][1].body as string,
+      );
+      expect(fallbackRequest.model).toBe("openai/gpt-oss-120b");
+      expect(fallbackRequest.response_format.type).toBe("json_schema");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not load company knowledge when Groq is unavailable", async () => {
     await planNaiaAssistant({
       actor,

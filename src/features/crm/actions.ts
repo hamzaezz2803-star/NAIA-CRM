@@ -4,6 +4,7 @@
 
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
+import { getGroqApiKey } from "@/platform/ai/groq";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { getAppBaseUrl } from "@/platform/auth/config";
 import {
@@ -28,7 +29,8 @@ import {
   dummyCrmOrganizationId,
   getDummyCrmLeads,
 } from "./dummy-data";
-import { inferLeadStatusFromNaturalText } from "./extraction";
+import { extractCrmLeadWithGroq, generateCrmFollowUpWithGroq } from "./ai";
+import { normalizeCrmDateTimeForStorage } from "./date-time";
 
 // ────────────────────────────────────────────────────────────
 // Types for DB rows (aligned with 20260624120000_crm_tables.sql)
@@ -132,31 +134,6 @@ function resolveTrustedCrmContext(
   }
 
   return context;
-}
-
-function sanitizeJsonString(str: string): string {
-  let inString = false;
-  let result = "";
-  for (let i = 0; i < str.length; i++) {
-    const char = str[i];
-    if (char === '"' && (i === 0 || str[i - 1] !== "\\")) {
-      inString = !inString;
-      result += char;
-    } else if (inString) {
-      if (char === "\n") {
-        result += "\\n";
-      } else if (char === "\r") {
-        result += "\\r";
-      } else if (char === "\t") {
-        result += "\\t";
-      } else {
-        result += char;
-      }
-    } else {
-      result += char;
-    }
-  }
-  return result;
 }
 
 function shouldUseDummyCrmData() {
@@ -542,6 +519,14 @@ export async function createLeadAction(
   },
   context?: CrmActionContext,
 ): Promise<CreateLeadActionResult> {
+  if (input.leadDate) {
+    const normalizedLeadDate = normalizeCrmDateTimeForStorage(input.leadDate);
+    if (!normalizedLeadDate) {
+      return { success: false, error: "Date planifiée invalide." };
+    }
+    input = { ...input, leadDate: normalizedLeadDate };
+  }
+
   const trustedContext = resolveTrustedCrmContext(context);
   const supabase =
     trustedContext?.supabase ?? (await createServerSupabaseClient());
@@ -659,7 +644,7 @@ export async function createLeadAction(
       status: resolveLeadInsertStatus(input),
       notes: input.notes ?? null,
       next_action: input.nextAction ?? null,
-      lead_date: input.leadDate ? new Date(input.leadDate).toISOString() : null,
+      lead_date: input.leadDate ?? null,
       contact_job_title: input.contactJobTitle ?? null,
       contact_linkedin_url: input.contactLinkedinUrl ?? null,
       assigned_to_profile_id: input.assignedToProfileId ?? null,
@@ -871,9 +856,7 @@ function createDummyLead(input: {
     })),
     createdAt: now,
     id: `demo-lead-${Date.now().toString(36)}-${suffix}`,
-    leadDate: input.leadDate
-      ? new Date(input.leadDate).toISOString()
-      : undefined,
+    leadDate: input.leadDate,
     nextAction: input.nextAction,
     notes: input.notes,
     organizationId: dummyCrmOrganizationId,
@@ -1002,6 +985,14 @@ export async function updateLeadAction(
     skipGoogleDriveCreate: boolean;
   }>,
 ): Promise<{ success: boolean; lead?: CrmLeadSummary; error?: string }> {
+  if (updates.leadDate) {
+    const normalizedLeadDate = normalizeCrmDateTimeForStorage(updates.leadDate);
+    if (!normalizedLeadDate) {
+      return { success: false, error: "Date planifiée invalide." };
+    }
+    updates = { ...updates, leadDate: normalizedLeadDate };
+  }
+
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
 
@@ -1095,9 +1086,7 @@ export async function updateLeadAction(
         next_action: updates.nextAction,
       }),
       ...(updates.leadDate !== undefined && {
-        lead_date: updates.leadDate
-          ? new Date(updates.leadDate).toISOString()
-          : null,
+        lead_date: updates.leadDate || null,
       }),
       ...(updates.source !== undefined && { source: updates.source }),
       ...(companyId !== undefined && { company_id: companyId }),
@@ -1861,78 +1850,17 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
   };
   error?: string;
 }> {
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = getGroqApiKey();
   if (!apiKey) {
     return { success: false, error: "GROQ_API_KEY not configured" };
   }
 
   try {
-    const Groq = (await import("groq-sdk")).default;
-    const groq = new Groq({ apiKey });
-
-    const now = new Date();
-    const today = now.toISOString().split("T")[0];
-    const dayOfWeek = now.toLocaleDateString("fr-FR", { weekday: "long" });
-
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        {
-          role: "system",
-          content: `Tu es un assistant CRM expert. Extrait les informations d'un lead commercial depuis un texte en langage naturel.
-Aujourd'hui: ${today} (jour de la semaine: ${dayOfWeek})
-Retourne UNIQUEMENT un JSON valide avec ces champs (omets les champs manquants):
-{
-  "topic": "sujet/projet commercial (obligatoire)",
-  "companyName": "nom de l'entreprise",
-  "contactName": "nom du contact",
-  "contactEmail": "email si mentionné",
-  "contactJobTitle": "fonction ou poste exact du contact si mentionné",
-  "contactLinkedinUrl": "URL LinkedIn du contact si mentionnée",
-  "contactPhone": "téléphone si mentionné",
-  "source": "source du lead (salon, LinkedIn, appel, etc.)",
-  "notes": "notes complémentaires",
-  "nextAction": "prochaine action commerciale concise à afficher dans les tâches (ex: relancer lundi, envoyer la proposition, préparer le meeting). Si aucune action claire n'est mentionnée, mets null.",
-  "leadDate": "date et heure ISO 8601 (format YYYY-MM-DD ou YYYY-MM-DDT[HH]:[MM]:[SS]) pour le rendez-vous, l'appel, la démo ou la relance planifiée. Si le texte mentionne une date (ex: 'rappeler le 18/06') ou une date et une heure précises pour une action (ex: 'le relancer le 15/07 à 14h30' ou 'réunion demain à 10h'), calcule cette date exacte et insère l'heure correspondante (ex: YYYY-MM-DDT14:30:00). Calcule la date exacte en te basant sur Aujourd'hui et son jour de la semaine. Si aucune date/heure planifiée n'est mentionnée, mets null.",
-  "status": "statut pipeline exact parmi: lead-to-contact, contacted, to-follow-up, meeting-booked, proposal-sent, won, dead-end. Mapping obligatoire: lead-to-contact = prospect identifié mais pas encore contacté; contacted = Ali/l'équipe vient de parler, contacter, appeler, échanger, discuter ou rencontrer le prospect, avec discussion entamée mais sans rendez-vous encore fixé; to-follow-up = il faut relancer, rappeler ou faire un follow-up; meeting-booked = un meeting, rdv, call, démo ou visio est booké, fixé, prévu, calé, planifié ou confirmé; proposal-sent = une propale, proposition, offre ou devis est envoyé, à envoyer ou à préparer; won = projet signé, gagné, validé ou accepté; dead-end = perdu, refusé, stop ou pas intéressé. Si le texte dit 'j'ai parlé/contacté/échangé avec X', ne mets jamais lead-to-contact: utilise contacted, sauf si un rendez-vous est explicitement fixé, alors utilise meeting-booked.",
-  "tags": ["tableau de chaînes de caractères (array of strings) représentant les étiquettes ou tags mentionnés ou déduits (ex: ['Automobile', 'CRM', 'IA', 'B2B']). S'il y a une section 'Tags :' ou similaire à la fin du texte, extrait les tags exactement. Sinon, déduis 3 à 5 tags pertinents basés sur le secteur d'activité, la technologie, le type de client ou la priorité."]
-}`,
-        },
-        {
-          role: "user",
-          content: text,
-        },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.1,
-      max_tokens: 512,
-    });
-
-    const content = completion.choices[0]?.message?.content ?? "";
-
-    // Extract JSON from response (handle potential markdown code blocks)
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const extracted = await extractCrmLeadWithGroq(text);
+    if (!extracted) {
       return { success: false, error: "Could not parse AI response" };
     }
-
-    const sanitizedContent = sanitizeJsonString(jsonMatch[0]);
-    const extracted = JSON.parse(sanitizedContent);
-    return {
-      success: true,
-      extracted: {
-        ...extracted,
-        status:
-          inferLeadStatusFromNaturalText({
-            text,
-            topic: extracted.topic,
-            notes: extracted.notes,
-            nextAction: extracted.nextAction,
-            leadDate: extracted.leadDate,
-            status: extracted.status,
-          }) ?? "lead-to-contact",
-      },
-    };
+    return { success: true, extracted };
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
@@ -1954,56 +1882,16 @@ export async function generateFollowUpDraftAction(lead: {
   drafts?: { email: string; whatsapp: string };
   error?: string;
 }> {
-  const apiKey = process.env.GROQ_API_KEY;
+  const apiKey = getGroqApiKey();
   if (!apiKey) {
     return { success: false, error: "GROQ_API_KEY not configured" };
   }
 
   try {
-    const Groq = (await import("groq-sdk")).default;
-    const groq = new Groq({ apiKey });
-
-    const context = [
-      lead.contactName && `Contact: ${lead.contactName}`,
-      lead.companyName && `Entreprise: ${lead.companyName}`,
-      `Sujet: ${lead.topic}`,
-      lead.notes && `Notes: ${lead.notes}`,
-      lead.nextAction && `Prochaine action prévue: ${lead.nextAction}`,
-    ]
-      .filter(Boolean)
-      .join("\n");
-
-    const completion = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      messages: [
-        {
-          role: "system",
-          content: `Tu es un assistant commercial pour NAIA-os, une agence IA au Maroc.
-Génère des messages de relance professionnels et chaleureux en français.
-Retourne UNIQUEMENT un JSON valide:
-{
-  "email": "corps de l'email de relance (sans objet)",
-  "whatsapp": "message WhatsApp court et direct (max 3 lignes)"
-}`,
-        },
-        {
-          role: "user",
-          content: `Génère une relance pour ce lead:\n${context}`,
-        },
-      ],
-      response_format: { type: "json_object" },
-      temperature: 0.7,
-      max_tokens: 800,
-    });
-
-    const content = completion.choices[0]?.message?.content ?? "";
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    const drafts = await generateCrmFollowUpWithGroq(lead);
+    if (!drafts) {
       return { success: false, error: "Could not parse AI response" };
     }
-
-    const sanitizedContent = sanitizeJsonString(jsonMatch[0]);
-    const drafts = JSON.parse(sanitizedContent);
 
     await createSystemNotification({
       title: "Brouillon IA généré",

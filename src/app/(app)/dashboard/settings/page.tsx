@@ -1,6 +1,7 @@
 import React from "react";
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
+import { getGroqApiKey, getGroqModelConfiguration } from "@/platform/ai/groq";
 import { getAppSession } from "@/platform/auth/session";
 import { ChangePasswordForm } from "./change-password-form";
 import {
@@ -44,7 +45,8 @@ function getSystemIntegrations(
   const supabaseKey =
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  const groqKey = process.env.GROQ_API_KEY;
+  const groqKey = getGroqApiKey();
+  const groqModels = getGroqModelConfiguration();
   const google = providerReadiness.find(
     (integration) => integration.provider === "google",
   );
@@ -71,11 +73,11 @@ function getSystemIntegrations(
       id: "groq",
       name: "Groq AI",
       description:
-        "LLM ultrarapide pour l'extraction de leads en langage naturel et la génération de relances commerciales.",
+        "Orchestration NAIA, extraction CRM structurée et génération de relances avec fallback automatique.",
       status: groqKey ? "connected" : "not-configured",
       icon: <Bot className="h-5 w-5" />,
       detail: groqKey
-        ? "Clé API configurée — modèle llama-3.3-70b-versatile"
+        ? `Primaire: ${groqModels.orchestrator} — fallback: ${groqModels.structuredFallback}`
         : "GROQ_API_KEY manquant dans .env.local",
     },
     {
