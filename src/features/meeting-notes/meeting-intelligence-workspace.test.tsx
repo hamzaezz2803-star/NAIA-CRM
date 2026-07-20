@@ -162,6 +162,29 @@ describe("MeetingIntelligenceWorkspace", () => {
     expect(screen.getByText(/Envoi audio interrompu/)).toBeInTheDocument();
   });
 
+  it("does not upload a chunk when hashing fails", async () => {
+    vi.spyOn(crypto.subtle, "digest").mockRejectedValueOnce(
+      new Error("WebCrypto unavailable"),
+    );
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    const audio = new File([new Uint8Array([1])], "meeting.m4a", {
+      type: "audio/mp4",
+    });
+    const input =
+      document.querySelector<HTMLInputElement>('input[type="file"]');
+    fireEvent.change(input as HTMLInputElement, {
+      target: { files: [audio] },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/WebCrypto unavailable/)).toBeInTheDocument();
+    });
+    expect(mocks.upload).not.toHaveBeenCalled();
+    expect(mocks.remove).not.toHaveBeenCalled();
+    expect(mocks.queueMeetingProcessingAction).not.toHaveBeenCalled();
+  });
+
   it("keeps uploaded chunks when the queue request may already have committed", async () => {
     mocks.queueMeetingProcessingAction.mockRejectedValueOnce(
       new Error("response lost after commit"),

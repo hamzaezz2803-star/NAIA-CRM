@@ -221,6 +221,7 @@ export function MeetingIntelligenceWorkspace({
           const start = index * AUDIO_CHUNK_BYTES;
           const chunk = audio.slice(start, start + AUDIO_CHUNK_BYTES, mimeType);
           const path = `${workspaceState.organizationId}/${meeting.id}/${sessionId}/chunk-${String(index).padStart(4, "0")}.${extension}`;
+          const sha256 = await sha256Hex(chunk);
           const { error } = await recordingStorage.upload(path, chunk, {
             cacheControl: "3600",
             contentType: mimeType,
@@ -232,7 +233,7 @@ export function MeetingIntelligenceWorkspace({
           }
           uploadedChunks.push({
             path,
-            sha256: await sha256Hex(chunk),
+            sha256,
             sizeBytes: chunk.size,
           });
           setUploadProgress(Math.round(((index + 1) / chunkCount) * 100));
