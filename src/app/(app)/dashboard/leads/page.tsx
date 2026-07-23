@@ -1638,12 +1638,14 @@ export default function LeadsPage() {
         </div>
       ) : viewMode === "kanban" ? (
         <div>
-          <div ref={kanbanContainerRef} className="pb-4">
+          <div ref={kanbanContainerRef} className="overflow-x-auto pb-4">
             <div
-              className="grid items-start gap-2"
-              style={{
-                gridTemplateColumns: `repeat(${categories.length}, minmax(0, 1fr))`,
-              }}
+              className="grid min-w-max grid-flow-col auto-cols-[minmax(220px,80vw)] items-start gap-2 md:min-w-0 md:grid-flow-row md:auto-cols-auto md:grid-cols-[repeat(var(--kanban-columns),minmax(0,1fr))]"
+              style={
+                {
+                  "--kanban-columns": categories.length,
+                } as React.CSSProperties
+              }
             >
               {categories.map((col, index) => {
                 const colLeads = leads.filter(

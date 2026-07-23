@@ -128,7 +128,7 @@ const stages = [
   "Negociation",
 ];
 
-const formatShortMad = (value: number) =>
+export const formatShortMad = (value: number) =>
   new Intl.NumberFormat("fr-MA", {
     maximumFractionDigits: 0,
     notation: "compact",
@@ -153,7 +153,6 @@ export function NaiaExperience({
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [voiceTranscript, setVoiceTranscript] = useState("");
   const [voiceNotice, setVoiceNotice] = useState("");
-  const [manualAudioUrl] = useState("");
   const [forceBrowserSpeech, setForceBrowserSpeech] = useState(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
@@ -633,17 +632,6 @@ export function NaiaExperience({
             </div>
           </div>
 
-          {manualAudioUrl ? (
-            <audio
-              className="mt-4 w-full"
-              controls
-              preload="none"
-              src={manualAudioUrl}
-            >
-              <track kind="captions" />
-            </audio>
-          ) : null}
-
           <VoiceActivity
             isListening={isListening}
             isProcessing={isGenerating}
@@ -1082,7 +1070,7 @@ function CashPanel({
   ];
 
   return (
-    <div className="space-y-6">
+    <div className="min-w-0 space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
         <div>
@@ -1218,7 +1206,7 @@ function CashPanel({
       <div className="grid gap-4 2xl:grid-cols-3">
         {/* Chart */}
         <div
-          className="lg:col-span-2 rounded-xl border p-6 shadow-sm"
+          className="min-w-0 rounded-xl border p-6 shadow-sm lg:col-span-2"
           style={{
             background: "var(--maison-card)",
             borderColor: "var(--maison-border)",
@@ -1307,7 +1295,7 @@ function CashPanel({
 
         {/* Sorties */}
         <div
-          className="rounded-xl border p-6 shadow-sm"
+          className="min-w-0 rounded-xl border p-6 shadow-sm"
           style={{
             background: "var(--maison-card)",
             borderColor: "var(--maison-border)",
@@ -1363,90 +1351,94 @@ function CashPanel({
       <div className="grid gap-4 2xl:grid-cols-2">
         {/* Plans de paiement */}
         <div
-          className="rounded-xl border p-6 shadow-sm"
+          className="min-w-0 rounded-xl border p-6 shadow-sm"
           style={{
             background: "var(--maison-card)",
             borderColor: "var(--maison-border)",
           }}
         >
-          <div
-            className="grid border-b pb-3 mb-4 text-[10px] font-bold uppercase tracking-wider"
-            style={{
-              gridTemplateColumns: "3fr 2fr 2fr 1fr 1fr",
-              borderColor: "var(--maison-border)",
-              color: "var(--maison-text-secondary)",
-            }}
-          >
-            <div>PLANS DE PAIEMENT</div>
-            <div>PLAN</div>
-            <div className="text-right">PROCHAIN</div>
-            <div className="text-right">ÉCHÉANCE</div>
-            <div className="text-right">STATUT</div>
-          </div>
-          <div className="space-y-4">
-            {paymentPlans.map((p) => (
+          <div className="overflow-x-auto">
+            <div className="min-w-[620px]">
               <div
-                key={p.client}
-                className="grid items-center text-sm"
-                style={{ gridTemplateColumns: "3fr 2fr 2fr 1fr 1fr" }}
+                className="grid border-b pb-3 mb-4 text-[10px] font-bold uppercase tracking-wider"
+                style={{
+                  gridTemplateColumns: "3fr 2fr 2fr 1fr 1fr",
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-secondary)",
+                }}
               >
-                <div>
-                  <p
-                    className="font-bold"
-                    style={{ color: "var(--maison-text-primary)" }}
-                  >
-                    {p.client}
-                  </p>
-                  <p
-                    className="text-[10px]"
-                    style={{ color: "var(--maison-text-secondary)" }}
-                  >
-                    {p.project}
-                  </p>
-                </div>
-                <div
-                  className="text-xs font-semibold"
-                  style={{ color: "var(--maison-text-secondary)" }}
-                >
-                  {p.plan}
-                </div>
-                <div
-                  className="text-right font-bold"
-                  style={{ color: "var(--maison-text-primary)" }}
-                >
-                  {formatMad(p.nextPayment).replace(" MAD", "")}
-                </div>
-                <div
-                  className="text-right text-xs"
-                  style={{ color: "var(--maison-text-secondary)" }}
-                >
-                  {p.dueDate}
-                </div>
-                <div className="text-right">
-                  <span
-                    className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
-                      p.status === "on-track"
-                        ? "bg-emerald-50 text-emerald-700"
-                        : p.status === "late"
-                          ? "bg-rose-50 text-rose-700"
-                          : "bg-amber-50 text-amber-700"
-                    }`}
-                  >
-                    {p.status === "on-track"
-                      ? "À l'heure"
-                      : p.status === "late"
-                        ? "En retard"
-                        : "À risque"}
-                  </span>
-                </div>
+                <div>PLANS DE PAIEMENT</div>
+                <div>PLAN</div>
+                <div className="text-right">PROCHAIN</div>
+                <div className="text-right">ÉCHÉANCE</div>
+                <div className="text-right">STATUT</div>
               </div>
-            ))}
+              <div className="space-y-4">
+                {paymentPlans.map((p) => (
+                  <div
+                    key={p.client}
+                    className="grid items-center text-sm"
+                    style={{ gridTemplateColumns: "3fr 2fr 2fr 1fr 1fr" }}
+                  >
+                    <div>
+                      <p
+                        className="font-bold"
+                        style={{ color: "var(--maison-text-primary)" }}
+                      >
+                        {p.client}
+                      </p>
+                      <p
+                        className="text-[10px]"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
+                        {p.project}
+                      </p>
+                    </div>
+                    <div
+                      className="text-xs font-semibold"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
+                      {p.plan}
+                    </div>
+                    <div
+                      className="text-right font-bold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {formatMad(p.nextPayment).replace(" MAD", "")}
+                    </div>
+                    <div
+                      className="text-right text-xs"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
+                      {p.dueDate}
+                    </div>
+                    <div className="text-right">
+                      <span
+                        className={`inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-bold ${
+                          p.status === "on-track"
+                            ? "bg-emerald-50 text-emerald-700"
+                            : p.status === "late"
+                              ? "bg-rose-50 text-rose-700"
+                              : "bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        {p.status === "on-track"
+                          ? "À l'heure"
+                          : p.status === "late"
+                            ? "En retard"
+                            : "À risque"}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
 
         {/* Détail du cash */}
         <div
-          className="rounded-xl border p-6 shadow-sm flex flex-col overflow-hidden"
+          className="flex min-w-0 flex-col overflow-hidden rounded-xl border p-6 shadow-sm"
           style={{
             background: "var(--maison-card)",
             borderColor: "var(--maison-border)",
@@ -1806,7 +1798,7 @@ function CashPanel({
   );
 }
 
-function CashGroup({
+export function CashGroup({
   detailRows,
   label,
   monthlyCash,
@@ -2626,7 +2618,7 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
 function Panel({ children }: { children: ReactNode }) {
   return (
     <section
-      className="rounded-xl border p-4 shadow-xs dark:border-stone-800 dark:bg-stone-950 transition-all"
+      className="min-w-0 rounded-xl border p-4 shadow-xs transition-all dark:border-stone-800 dark:bg-stone-950"
       style={{
         background: "var(--maison-card)",
         borderColor: "var(--maison-border)",

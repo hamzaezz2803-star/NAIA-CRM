@@ -769,7 +769,7 @@ export function NaiaFloatingAssistant() {
                   void runCommand(command, { speak: true });
                 }
               }}
-              placeholder="Ex\u00e9cute une commande vocale ou text\u2026"
+              placeholder="Exécute une commande vocale ou texte…"
               value={command}
             />
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -975,7 +975,7 @@ export function NaiaFloatingAssistant() {
               textAlign: "center",
             }}
           >
-            NAIA pr\u00e9pare \u2014 vous validez. Aucune action sans accord.
+            NAIA prépare — vous validez. Aucune action sans accord.
           </div>
         </section>
       ) : null}
@@ -1116,7 +1116,7 @@ function ActionCard({
               </span>
               {action.payload.timeWasInferred && (
                 <span style={{ color: T.brass }}>
-                  Heure inf\u00e9r\u00e9e, \u00e0 v\u00e9rifier
+                  Heure inférée, à vérifier
                 </span>
               )}
             </div>
@@ -1241,7 +1241,7 @@ function LeadDraftActionCard({
                 value={draft.contactEmail ?? ""}
               />
               <LeadField
-                label="T\u00e9l\u00e9phone"
+                label="Téléphone"
                 onChange={(value) => updateDraft({ contactPhone: value })}
                 value={draft.contactPhone ?? ""}
               />
@@ -1256,7 +1256,7 @@ function LeadDraftActionCard({
                 value={draft.source ?? ""}
               />
               <LeadField
-                label="Date planifi\u00e9e"
+                label="Date planifiée"
                 onChange={(value) => updateDraft({ leadDate: value })}
                 value={draft.leadDate ?? ""}
               />
@@ -1312,7 +1312,7 @@ function LeadDraftActionCard({
                 aria-hidden="true"
               />
             )}
-            Valider et cr\u00e9er le lead
+            Valider et créer le lead
           </button>
         </div>
       </div>

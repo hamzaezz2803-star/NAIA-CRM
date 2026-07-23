@@ -190,30 +190,20 @@ export default function NotificationsPage() {
         setSelectedIds(new Set());
 
         try {
-          const persistentIds = idsToDelete.filter(
-            (id) => !id.startsWith("lead-reminder-"),
-          );
-          if (persistentIds.length > 0) {
-            const totalPersistent = notifications.filter(
-              (n) => !n.id.startsWith("lead-reminder-"),
-            ).length;
+          const isDeletingAll = idsToDelete.length === notifications.length;
+          const success = isDeletingAll
+            ? await deleteAllNotifications()
+            : (
+                await Promise.all(
+                  idsToDelete.map((id) => deleteNotification(id)),
+                )
+              ).every((result) => result === true);
 
-            let success = false;
-            if (persistentIds.length === totalPersistent) {
-              success = await deleteAllNotifications();
-            } else {
-              const results = await Promise.all(
-                persistentIds.map((id) => deleteNotification(id)),
-              );
-              success = results.every((res) => res === true);
-            }
-
-            if (!success) {
-              console.error(
-                "Failed to delete selected notifications in database",
-              );
-              fetchNotifications();
-            }
+          if (!success) {
+            console.error(
+              "Failed to delete selected notifications in database",
+            );
+            fetchNotifications();
           }
         } catch (e) {
           console.error("Failed to delete selected notifications", e);
@@ -341,6 +331,11 @@ export default function NotificationsPage() {
               >
                 <div className="flex items-center gap-3">
                   <button
+                    aria-label={
+                      selectedIds.size === notifications.length
+                        ? "Tout désélectionner"
+                        : "Tout sélectionner"
+                    }
                     onClick={handleToggleSelectAll}
                     className={`flex h-5 w-5 items-center justify-center rounded border transition-all duration-200 ${
                       selectedIds.size === notifications.length
@@ -395,6 +390,11 @@ export default function NotificationsPage() {
                   <div className="flex items-start gap-4">
                     {isSelectionMode && (
                       <button
+                        aria-label={
+                          selectedIds.has(notification.id)
+                            ? `Désélectionner ${notification.title}`
+                            : `Sélectionner ${notification.title}`
+                        }
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleSelection(notification.id);

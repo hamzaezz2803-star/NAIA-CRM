@@ -15,7 +15,6 @@ import {
 import type { NaiaActionDraft, NaiaOrchestrationResult } from "./orchestrator";
 
 import {
-  buildNaiaVoiceUrl,
   createVoiceSilenceDetector,
   playElevenLabsVoice,
   primeVoicePlayback,
@@ -123,7 +122,6 @@ export function NaiaCommandCenter() {
   const [isApplyingAction, setIsApplyingAction] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [notice, setNotice] = useState("");
-  const [manualAudioUrl, setManualAudioUrl] = useState("");
   const [voiceCatalog, setVoiceCatalog] = useState<VoiceCatalog | null>(null);
   const [selectedVoiceId, setSelectedVoiceId] = useState("");
   const [forceBrowserSpeech, setForceBrowserSpeech] = useState(false);
@@ -309,11 +307,9 @@ export function NaiaCommandCenter() {
     (rawText: string) => {
       const text = rawText.replace(/\s+/g, " ").slice(0, 900);
       speechAudioRef.current?.pause();
-      setManualAudioUrl("");
       speechAudioRef.current = playElevenLabsVoice({
         onBlocked: (message) => {
           setNotice(message);
-          setManualAudioUrl(buildNaiaVoiceUrl(text, selectedVoiceId));
         },
         onEnded: () => setIsSpeaking(false),
         onStarted: () => {
@@ -884,6 +880,83 @@ export function NaiaCommandCenter() {
           height: 13px;
           cursor: pointer;
         }
+        .naia-mobile-agent-picker {
+          display: none;
+        }
+        @media (max-width: 767px) {
+          .naia-cockpit-shell {
+            height: 100dvh !important;
+          }
+          .naia-cockpit-topbar {
+            gap: 6px !important;
+            padding: 0 10px !important;
+          }
+          .naia-cockpit-topbar-status {
+            display: none !important;
+          }
+          .naia-cockpit-user {
+            margin-left: auto !important;
+          }
+          .naia-cockpit-grid {
+            grid-template-columns: minmax(0, 1fr) !important;
+          }
+          .naia-cockpit-left {
+            display: none !important;
+          }
+          .naia-cockpit-right.is-empty {
+            display: none !important;
+          }
+          .naia-cockpit-right.has-pending {
+            max-height: 40dvh;
+            border-top: 1px solid rgba(62,49,32,.14);
+            border-left: 0 !important;
+          }
+          .naia-cockpit-audit {
+            display: none !important;
+          }
+          .naia-mobile-agent-picker {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 8px;
+          }
+          .naia-mobile-agent-picker span {
+            flex: 0 0 auto;
+            font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+            font-size: 9px;
+            letter-spacing: .14em;
+            color: #8A7A5F;
+            text-transform: uppercase;
+          }
+          .naia-mobile-agent-picker select {
+            min-width: 0;
+            flex: 1;
+            border: 1px solid rgba(62,49,32,.2);
+            border-radius: 7px;
+            background: #F5F0E4;
+            color: #3A2E1E;
+            padding: 7px 9px;
+            font: inherit;
+            font-size: 12px;
+          }
+          .naia-cockpit-agent-header {
+            padding: 10px 12px !important;
+          }
+          .naia-cockpit-response {
+            padding: 12px 12px 6px !important;
+          }
+          .naia-cockpit-input {
+            padding: 8px 12px 10px !important;
+          }
+          .naia-cockpit-suggestions {
+            flex-wrap: nowrap !important;
+            overflow-x: auto;
+            padding-bottom: 4px;
+          }
+          .naia-cockpit-suggestions button {
+            flex: 0 0 auto;
+          }
+        }
       `}</style>
 
       {screen === "home" ? (
@@ -914,7 +987,6 @@ export function NaiaCommandCenter() {
           setCommand={setCommand}
           transcript={transcript}
           notice={notice}
-          manualAudioUrl={manualAudioUrl}
           userName={userName}
           onGoHome={() => setScreen("home")}
           onRunCommand={(cmd) => void runCommand(cmd)}
@@ -1991,7 +2063,6 @@ function NaiaCockpitScreen({
   setCommand,
   transcript,
   notice,
-  manualAudioUrl,
   userName,
   onGoHome,
   onRunCommand,
@@ -2016,7 +2087,6 @@ function NaiaCockpitScreen({
   setCommand: (v: string) => void;
   transcript: string;
   notice: string;
-  manualAudioUrl: string;
   userName: string;
   onGoHome: () => void;
   onRunCommand: (cmd: string) => void;
@@ -2041,6 +2111,7 @@ function NaiaCockpitScreen({
 
   return (
     <div
+      className="naia-cockpit-shell"
       style={{
         height: "100vh",
         display: "flex",
@@ -2051,6 +2122,7 @@ function NaiaCockpitScreen({
     >
       {/* — Topbar — */}
       <div
+        className="naia-cockpit-topbar"
         style={{
           display: "flex",
           alignItems: "center",
@@ -2244,6 +2316,7 @@ function NaiaCockpitScreen({
 
         {/* Right: status dot + username */}
         <div
+          className="naia-cockpit-topbar-status"
           style={{
             display: "flex",
             alignItems: "center",
@@ -2264,6 +2337,7 @@ function NaiaCockpitScreen({
           {"CRM connect\u00e9 \u00b7 Gmail en attente (Lina)"}
         </div>
         <div
+          className="naia-cockpit-user"
           style={{
             display: "flex",
             alignItems: "center",
@@ -2293,6 +2367,7 @@ function NaiaCockpitScreen({
 
       {/* â”€â”€ 3-column grid â”€â”€ */}
       <div
+        className="naia-cockpit-grid"
         style={{
           flex: 1,
           display: "grid",
@@ -2303,6 +2378,7 @@ function NaiaCockpitScreen({
       >
         {/* â”€â”€ Left rail â€” agents â”€â”€ */}
         <div
+          className="naia-cockpit-left"
           style={{
             borderRight: "1px solid rgba(62,49,32,.14)",
             overflowY: "auto",
@@ -2503,6 +2579,7 @@ function NaiaCockpitScreen({
 
         {/* â”€â”€ Center workspace â”€â”€ */}
         <div
+          className="naia-cockpit-center"
           style={{
             display: "flex",
             flexDirection: "column",
@@ -2513,6 +2590,7 @@ function NaiaCockpitScreen({
         >
           {/* Agent header */}
           <div
+            className="naia-cockpit-agent-header"
             style={{
               padding: "12px 22px 13px",
               borderBottom: "1px solid rgba(62,49,32,.12)",
@@ -2570,10 +2648,27 @@ function NaiaCockpitScreen({
             >
               {selectedRailAgent.mission}
             </div>
+            <label className="naia-mobile-agent-picker">
+              <span>Agent</span>
+              <select
+                aria-label="Choisir un agent NAIA"
+                onChange={(event) =>
+                  setSelectedRailId(event.target.value as NaiaAgentId)
+                }
+                value={selectedRailId}
+              >
+                {naiaAgents.map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name} · {agent.role}
+                  </option>
+                ))}
+              </select>
+            </label>
           </div>
 
           {/* Scrollable response area */}
           <div
+            className="naia-cockpit-response"
             style={{
               flex: 1,
               overflowY: "auto",
@@ -2734,6 +2829,7 @@ function NaiaCockpitScreen({
 
           {/* â”€â”€ Bottom input zone â”€â”€ */}
           <div
+            className="naia-cockpit-input"
             style={{
               flexShrink: 0,
               borderTop: "1px solid rgba(62,49,32,.12)",
@@ -2742,6 +2838,7 @@ function NaiaCockpitScreen({
           >
             {/* Suggestion chips */}
             <div
+              className="naia-cockpit-suggestions"
               style={{
                 display: "flex",
                 gap: 8,
@@ -2888,6 +2985,9 @@ function NaiaCockpitScreen({
 
         {/* â”€â”€ Right panel â€” validations + journal â”€â”€ */}
         <div
+          className={`naia-cockpit-right ${
+            hasPending ? "has-pending" : "is-empty"
+          }`}
           style={{
             borderLeft: "1px solid rgba(62,49,32,.14)",
             display: "flex",
@@ -3032,7 +3132,10 @@ function NaiaCockpitScreen({
           </div>
 
           {/* Journal d'audit */}
-          <div style={{ flex: 1, overflowY: "auto", padding: "14px" }}>
+          <div
+            className="naia-cockpit-audit"
+            style={{ flex: 1, overflowY: "auto", padding: "14px" }}
+          >
             <div style={{ paddingBottom: 10 }}>
               <span
                 style={{
@@ -3051,18 +3154,6 @@ function NaiaCockpitScreen({
                 "Chaque action approuv\u00e9e, refus\u00e9e ou ex\u00e9cut\u00e9e sera trac\u00e9e ici (audit Amine)."
               }
             </div>
-
-            {/* Manual audio player (ElevenLabs fallback) */}
-            {manualAudioUrl && (
-              <audio
-                controls
-                preload="none"
-                src={manualAudioUrl}
-                style={{ marginTop: 12, width: "100%" }}
-              >
-                <track kind="captions" />
-              </audio>
-            )}
           </div>
         </div>
       </div>

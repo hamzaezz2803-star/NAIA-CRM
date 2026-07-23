@@ -8,15 +8,21 @@ vi.mock("@/platform/auth/supabase-server", () => ({
   createServerSupabaseClient: mocks.createServerSupabaseClient,
 }));
 
-import { deleteAllNotifications } from "./actions";
+import {
+  deleteAllNotifications,
+  deleteNotification,
+  getNotifications,
+  markNotificationAsRead,
+} from "./actions";
 import {
   buildCrmReminderNotificationId,
   parseCrmReminderNotificationId,
 } from "./reminder-keys";
 
-type QueryOperation = "delete" | "insert" | "select";
+type QueryOperation = "delete" | "insert" | "select" | "update";
 
 type QueryState = {
+  filters: { column: string; value: unknown }[];
   table: string;
   operation: QueryOperation;
   payload?: unknown;
@@ -26,16 +32,18 @@ type QueryResponder = (state: QueryState) => unknown;
 
 type FakeQueryBuilder = {
   delete: () => FakeQueryBuilder;
-  eq: () => FakeQueryBuilder;
+  eq: (column: string, value: unknown) => FakeQueryBuilder;
   insert: (payload: unknown) => FakeQueryBuilder;
   limit: () => FakeQueryBuilder;
   not: () => FakeQueryBuilder;
+  order: () => FakeQueryBuilder;
   select: () => FakeQueryBuilder;
   single: () => Promise<unknown>;
   then: (
     resolve: (value: unknown) => unknown,
     reject: (reason: unknown) => unknown,
   ) => Promise<unknown>;
+  update: (payload: unknown) => FakeQueryBuilder;
 };
 
 function createFakeSupabase(respond: QueryResponder) {
@@ -47,13 +55,14 @@ function createFakeSupabase(respond: QueryResponder) {
       }),
     },
     from(table: string) {
-      const state: QueryState = { operation: "select", table };
+      const state: QueryState = { filters: [], operation: "select", table };
       const builder: FakeQueryBuilder = {
         delete() {
           state.operation = "delete";
           return builder;
         },
-        eq() {
+        eq(column, value) {
+          state.filters.push({ column, value });
           return builder;
         },
         insert(payload: unknown) {
@@ -67,6 +76,9 @@ function createFakeSupabase(respond: QueryResponder) {
         not() {
           return builder;
         },
+        order() {
+          return builder;
+        },
         select() {
           state.operation = "select";
           return builder;
@@ -77,6 +89,11 @@ function createFakeSupabase(respond: QueryResponder) {
           reject: (reason: unknown) => unknown,
         ) {
           return Promise.resolve(respond(state)).then(resolve, reject);
+        },
+        update(payload: unknown) {
+          state.operation = "update";
+          state.payload = payload;
+          return builder;
         },
       };
 
@@ -282,4 +299,165 @@ describe("deleteAllNotifications", () => {
       }),
     ]);
   });
+});
+
+describe("CRM reminder persistence", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-24T12:00:00.000Z"));
+  });
+
+  it("hides only the dismissed due date and exposes a rescheduled reminder", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        const membership = membershipResponse(state);
+        if (membership) return membership;
+
+        if (state.table === "notifications" && state.operation === "select") {
+          return {
+            data: [
+              {
+                created_at: "2026-07-20T12:00:00.000Z",
+                description: "lead-1:2026-07-20",
+                id: "marker-dismissed",
+                is_read: true,
+                link_url: null,
+                title: "lead-reminder-dismissed",
+                type: "system",
+              },
+            ],
+            error: null,
+          };
+        }
+
+        if (state.table === "crm_leads" && state.operation === "select") {
+          return {
+            data: [
+              {
+                id: "lead-1",
+                lead_date: "2026-07-23T09:00:00.000Z",
+                next_action: "Relancer après le nouveau rendez-vous",
+                next_action_date: null,
+                topic: "HPS",
+              },
+            ],
+            error: null,
+          };
+        }
+
+        return { data: null, error: null };
+      }),
+    );
+
+    await expect(getNotifications()).resolves.toEqual([
+      expect.objectContaining({
+        id: "lead-reminder-lead-1:2026-07-23",
+        is_read: false,
+        title: "Rappel Lead : HPS",
+      }),
+    ]);
+  });
+
+  it("restores the read state only for the exact lead and due date", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        const membership = membershipResponse(state);
+        if (membership) return membership;
+
+        if (state.table === "notifications" && state.operation === "select") {
+          return {
+            data: [
+              {
+                created_at: "2026-07-23T12:00:00.000Z",
+                description: "lead-1:2026-07-23",
+                id: "marker-read",
+                is_read: true,
+                link_url: null,
+                title: "lead-reminder-read",
+                type: "system",
+              },
+            ],
+            error: null,
+          };
+        }
+
+        if (state.table === "crm_leads" && state.operation === "select") {
+          return {
+            data: [
+              {
+                id: "lead-1",
+                lead_date: "2026-07-23T09:00:00.000Z",
+                next_action: "Relancer",
+                next_action_date: null,
+                topic: "HPS",
+              },
+              {
+                id: "lead-2",
+                lead_date: "2026-07-23T10:00:00.000Z",
+                next_action: "Préparer la proposition",
+                next_action_date: null,
+                topic: "OCP",
+              },
+            ],
+            error: null,
+          };
+        }
+
+        return { data: null, error: null };
+      }),
+    );
+
+    const notifications = await getNotifications();
+
+    expect(
+      notifications.find(
+        (notification) => notification.id === "lead-reminder-lead-1:2026-07-23",
+      )?.is_read,
+    ).toBe(true);
+    expect(
+      notifications.find(
+        (notification) => notification.id === "lead-reminder-lead-2:2026-07-23",
+      )?.is_read,
+    ).toBe(false);
+  });
+
+  it.each([
+    ["read", markNotificationAsRead, "lead-reminder-read"],
+    ["dismissed", deleteNotification, "lead-reminder-dismissed"],
+  ])(
+    "stores the exact composite key when a reminder is marked %s",
+    async (_stateLabel, action, markerTitle) => {
+      const operations: QueryState[] = [];
+      mocks.createServerSupabaseClient.mockResolvedValue(
+        createFakeSupabase((state) => {
+          operations.push({
+            ...state,
+            filters: [...state.filters],
+          });
+          const membership = membershipResponse(state);
+          if (membership) return membership;
+
+          return { data: null, error: null };
+        }),
+      );
+
+      await expect(action("lead-reminder-lead-1:2026-07-23")).resolves.toBe(
+        true,
+      );
+
+      expect(
+        operations.find(
+          (state) =>
+            state.table === "notifications" && state.operation === "insert",
+        )?.payload,
+      ).toEqual(
+        expect.objectContaining({
+          description: "lead-1:2026-07-23",
+          profile_id: "user-1",
+          title: markerTitle,
+        }),
+      );
+    },
+  );
 });

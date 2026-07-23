@@ -417,7 +417,7 @@ export function AppShell({
           {children}
         </main>
       </div>
-      <NaiaFloatingAssistant />
+      {isNaiaHomePage ? null : <NaiaFloatingAssistant />}
     </div>
   );
 }
