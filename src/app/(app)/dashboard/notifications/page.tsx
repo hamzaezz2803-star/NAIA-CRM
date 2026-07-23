@@ -226,15 +226,25 @@ export default function NotificationsPage() {
   const unreadNotifications = notifications.filter((n) => !n.is_read);
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div className="flex items-center gap-3">
         <Link
           href="/dashboard"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-stone-200 bg-white text-stone-700 shadow-sm transition hover:bg-stone-50 hover:text-stone-950 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300 dark:hover:bg-stone-900 dark:hover:text-stone-50"
+          className="inline-flex h-9 w-9 items-center justify-center rounded-lg border shadow-sm transition hover:opacity-80 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+            color: "var(--maison-text-primary)",
+          }}
         >
           <ArrowLeft className="h-4 w-4" />
         </Link>
-        <span className="text-sm font-medium text-stone-500">Retour</span>
+        <span
+          className="text-xs font-semibold"
+          style={{ color: "var(--maison-text-secondary)" }}
+        >
+          Retour
+        </span>
       </div>
 
       <PageHeader
@@ -248,7 +258,12 @@ export default function NotificationsPage() {
                 <Button
                   variant="outline"
                   onClick={handleMarkAllAsRead}
-                  className="flex items-center gap-2"
+                  className="flex items-center gap-2 shadow-sm transition hover:opacity-80"
+                  style={{
+                    background: "var(--maison-card)",
+                    borderColor: "var(--maison-border)",
+                    color: "var(--maison-text-primary)",
+                  }}
                 >
                   <CheckCheck className="h-4 w-4" />
                   Tout marquer comme lu
@@ -257,7 +272,11 @@ export default function NotificationsPage() {
               <Button
                 variant="outline"
                 onClick={handleDeleteAll}
-                className="flex items-center gap-2 text-red-600 hover:text-red-700 hover:bg-red-50 dark:text-red-400 dark:hover:text-red-300 dark:hover:bg-red-950/20 border-stone-200 dark:border-stone-800"
+                className="flex items-center gap-2 text-red-600 hover:text-red-700 dark:text-red-400"
+                style={{
+                  background: "rgba(239, 68, 68, 0.06)",
+                  borderColor: "rgba(239, 68, 68, 0.25)",
+                }}
               >
                 <Trash2 className="h-4 w-4" />
                 Tout supprimer
@@ -267,54 +286,94 @@ export default function NotificationsPage() {
         }
       />
 
-      <div className="rounded-lg border border-stone-200 bg-white shadow-sm dark:border-stone-800 dark:bg-stone-950">
+      <div
+        className="rounded-xl border shadow-sm overflow-hidden dark:border-stone-800 dark:bg-stone-950"
+        style={{
+          background: "var(--maison-card)",
+          borderColor: "var(--maison-border)",
+        }}
+      >
         {isLoading ? (
-          <div className="flex flex-col items-center justify-center p-12 text-center text-sm text-stone-500">
-            <span className="h-8 w-8 animate-spin rounded-full border-2 border-stone-300 border-t-teal-600 mb-4" />
+          <div
+            className="flex flex-col items-center justify-center p-12 text-center text-sm"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            <span
+              className="h-8 w-8 animate-spin rounded-full border-2 border-t-transparent mb-4"
+              style={{
+                borderColor: "var(--maison-border)",
+                borderTopColor: "var(--maison-brass)",
+              }}
+            />
             Chargement des notifications...
           </div>
         ) : notifications.length === 0 ? (
-          <div className="flex flex-col items-center justify-center p-12 text-center text-stone-500">
-            <Bell className="h-12 w-12 text-stone-300 dark:text-stone-700 mb-4" />
-            <h3 className="text-lg font-semibold text-stone-900 dark:text-stone-50">
+          <div
+            className="flex flex-col items-center justify-center p-12 text-center"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            <Bell
+              className="h-12 w-12 mb-4"
+              style={{ color: "var(--maison-text-muted)" }}
+            />
+            <h3
+              className="text-lg font-semibold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
               Aucune notification
             </h3>
-            <p className="mt-1 text-sm">
+            <p
+              className="mt-1 text-sm"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
               Vous n&apos;avez pas encore reçu de notification d&apos;activité.
             </p>
           </div>
         ) : (
           <div>
             {isSelectionMode && (
-              <div className="flex items-center justify-between border-b border-stone-200 bg-stone-50/50 px-5 py-3 dark:border-stone-800 dark:bg-stone-900/20 rounded-t-lg">
+              <div
+                className="flex items-center justify-between border-b px-5 py-3 rounded-t-xl"
+                style={{
+                  borderColor: "var(--maison-border)",
+                  background: "var(--maison-border-subtle)",
+                }}
+              >
                 <div className="flex items-center gap-3">
                   <button
                     onClick={handleToggleSelectAll}
                     className={`flex h-5 w-5 items-center justify-center rounded border transition-all duration-200 ${
                       selectedIds.size === notifications.length
-                        ? "border-teal-600 bg-teal-600 text-white dark:border-teal-500 dark:bg-teal-500"
-                        : "border-stone-300 bg-white hover:border-stone-400 dark:border-stone-700 dark:bg-stone-900 dark:hover:border-stone-600"
+                        ? "border-amber-600 bg-amber-600 text-white"
+                        : "border-stone-300 bg-white hover:border-stone-400 dark:border-stone-700 dark:bg-stone-900"
                     }`}
                   >
                     {selectedIds.size === notifications.length ? (
                       <Check className="h-3 w-3 stroke-[3]" />
                     ) : selectedIds.size > 0 ? (
-                      <span className="h-1.5 w-1.5 bg-teal-600 dark:bg-teal-500 rounded-sm" />
+                      <span className="h-1.5 w-1.5 bg-amber-600 rounded-sm" />
                     ) : null}
                   </button>
-                  <span className="text-xs font-semibold uppercase tracking-wider text-stone-500 select-none">
+                  <span
+                    className="text-xs font-semibold uppercase tracking-wider select-none"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
                     Sélectionner tout ({notifications.length})
                   </span>
                 </div>
                 <button
                   onClick={handleCancelSelection}
-                  className="text-xs font-medium text-stone-500 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
+                  className="text-xs font-medium hover:underline"
+                  style={{ color: "var(--maison-text-secondary)" }}
                 >
                   Annuler
                 </button>
               </div>
             )}
-            <div className="divide-y divide-stone-200 dark:divide-stone-800">
+            <div
+              className="divide-y"
+              style={{ borderColor: "var(--maison-border-subtle)" }}
+            >
               {notifications.map((notification) => (
                 <div
                   key={notification.id}
@@ -323,13 +382,15 @@ export default function NotificationsPage() {
                       toggleSelection(notification.id);
                     }
                   }}
-                  className={`flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center transition hover:bg-stone-50/50 dark:hover:bg-stone-900/10 ${
+                  className={`flex flex-col justify-between gap-4 p-5 sm:flex-row sm:items-center transition hover:bg-[var(--maison-border-subtle)]/50 dark:hover:bg-stone-900/20 ${
                     isSelectionMode ? "cursor-pointer select-none" : ""
-                  } ${
-                    !notification.is_read
-                      ? "bg-stone-50/40 dark:bg-stone-800/10"
-                      : ""
                   }`}
+                  style={{
+                    background: !notification.is_read
+                      ? "rgba(176,141,79,0.04)"
+                      : "transparent",
+                    borderColor: "var(--maison-border-subtle)",
+                  }}
                 >
                   <div className="flex items-start gap-4">
                     {isSelectionMode && (
@@ -340,8 +401,8 @@ export default function NotificationsPage() {
                         }}
                         className={`mt-2 flex h-5 w-5 flex-none items-center justify-center rounded border transition-all duration-200 ${
                           selectedIds.has(notification.id)
-                            ? "border-teal-600 bg-teal-600 text-white dark:border-teal-500 dark:bg-teal-500"
-                            : "border-stone-300 bg-white hover:border-stone-400 dark:border-stone-700 dark:bg-stone-900 dark:hover:border-stone-600"
+                            ? "border-amber-600 bg-amber-600 text-white"
+                            : "border-stone-300 bg-white hover:border-stone-400 dark:border-stone-700 dark:bg-stone-900"
                         }`}
                       >
                         {selectedIds.has(notification.id) && (
@@ -350,7 +411,7 @@ export default function NotificationsPage() {
                       </button>
                     )}
                     <div
-                      className={`flex h-10 w-10 flex-none items-center justify-center rounded-lg ${getBgForType(
+                      className={`flex h-10 w-10 flex-none items-center justify-center rounded-xl ${getBgForType(
                         notification.type,
                       )}`}
                     >
@@ -359,22 +420,28 @@ export default function NotificationsPage() {
                     <div className="space-y-1">
                       <div className="flex items-center gap-2">
                         <p
-                          className={`text-sm font-semibold ${
-                            !notification.is_read
-                              ? "text-stone-950 dark:text-stone-50"
-                              : "text-stone-800 dark:text-stone-200"
-                          }`}
+                          className="text-sm font-semibold"
+                          style={{ color: "var(--maison-text-primary)" }}
                         >
                           {notification.title}
                         </p>
                         {!notification.is_read && (
-                          <span className="h-1.5 w-1.5 rounded-full bg-teal-600 dark:bg-teal-500" />
+                          <span
+                            className="h-2 w-2 rounded-full"
+                            style={{ background: "var(--maison-brass)" }}
+                          />
                         )}
                       </div>
-                      <p className="text-sm text-stone-600 dark:text-stone-400">
+                      <p
+                        className="text-sm"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
                         {notification.description}
                       </p>
-                      <p className="text-xs text-stone-400 dark:text-stone-500">
+                      <p
+                        className="text-xs"
+                        style={{ color: "var(--maison-text-muted)" }}
+                      >
                         {formatDistanceToNow(
                           new Date(notification.created_at),
                           {
@@ -392,13 +459,14 @@ export default function NotificationsPage() {
                         notification.type !== "lead_reminder" && (
                           <Button
                             variant="ghost"
-                            className="h-8 px-2 text-stone-600 hover:text-stone-900 dark:text-stone-400 dark:hover:text-stone-100"
+                            className="h-8 px-2.5 text-xs font-medium hover:opacity-80"
+                            style={{ color: "var(--maison-text-secondary)" }}
                             onClick={(e) => {
                               e.stopPropagation();
                               handleMarkAsRead(notification.id);
                             }}
                           >
-                            <Check className="h-4 w-4 mr-1" />
+                            <Check className="h-3.5 w-3.5 mr-1" />
                             Marquer lu
                           </Button>
                         )}
@@ -406,7 +474,12 @@ export default function NotificationsPage() {
                         <Link
                           href={notification.link_url}
                           onClick={(e) => e.stopPropagation()}
-                          className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-stone-200 bg-white px-3 text-xs font-medium text-stone-700 shadow-sm transition hover:bg-stone-50 hover:text-stone-950 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300 dark:hover:bg-stone-900 dark:hover:text-stone-50"
+                          className="inline-flex h-8 items-center justify-center gap-1 rounded-lg border px-3 text-xs font-medium shadow-sm transition hover:opacity-80 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-300"
+                          style={{
+                            background: "var(--maison-card)",
+                            borderColor: "var(--maison-border)",
+                            color: "var(--maison-text-primary)",
+                          }}
                         >
                           Consulter
                           <ExternalLink className="h-3 w-3 ml-0.5" />

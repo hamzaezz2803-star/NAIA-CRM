@@ -1,6 +1,10 @@
 "use server";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import {
+  buildCrmReminderNotificationId,
+  parseCrmReminderNotificationId,
+} from "./reminder-keys";
 
 type ServerSupabaseClient = NonNullable<
   Awaited<ReturnType<typeof createServerSupabaseClient>>
@@ -64,21 +68,30 @@ export async function getNotifications(): Promise<AppNotification[]> {
     .from("notifications")
     .select("*")
     .eq("organization_id", organizationId)
-    .order("created_at", { ascending: false })
-    .limit(20);
+    .order("created_at", { ascending: false });
 
   let notifications: AppNotification[] = [];
+  const dismissedLeadKeys = new Set<string>();
+  const readLeadKeys = new Set<string>();
 
   if (!dbError && dbNotifications) {
-    notifications = dbNotifications.map((n) => ({
-      id: n.id,
-      type: n.type as AppNotification["type"],
-      title: n.title,
-      description: n.description || "",
-      link_url: n.link_url || undefined,
-      is_read: n.is_read,
-      created_at: n.created_at,
-    }));
+    dbNotifications.forEach((n) => {
+      if (n.title === "lead-reminder-dismissed") {
+        if (n.description) dismissedLeadKeys.add(n.description);
+      } else if (n.title === "lead-reminder-read") {
+        if (n.description) readLeadKeys.add(n.description);
+      } else {
+        notifications.push({
+          id: n.id,
+          type: n.type as AppNotification["type"],
+          title: n.title,
+          description: n.description || "",
+          link_url: n.link_url || undefined,
+          is_read: n.is_read,
+          created_at: n.created_at,
+        });
+      }
+    });
   }
 
   // Fetch smart CRM reminders
@@ -97,15 +110,24 @@ export async function getNotifications(): Promise<AppNotification[]> {
         dueDate: lead.lead_date ?? lead.next_action_date,
       }))
       .filter(({ dueDate }) => dueDate && dueDate.slice(0, 10) <= today)
-      .map(({ lead, dueDate }) => ({
-        id: `lead-reminder-${lead.id}`,
-        type: "lead_reminder",
-        title: "Rappel Lead : " + lead.topic,
-        description: lead.next_action || "Une action est requise pour ce lead.",
-        link_url: "/dashboard/leads",
-        is_read: false,
-        created_at: new Date(dueDate as string).toISOString(),
-      }));
+      .map(({ lead, dueDate }) => {
+        const dateStr = (dueDate as string).slice(0, 10);
+        const notificationId = buildCrmReminderNotificationId(lead.id, dateStr);
+        return {
+          id: notificationId,
+          type: "lead_reminder" as const,
+          title: "Rappel Lead : " + lead.topic,
+          description:
+            lead.next_action || "Une action est requise pour ce lead.",
+          link_url: "/dashboard/leads",
+          is_read: readLeadKeys.has(`${lead.id}:${dateStr}`),
+          created_at: new Date(dueDate as string).toISOString(),
+        };
+      })
+      .filter((reminder) => {
+        const { compositeKey } = parseCrmReminderNotificationId(reminder.id);
+        return !dismissedLeadKeys.has(compositeKey);
+      });
 
     notifications = [...notifications, ...leadReminders];
   }
@@ -122,10 +144,21 @@ export async function getNotifications(): Promise<AppNotification[]> {
 export async function markNotificationAsRead(
   notificationId: string,
 ): Promise<boolean> {
-  // We can only mark persistent notifications as read in the DB.
-  // Smart reminders (starting with lead-reminder-) disappear automatically when the lead is updated.
   if (notificationId.startsWith("lead-reminder-")) {
-    return true; // Pretend it worked; the UI can optimistically hide it or prompt user to resolve lead.
+    const { compositeKey } = parseCrmReminderNotificationId(notificationId);
+    const context = await getNotificationContext();
+    if (!context) return false;
+    const { supabase, userId, organizationId } = context;
+
+    const { error } = await supabase.from("notifications").insert({
+      organization_id: organizationId,
+      profile_id: userId,
+      title: "lead-reminder-read",
+      description: compositeKey,
+      type: "system",
+      is_read: true,
+    });
+    return !error;
   }
 
   const context = await getNotificationContext();
@@ -170,7 +203,20 @@ export async function deleteNotification(
   notificationId: string,
 ): Promise<boolean> {
   if (notificationId.startsWith("lead-reminder-")) {
-    return true; // Dynamic notifications are filtered on client side
+    const { compositeKey } = parseCrmReminderNotificationId(notificationId);
+    const context = await getNotificationContext();
+    if (!context) return false;
+    const { supabase, userId, organizationId } = context;
+
+    const { error } = await supabase.from("notifications").insert({
+      organization_id: organizationId,
+      profile_id: userId,
+      title: "lead-reminder-dismissed",
+      description: compositeKey,
+      type: "system",
+      is_read: true,
+    });
+    return !error;
   }
 
   const context = await getNotificationContext();
@@ -199,11 +245,62 @@ export async function deleteAllNotifications(): Promise<boolean> {
 
   const { supabase, userId, organizationId } = context;
 
+  // 1. Tombstone all currently active CRM lead reminders so "Tout supprimer"
+  // clears them and prevents them from reappearing on next refresh.
+  const today = new Date().toISOString().split("T")[0];
+  const { data: leads, error: leadsError } = await supabase
+    .from("crm_leads")
+    .select("id, topic, lead_date, next_action_date")
+    .eq("organization_id", organizationId)
+    .not("status", "in", '("won","dead-end")');
+
+  if (leadsError) {
+    console.error(
+      "Database error loading CRM reminders before deleting notifications:",
+      leadsError,
+    );
+    return false;
+  }
+
+  if (leads && leads.length > 0) {
+    const overdueLeads = (leads as ReminderLeadRow[])
+      .map((lead) => ({
+        leadId: lead.id,
+        dueDate: lead.lead_date ?? lead.next_action_date,
+      }))
+      .filter(({ dueDate }) => dueDate && dueDate.slice(0, 10) <= today);
+
+    if (overdueLeads.length > 0) {
+      const markerRows = overdueLeads.map(({ leadId, dueDate }) => ({
+        organization_id: organizationId,
+        profile_id: userId,
+        title: "lead-reminder-dismissed",
+        description: `${leadId}:${(dueDate as string).slice(0, 10)}`,
+        type: "system",
+        is_read: true,
+      }));
+
+      const { error: markerError } = await supabase
+        .from("notifications")
+        .insert(markerRows);
+
+      if (markerError) {
+        console.error(
+          "Database error preserving CRM reminder dismissals:",
+          markerError,
+        );
+        return false;
+      }
+    }
+  }
+
+  // 2. Delete all ordinary notifications while preserving marker tombstones.
   const { error } = await supabase
     .from("notifications")
     .delete()
     .eq("organization_id", organizationId)
-    .eq("profile_id", userId);
+    .eq("profile_id", userId)
+    .not("title", "in", '("lead-reminder-dismissed","lead-reminder-read")');
 
   if (error) {
     console.error("Database error deleting all notifications:", error);

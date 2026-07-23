@@ -167,17 +167,41 @@ export default async function SettingsPage() {
       />
 
       {/* User Profile Section */}
-      <section className="grid gap-6 md:grid-cols-2">
-        <article className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex h-10 w-10 flex-none items-center justify-center rounded-md bg-stone-100 text-stone-600">
-              <User className="h-5 w-5" />
+      <section className="grid gap-4 md:grid-cols-2">
+        <article
+          className="rounded-xl border p-4 sm:p-5 shadow-xs dark:border-stone-800 dark:bg-stone-950 transition-all"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
+          <div
+            className="flex items-center gap-3 mb-3 pb-3 border-b"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
+            <div
+              className="flex h-9 w-9 flex-none items-center justify-center rounded-lg shadow-2xs"
+              style={{
+                background: "rgba(176,141,79,0.12)",
+                color: "var(--maison-brass)",
+              }}
+            >
+              <User className="h-4.5 w-4.5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-stone-950">
+              <h2
+                className="text-base font-semibold tracking-tight"
+                style={{
+                  fontFamily: "var(--font-playfair), Georgia, serif",
+                  color: "var(--maison-text-primary)",
+                }}
+              >
                 Informations du compte
               </h2>
-              <p className="text-sm text-stone-500">
+              <p
+                className="text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
                 Vos informations personnelles
               </p>
             </div>
@@ -185,51 +209,102 @@ export default async function SettingsPage() {
 
           <div className="space-y-4">
             <div>
-              <label className="block text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+              <label
+                className="block text-xs font-semibold uppercase tracking-wider mb-1"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
                 Nom
               </label>
-              <p className="text-sm font-medium text-stone-900">
+              <p
+                className="text-sm font-medium"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {session.user.name}
               </p>
             </div>
             <div>
-              <label className="block text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+              <label
+                className="block text-xs font-semibold uppercase tracking-wider mb-1"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
                 Email
               </label>
-              <p className="text-sm font-medium text-stone-900">
+              <p
+                className="text-sm font-medium"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {session.user.email}
               </p>
             </div>
             <div>
-              <label className="block text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+              <label
+                className="block text-xs font-semibold uppercase tracking-wider mb-1"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
                 Rôle
               </label>
-              <p className="text-sm font-medium text-stone-900 capitalize">
+              <p
+                className="text-sm font-medium capitalize"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {session.user.role}
               </p>
             </div>
-            <div className="pt-2 border-t border-stone-100">
-              <label className="flex items-center gap-2 text-xs font-medium text-stone-500 uppercase tracking-wider mb-1">
+            <div
+              className="pt-3 border-t"
+              style={{ borderColor: "var(--maison-border-subtle)" }}
+            >
+              <label
+                className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wider mb-1"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
                 <Building2 className="h-3.5 w-3.5" />
                 Organisation
               </label>
-              <p className="text-sm font-medium text-stone-900">
+              <p
+                className="text-sm font-medium"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
                 {session.organization.name}
               </p>
             </div>
           </div>
         </article>
 
-        <article className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm">
-          <div className="flex items-center gap-3 mb-4">
-            <div className="flex h-10 w-10 flex-none items-center justify-center rounded-md bg-stone-100 text-stone-600">
-              <KeyRound className="h-5 w-5" />
+        <article
+          className="rounded-xl border p-4 sm:p-5 shadow-xs dark:border-stone-800 dark:bg-stone-950 transition-all"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
+          <div
+            className="flex items-center gap-3 mb-3 pb-3 border-b"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
+            <div
+              className="flex h-9 w-9 flex-none items-center justify-center rounded-lg shadow-2xs"
+              style={{
+                background: "rgba(176,141,79,0.12)",
+                color: "var(--maison-brass)",
+              }}
+            >
+              <KeyRound className="h-4.5 w-4.5" />
             </div>
             <div>
-              <h2 className="text-base font-semibold text-stone-950">
+              <h2
+                className="text-base font-semibold tracking-tight"
+                style={{
+                  fontFamily: "var(--font-playfair), Georgia, serif",
+                  color: "var(--maison-text-primary)",
+                }}
+              >
                 Sécurité
               </h2>
-              <p className="text-sm text-stone-500">
+              <p
+                className="text-xs"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
                 Mettre à jour votre mot de passe
               </p>
             </div>
@@ -238,16 +313,34 @@ export default async function SettingsPage() {
         </article>
       </section>
 
-      <div className="border-t border-stone-200 pt-8" />
+      <div
+        className="border-t pt-2"
+        style={{ borderColor: "var(--maison-border-subtle)" }}
+      />
 
       {/* Security note */}
-      <div className="flex items-start gap-3 rounded-lg border border-stone-200 bg-stone-50 p-4">
-        <Shield className="mt-0.5 h-5 w-5 flex-none text-teal-700" />
+      <div
+        className="flex items-start gap-3 rounded-xl border p-4 shadow-sm"
+        style={{
+          background: "rgba(176,141,79,0.05)",
+          borderColor: "var(--maison-border)",
+        }}
+      >
+        <Shield
+          className="mt-0.5 h-5 w-5 flex-none"
+          style={{ color: "var(--maison-brass)" }}
+        />
         <div>
-          <p className="text-sm font-medium text-stone-950">
+          <p
+            className="text-sm font-semibold"
+            style={{ color: "var(--maison-text-primary)" }}
+          >
             Configuration sécurisée
           </p>
-          <p className="mt-1 text-sm leading-6 text-stone-600">
+          <p
+            className="mt-1 text-xs md:text-sm leading-relaxed"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
             Toutes les clés privées (GROQ_API_KEY, GOOGLE_CLIENT_SECRET,
             SUPABASE_SERVICE_ROLE_KEY) restent côté serveur. Elles ne sont
             jamais exposées dans les composants clients ou les variables
@@ -262,15 +355,28 @@ export default async function SettingsPage() {
           <article
             key={integration.id}
             id={`integration-${integration.id}`}
-            className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm"
+            className="rounded-xl border p-5 shadow-sm dark:border-stone-800 dark:bg-stone-950"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+            }}
           >
             <div className="flex items-start justify-between gap-3">
               <div className="flex items-center gap-3">
-                <div className="flex h-10 w-10 flex-none items-center justify-center rounded-md bg-stone-100 text-stone-600">
+                <div
+                  className="flex h-10 w-10 flex-none items-center justify-center rounded-lg"
+                  style={{
+                    background: "var(--maison-border-subtle)",
+                    color: "var(--maison-text-primary)",
+                  }}
+                >
                   {integration.icon}
                 </div>
                 <div>
-                  <h2 className="text-sm font-semibold text-stone-950">
+                  <h2
+                    className="text-sm font-semibold"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
                     {integration.name}
                   </h2>
                   <span
@@ -283,12 +389,22 @@ export default async function SettingsPage() {
               <StatusIcon status={integration.status} />
             </div>
 
-            <p className="mt-3 text-sm leading-6 text-stone-600">
+            <p
+              className="mt-3 text-xs md:text-sm leading-relaxed"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
               {integration.description}
             </p>
 
             {integration.detail && (
-              <p className="mt-2 rounded-md bg-stone-50 px-3 py-1.5 text-xs text-stone-500 font-mono">
+              <p
+                className="mt-3 rounded-lg px-3 py-2 text-xs font-mono border"
+                style={{
+                  background: "var(--maison-border-subtle)",
+                  borderColor: "var(--maison-border)",
+                  color: "var(--maison-text-primary)",
+                }}
+              >
                 {integration.detail}
               </p>
             )}
@@ -297,26 +413,53 @@ export default async function SettingsPage() {
       </div>
 
       {/* Environment variables reference */}
-      <section>
-        <h2 className="mb-3 text-sm font-semibold text-stone-700">
+      <section className="space-y-3">
+        <h2
+          className="text-sm font-semibold uppercase tracking-wider"
+          style={{ color: "var(--maison-brass)" }}
+        >
           Variables d&apos;environnement attendues
         </h2>
-        <div className="overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm">
+        <div
+          className="overflow-hidden rounded-xl border shadow-sm dark:border-stone-800 dark:bg-stone-950"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+          }}
+        >
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-stone-200 bg-stone-50">
-                <th className="px-4 py-3 text-left font-semibold text-stone-700">
+              <tr
+                className="border-b"
+                style={{
+                  background: "var(--maison-border-subtle)",
+                  borderColor: "var(--maison-border)",
+                }}
+              >
+                <th
+                  className="px-4 py-3 text-left font-semibold text-xs uppercase tracking-wider"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Variable
                 </th>
-                <th className="px-4 py-3 text-left font-semibold text-stone-700">
+                <th
+                  className="px-4 py-3 text-left font-semibold text-xs uppercase tracking-wider"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Usage
                 </th>
-                <th className="px-4 py-3 text-left font-semibold text-stone-700">
+                <th
+                  className="px-4 py-3 text-left font-semibold text-xs uppercase tracking-wider"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Visibilité
                 </th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-stone-100">
+            <tbody
+              className="divide-y"
+              style={{ borderColor: "var(--maison-border-subtle)" }}
+            >
               {[
                 {
                   name: "NEXT_PUBLIC_SUPABASE_URL",
@@ -365,18 +508,24 @@ export default async function SettingsPage() {
                 },
               ].map((row) => (
                 <tr key={row.name}>
-                  <td className="px-4 py-3 font-mono text-xs text-stone-800">
+                  <td
+                    className="px-4 py-3 font-mono text-xs font-medium"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
                     {row.name}
                   </td>
-                  <td className="px-4 py-3 text-xs text-stone-600">
+                  <td
+                    className="px-4 py-3 text-xs"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
                     {row.usage}
                   </td>
                   <td className="px-4 py-3">
                     <span
-                      className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                      className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
                         row.visibility === "Client"
-                          ? "bg-blue-50 text-blue-700"
-                          : "bg-stone-100 text-stone-600"
+                          ? "bg-blue-50 text-blue-700 border border-blue-200"
+                          : "bg-amber-50 text-amber-800 border border-amber-200"
                       }`}
                     >
                       {row.visibility}

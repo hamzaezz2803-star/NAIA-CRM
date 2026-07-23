@@ -11,20 +11,101 @@ type ElevenLabsVoice = {
 const DEFAULT_ELEVENLABS_VOICE_ID = "a5n9pJUnAhX4fn7lx3uo";
 const DEFAULT_FREE_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
 
+const premadeVoices = [
+  {
+    voiceId: "a5n9pJUnAhX4fn7lx3uo",
+    name: "Martin Dupont (Default)",
+    category: "premade",
+    labels: {
+      accent: "french",
+      age: "middle aged",
+      gender: "male",
+      language: "fr",
+    },
+  },
+  {
+    voiceId: "JBFqnCBsd6RMkjVDRZzb",
+    name: "George (Recommended)",
+    category: "premade",
+    labels: {
+      accent: "british",
+      age: "middle aged",
+      gender: "male",
+      language: "en",
+    },
+  },
+  {
+    voiceId: "21m00Tcm4TlvDq8ikWAM",
+    name: "Rachel",
+    category: "premade",
+    labels: {
+      accent: "american",
+      age: "young",
+      gender: "female",
+      language: "en",
+    },
+  },
+  {
+    voiceId: "AZnzlk1XvdvUeBnXmlld",
+    name: "Domi",
+    category: "premade",
+    labels: {
+      accent: "american",
+      age: "young",
+      gender: "female",
+      language: "en",
+    },
+  },
+  {
+    voiceId: "EXAVITQu4vr4xnSDxMaL",
+    name: "Bella",
+    category: "premade",
+    labels: {
+      accent: "american",
+      age: "young",
+      gender: "female",
+      language: "en",
+    },
+  },
+  {
+    voiceId: "ErXwobaYiN019PkySvjV",
+    name: "Antoni",
+    category: "premade",
+    labels: {
+      accent: "american",
+      age: "young",
+      gender: "male",
+      language: "en",
+    },
+  },
+  {
+    voiceId: "CYw3moM5B4YCc7G7EyUh",
+    name: "Dave",
+    category: "premade",
+    labels: {
+      accent: "american",
+      age: "young",
+      gender: "male",
+      language: "en",
+    },
+  },
+];
+
 export async function GET() {
   const apiKey = process.env.ELEVENLABS_API_KEY;
   const configuredVoiceId =
     process.env.ELEVENLABS_VOICE_ID?.trim() || DEFAULT_ELEVENLABS_VOICE_ID;
 
   if (!apiKey) {
-    return Response.json(
-      {
-        configuredVoiceId,
-        mode: "missing-elevenlabs-key",
-        voices: [],
-      },
-      { status: 503 },
-    );
+    return Response.json({
+      activeVoice:
+        premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
+        premadeVoices[0],
+      configuredVoiceId,
+      mode: "premade-fallback",
+      recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
+      voices: premadeVoices,
+    });
   }
 
   try {
@@ -36,31 +117,15 @@ export async function GET() {
     });
 
     if (!response.ok) {
-      let errorDetail: {
-        detail?: { status?: string; message?: string };
-      } | null = null;
-      try {
-        errorDetail = (await response.json()) as {
-          detail?: { status?: string; message?: string };
-        };
-      } catch {}
-
-      const isPermissionError =
-        errorDetail?.detail?.status === "missing_permissions" ||
-        (typeof errorDetail?.detail?.message === "string" &&
-          errorDetail.detail.message.includes("permission"));
-
-      return Response.json(
-        {
-          configuredVoiceId,
-          mode: isPermissionError
-            ? "elevenlabs-permissions-error"
-            : "elevenlabs-error",
-          status: response.status,
-          voices: [],
-        },
-        { status: 502 },
-      );
+      return Response.json({
+        activeVoice:
+          premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
+          premadeVoices[0],
+        configuredVoiceId,
+        mode: "premade-fallback-on-error",
+        recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
+        voices: premadeVoices,
+      });
     }
 
     const payload = (await response.json()) as { voices?: ElevenLabsVoice[] };
@@ -79,6 +144,19 @@ export async function GET() {
         previewUrl: voice.preview_url ?? "",
         voiceId: voice.voice_id ?? "",
       }));
+
+    if (voices.length === 0) {
+      return Response.json({
+        activeVoice:
+          premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
+          premadeVoices[0],
+        configuredVoiceId,
+        mode: "premade-fallback-empty",
+        recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
+        voices: premadeVoices,
+      });
+    }
+
     const activeVoice = voices.find(
       (voice) => voice.voiceId === configuredVoiceId,
     );
@@ -97,13 +175,14 @@ export async function GET() {
       voices,
     });
   } catch {
-    return Response.json(
-      {
-        configuredVoiceId,
-        mode: "elevenlabs-network-error",
-        voices: [],
-      },
-      { status: 502 },
-    );
+    return Response.json({
+      activeVoice:
+        premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
+        premadeVoices[0],
+      configuredVoiceId,
+      mode: "premade-fallback-on-catch",
+      recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
+      voices: premadeVoices,
+    });
   }
 }

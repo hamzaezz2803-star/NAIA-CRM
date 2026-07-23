@@ -60,47 +60,65 @@ export function ChangePasswordForm() {
     >
       {message && (
         <div
-          className={`p-3 rounded-md text-sm ${message.type === "success" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-800 border border-red-200"}`}
+          className={`p-3 rounded-lg text-sm ${message.type === "success" ? "bg-emerald-50 text-emerald-800 border border-emerald-200" : "bg-red-50 text-red-800 border border-red-200"}`}
         >
           {message.text}
         </div>
       )}
       <div className="grid gap-2">
         <label
-          className="text-sm font-medium text-stone-700"
+          className="text-xs font-semibold uppercase tracking-wider"
+          style={{ color: "var(--maison-text-muted)" }}
           htmlFor="newPassword"
         >
           Nouveau mot de passe
         </label>
         <div className="relative">
-          <KeyRound className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
+          <KeyRound
+            className="absolute left-3 top-2.5 h-4 w-4"
+            style={{ color: "var(--maison-text-muted)" }}
+          />
           <input
             id="newPassword"
             name="newPassword"
             type="password"
             placeholder="Min. 6 caractères"
             required
-            className="w-full rounded-md border border-stone-200 py-2 pl-9 pr-3 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            className="w-full rounded-lg border py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-1 transition-all"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-primary)",
+            }}
             minLength={6}
           />
         </div>
       </div>
       <div className="grid gap-2">
         <label
-          className="text-sm font-medium text-stone-700"
+          className="text-xs font-semibold uppercase tracking-wider"
+          style={{ color: "var(--maison-text-muted)" }}
           htmlFor="confirmPassword"
         >
           Confirmer le mot de passe
         </label>
         <div className="relative">
-          <KeyRound className="absolute left-3 top-2.5 h-4 w-4 text-stone-400" />
+          <KeyRound
+            className="absolute left-3 top-2.5 h-4 w-4"
+            style={{ color: "var(--maison-text-muted)" }}
+          />
           <input
             id="confirmPassword"
             name="confirmPassword"
             type="password"
             placeholder="Répétez le mot de passe"
             required
-            className="w-full rounded-md border border-stone-200 py-2 pl-9 pr-3 text-sm focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            className="w-full rounded-lg border py-2 pl-9 pr-3 text-sm focus:outline-none focus:ring-1 transition-all"
+            style={{
+              background: "var(--maison-card)",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-text-primary)",
+            }}
             minLength={6}
           />
         </div>
@@ -108,7 +126,11 @@ export function ChangePasswordForm() {
       <Button
         type="submit"
         disabled={isPending}
-        className="w-full sm:w-auto bg-stone-900 hover:bg-stone-800 text-white"
+        className="w-full sm:w-auto font-semibold text-xs uppercase tracking-wider transition hover:opacity-90 shadow-sm"
+        style={{
+          background: "var(--maison-sidebar)",
+          color: "#FFFFFF",
+        }}
       >
         {isPending ? "Mise à jour..." : "Mettre à jour le mot de passe"}
       </Button>

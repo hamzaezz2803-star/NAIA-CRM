@@ -90,22 +90,90 @@ type FloatingPosition = {
   y: number;
 };
 
+// ── NAIA theme tokens ──────────────────────────────────────────────────────────
+const T = {
+  bg: "#EAE3D3", // page background
+  card: "#F5F0E4", // card surface
+  cardAlt: "#FBF7EC", // input / lighter card
+  border: "rgba(62,49,32,.16)",
+  borderLight: "rgba(62,49,32,.10)",
+  text: "#3A2E1E", // primary text
+  textMid: "#4A3B26", // secondary text
+  textSub: "#6E5F49", // sub text
+  textMuted: "#8A7A5F", // muted / placeholder
+  textFaint: "#A2937A", // faint / mono labels
+  accent: "#DE5B2B", // terracotta accent
+  brass: "#A87A1E", // brass / amber
+  dark: "#2E2417", // dark button bg
+  light: "#F4EFE3", // light button text
+  green: "#5C7A3B", // live status
+  MONO: "ui-monospace,'SF Mono',Menlo,monospace",
+} as const;
+
 const BUBBLE_SIZE = 48;
-const PANEL_WIDTH = 420;
-const PANEL_HEIGHT = 620;
+const PANEL_WIDTH = 440;
+const PANEL_HEIGHT = 640;
 
 const crmStatusLabels: Record<string, string> = {
-  contacted: "Contacté",
+  contacted: "Contact\u00e9",
   "dead-end": "Dead end",
-  "lead-to-contact": "À contacter",
-  "meeting-booked": "Meeting fixé",
-  "proposal-sent": "Propale envoyée",
-  "to-follow-up": "À relancer",
-  won: "Gagné",
+  "lead-to-contact": "\u00c0 contacter",
+  "meeting-booked": "Meeting fix\u00e9",
+  "proposal-sent": "Propale envoy\u00e9e",
+  "to-follow-up": "\u00c0 relancer",
+  won: "Gagn\u00e9",
 };
 
-const emeraldFieldClassName =
-  "mt-1 min-h-10 w-full rounded-md border border-emerald-200 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-emerald-200 dark:focus:ring-emerald-200/40";
+// ── CSS injected once ─────────────────────────────────────────────────────────
+const PANEL_CSS = `
+  @keyframes naiaFaIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .naia-fa-panel{animation:naiaFaIn .25s cubic-bezier(.16,1,.3,1)}
+  .naia-fa-input{
+    width:100%;background:${T.cardAlt};border:1px solid ${T.border};
+    border-radius:8px;padding:10px 12px;font-size:13px;color:${T.text};
+    outline:none;resize:none;transition:border-color .15s,box-shadow .15s;
+    font-family:inherit;line-height:1.55;
+  }
+  .naia-fa-input:focus{border-color:${T.accent};box-shadow:0 0 0 3px rgba(222,91,43,.10);}
+  .naia-fa-input::placeholder{color:${T.textMuted};}
+  .naia-fa-btn-parler{
+    flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;
+    min-height:38px;border:1px solid ${T.border};background:${T.card};
+    color:${T.textMid};border-radius:8px;font-size:12.5px;font-weight:600;
+    cursor:pointer;transition:background .15s,border-color .15s,color .15s;font-family:inherit;
+  }
+  .naia-fa-btn-parler:hover{border-color:${T.accent};color:${T.accent};background:${T.cardAlt};}
+  .naia-fa-btn-parler:disabled{opacity:.55;cursor:not-allowed;}
+  .naia-fa-btn-send{
+    flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;
+    min-height:38px;background:${T.dark};color:${T.light};
+    border:none;border-radius:8px;font-size:12.5px;font-weight:600;
+    cursor:pointer;transition:background .15s;font-family:inherit;
+  }
+  .naia-fa-btn-send:hover{background:${T.accent};}
+  .naia-fa-btn-send:disabled{opacity:.5;cursor:not-allowed;}
+  .naia-fa-label{display:block;font-size:11px;font-weight:600;color:${T.textMid};margin-bottom:3px;}
+  .naia-fa-field{
+    width:100%;min-height:30px;background:${T.cardAlt};border:1px solid ${T.border};
+    border-radius:6px;padding:4px 9px;font-size:12px;color:${T.text};outline:none;
+    transition:border-color .15s,box-shadow .15s;font-family:inherit;
+  }
+  .naia-fa-field:focus{border-color:${T.accent};box-shadow:0 0 0 3px rgba(222,91,43,.10);}
+  .naia-fa-validate-btn{
+    margin-top:10px;display:inline-flex;align-items:center;gap:6px;
+    background:${T.dark};color:${T.light};border:none;border-radius:99px;
+    padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;
+    font-family:inherit;transition:background .15s;
+  }
+  .naia-fa-validate-btn:hover{background:${T.accent};}
+  .naia-fa-validate-btn:disabled{opacity:.55;cursor:not-allowed;}
+  .naia-fa-close-btn{
+    display:flex;align-items:center;justify-content:center;
+    width:30px;height:30px;border-radius:6px;border:1px solid ${T.borderLight};
+    background:none;color:${T.textSub};cursor:pointer;transition:background .15s,color .15s;
+  }
+  .naia-fa-close-btn:hover{background:rgba(222,91,43,.08);color:${T.accent};border-color:${T.accent};}
+`;
 
 export function NaiaFloatingAssistant() {
   const [command, setCommand] = useState("");
@@ -138,17 +206,20 @@ export function NaiaFloatingAssistant() {
   );
   const silenceDetectorRef = useRef<{ stop: () => void } | null>(null);
   const speechAudioRef = useRef<VoicePlaybackHandle | null>(null);
+  // Ref to scroll result into view after voice command
+  const resultRef = useRef<HTMLDivElement | null>(null);
 
   const canRecordAudio =
     typeof navigator !== "undefined" &&
     typeof navigator.mediaDevices?.getUserMedia === "function" &&
     typeof MediaRecorder !== "undefined";
+
   const activityMessage = isListening
-    ? "Écoute en cours."
+    ? "\u00c9coute en cours\u2026"
     : isRunning
-      ? "NAIA prépare la réponse."
+      ? "NAIA pr\u00e9pare la r\u00e9ponse\u2026"
       : isSpeaking
-        ? "Lecture audio en cours."
+        ? "Lecture audio en cours\u2026"
         : "";
 
   useEffect(() => {
@@ -203,6 +274,18 @@ export function NaiaFloatingAssistant() {
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
     };
   }, []);
+
+  // Auto-scroll result into view when it appears
+  useEffect(() => {
+    if (result && resultRef.current) {
+      setTimeout(() => {
+        resultRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "nearest",
+        });
+      }, 100);
+    }
+  }, [result]);
 
   const panelStyle = useMemo<CSSProperties>(() => {
     if (!position) return {};
@@ -307,7 +390,7 @@ export function NaiaFloatingAssistant() {
         throw new Error(payload.message ?? payload.error ?? "Action failed");
       }
 
-      const successMessage = payload.message ?? "Action appliquée.";
+      const successMessage = payload.message ?? "Action appliqu\u00e9e.";
       setResult((current) =>
         current
           ? {
@@ -400,10 +483,12 @@ export function NaiaFloatingAssistant() {
         return;
       }
 
-      setNotice("Aucune phrase détectée. Relance Parler quand tu es prêt.");
+      setNotice(
+        "Aucune phrase d\u00e9tect\u00e9e. Relance Parler quand tu es pr\u00eat.",
+      );
     };
     recognitionRef.current = recognition;
-    setNotice("Je t'écoute.");
+    setNotice("Je t'\u00e9coute.");
     setIsListening(true);
     recognition.start();
   };
@@ -439,14 +524,14 @@ export function NaiaFloatingAssistant() {
         setIsListening(false);
 
         if (!audio.size) {
-          setNotice("Aucun audio détecté.");
+          setNotice("Aucun audio d\u00e9tect\u00e9.");
           return;
         }
 
-        setTranscript("Transcription NAIA en cours.");
+        setTranscript("Transcription NAIA en cours\u2026");
         void transcribeAudioCommand(audio);
       };
-      setTranscript("Je t'écoute.");
+      setTranscript("Je t'\u00e9coute. Termine ta phrase naturellement.");
       setNotice("");
       setIsListening(true);
       recorder.start();
@@ -459,7 +544,7 @@ export function NaiaFloatingAssistant() {
             recorder.stop();
           }
         },
-        onSpeechStart: () => setTranscript("Je t'écoute."),
+        onSpeechStart: () => setTranscript("Je t'\u00e9coute."),
         stream,
       });
       recordingTimeoutRef.current = setTimeout(() => {
@@ -472,7 +557,7 @@ export function NaiaFloatingAssistant() {
       }, VOICE_RECORDING_MAX_MS);
     } catch {
       setIsListening(false);
-      setNotice("Microphone indisponible ou permission refusée.");
+      setNotice("Microphone indisponible ou permission refus\u00e9e.");
     }
   };
 
@@ -495,7 +580,7 @@ export function NaiaFloatingAssistant() {
       if (!response.ok || !text) {
         if (payload.mode === "missing-groq-key") {
           setNotice(
-            "Groq Whisper n'est pas configure. J'active la voix navigateur.",
+            "Groq Whisper n'est pas configur\u00e9. J'active la voix navigateur.",
           );
           startBrowserSpeechControl();
           return;
@@ -506,6 +591,7 @@ export function NaiaFloatingAssistant() {
 
       setCommand(text);
       setTranscript(text);
+      // Run command and speak — result will auto-scroll into view via useEffect
       await runCommand(text, { speak: true });
     } catch {
       setNotice(
@@ -586,57 +672,95 @@ export function NaiaFloatingAssistant() {
 
   return (
     <>
+      <style>{PANEL_CSS}</style>
+
       {isOpen ? (
         <section
-          className="fixed z-[70] overflow-y-auto rounded-lg border border-slate-200 bg-white p-3 text-slate-950 shadow-2xl shadow-slate-950/18 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-50"
-          style={panelStyle}
+          className="naia-fa-panel"
+          style={{
+            position: "fixed",
+            zIndex: 70,
+            overflowY: "auto",
+            borderRadius: 14,
+            border: `1px solid ${T.border}`,
+            background: T.bg,
+            boxShadow:
+              "0 24px 48px rgba(46,36,23,.22), 0 4px 12px rgba(46,36,23,.10)",
+            padding: "14px 16px",
+            fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
+            color: T.text,
+            WebkitFontSmoothing: "antialiased",
+            ...panelStyle,
+          }}
           aria-label="Assistant NAIA"
         >
-          <div className="flex items-center justify-between gap-3">
-            <div
-              className="flex items-center gap-2 text-sm font-semibold"
-              style={{ color: "var(--maison-text-primary)" }}
-            >
+          {/* ── Header ── */}
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 10,
+              marginBottom: 12,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
               <MessageCircle
-                className="h-4 w-4"
-                style={{ color: "var(--maison-brass)" }}
+                style={{ width: 16, height: 16, color: T.brass, flexShrink: 0 }}
                 aria-hidden="true"
               />
-              NAIA
+              <span
+                style={{
+                  fontFamily: T.MONO,
+                  fontSize: 10,
+                  letterSpacing: ".18em",
+                  textTransform: "uppercase",
+                  fontWeight: 600,
+                  color: T.textFaint,
+                }}
+              >
+                NAIA
+              </span>
             </div>
             <button
               aria-label="Fermer NAIA"
-              className="flex h-9 w-9 items-center justify-center rounded-md border text-slate-700 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 dark:text-slate-200 dark:hover:bg-slate-900"
-              style={{
-                borderColor: "var(--maison-border)",
-              }}
+              className="naia-fa-close-btn"
               onClick={() => setIsOpen(false)}
               type="button"
             >
-              <X className="h-4 w-4" aria-hidden="true" />
+              <X style={{ width: 14, height: 14 }} aria-hidden="true" />
             </button>
           </div>
 
+          {/* Thin separator */}
+          <div style={{ height: 1, background: T.border, marginBottom: 12 }} />
+
+          {/* ── Command form ── */}
           <form
-            className="mt-3"
             onSubmit={(event) => {
               event.preventDefault();
               primeVoicePlayback();
               void runCommand(command, { speak: true });
             }}
           >
-            <label className="sr-only" htmlFor="naia-command">
-              Commande NAIA
+            <label
+              style={{
+                display: "block",
+                fontSize: 10.5,
+                fontWeight: 600,
+                color: T.textSub,
+                marginBottom: 6,
+                letterSpacing: ".04em",
+              }}
+              htmlFor="naia-fa-command"
+            >
+              Commande
             </label>
             <textarea
               autoFocus
-              className="min-h-28 w-full resize-none rounded-md border px-3 py-3 text-sm leading-6 outline-none transition"
-              style={{
-                borderColor: "var(--maison-border)",
-                background: "var(--maison-page)",
-                color: "var(--maison-text-primary)",
-              }}
-              id="naia-command"
+              className="naia-fa-input"
+              style={{ minHeight: 90 }}
+              id="naia-fa-command"
               onChange={(event) => setCommand(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter" && !event.shiftKey) {
@@ -645,83 +769,187 @@ export function NaiaFloatingAssistant() {
                   void runCommand(command, { speak: true });
                 }
               }}
-              placeholder="Demande à NAIA..."
+              placeholder="Ex\u00e9cute une commande vocale ou text\u2026"
               value={command}
             />
-            <div className="mt-2 grid grid-cols-2 gap-2">
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
               <button
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md border px-3 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
-                style={{
-                  borderColor: "var(--maison-border)",
-                  background: "var(--maison-card)",
-                  color: "var(--maison-text-primary)",
-                }}
+                className="naia-fa-btn-parler"
                 disabled={isListening || isRunning}
                 onClick={startVoiceControl}
                 type="button"
               >
                 {isListening ? (
                   <Loader2
-                    className="h-4 w-4 animate-spin"
+                    style={{ width: 15, height: 15 }}
+                    className="animate-spin"
                     aria-hidden="true"
                   />
                 ) : (
-                  <Mic className="h-4 w-4" aria-hidden="true" />
+                  <Mic style={{ width: 15, height: 15 }} aria-hidden="true" />
                 )}
-                {isListening ? "J'écoute" : "Parler"}
+                {isListening ? "J'\u00e9coute\u2026" : "Parler"}
               </button>
               <button
-                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-md px-3 text-sm font-semibold transition focus-visible:outline-none focus-visible:ring-2 disabled:cursor-not-allowed disabled:opacity-60"
-                style={{
-                  background: "var(--maison-brass)",
-                  color: "var(--maison-brass-text)",
-                }}
+                className="naia-fa-btn-send"
                 disabled={isRunning || !command.trim()}
                 type="submit"
               >
                 {isRunning ? (
                   <Loader2
-                    className="h-4 w-4 animate-spin"
+                    style={{ width: 15, height: 15 }}
+                    className="animate-spin"
                     aria-hidden="true"
                   />
                 ) : (
-                  <Send className="h-4 w-4" aria-hidden="true" />
+                  <Send style={{ width: 15, height: 15 }} aria-hidden="true" />
                 )}
                 Lancer
               </button>
             </div>
           </form>
 
+          {/* ── Activity indicator ── */}
           {activityMessage ? (
-            <p
-              className="mt-3 rounded-md border border-slate-200 bg-white px-3 py-2 text-xs font-medium text-slate-600 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+            <div
+              style={{
+                marginTop: 10,
+                padding: "7px 11px",
+                background: "rgba(168,122,30,.08)",
+                border: `1px solid rgba(168,122,30,.22)`,
+                borderRadius: 8,
+                fontSize: 11.5,
+                color: T.brass,
+                fontWeight: 500,
+              }}
               aria-live="polite"
             >
               {activityMessage}
-            </p>
+            </div>
           ) : null}
 
+          {/* ── Transcript pill (when listening) ── */}
           {transcript && transcript !== command ? (
-            <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300">
+            <div
+              style={{
+                marginTop: 8,
+                padding: "6px 11px",
+                background: T.cardAlt,
+                border: `1px solid ${T.borderLight}`,
+                borderRadius: 8,
+                fontSize: 11.5,
+                color: T.textSub,
+                lineHeight: 1.5,
+                fontStyle: "italic",
+              }}
+            >
               {transcript}
-            </p>
+            </div>
           ) : null}
 
+          {/* ── Notice / error ── */}
+          {notice ? (
+            <div
+              style={{
+                marginTop: 10,
+                padding: "7px 11px",
+                background: "rgba(222,91,43,.06)",
+                border: `1px solid rgba(222,91,43,.20)`,
+                borderRadius: 8,
+                fontSize: 11.5,
+                color: T.accent,
+                lineHeight: 1.5,
+              }}
+            >
+              {notice}
+            </div>
+          ) : null}
+
+          {/* ── Result: agent response + action cards ── */}
           {result ? (
-            <section className="mt-3 rounded-md border border-slate-200 bg-slate-50 p-3 dark:border-slate-700 dark:bg-slate-900">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-sm font-semibold text-slate-950 dark:text-slate-50">
+            <div
+              ref={resultRef}
+              style={{
+                marginTop: 12,
+                borderRadius: 10,
+                border: `1px solid ${T.border}`,
+                background: T.card,
+                overflow: "hidden",
+                animation: "naiaFaIn .3s ease",
+              }}
+            >
+              {/* Agent header */}
+              <div
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "space-between",
+                  padding: "10px 12px 8px",
+                  borderBottom:
+                    result.response || result.actions.length
+                      ? `1px solid ${T.borderLight}`
+                      : "none",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                    color: T.text,
+                  }}
+                >
                   {result.agent.name}
-                </p>
-                <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-semibold text-cyan-800 dark:border-slate-700 dark:bg-slate-950 dark:text-cyan-100">
+                </span>
+                <span
+                  style={{
+                    fontFamily: T.MONO,
+                    fontSize: 9,
+                    letterSpacing: ".13em",
+                    border: `1px solid rgba(168,122,30,.45)`,
+                    color: T.brass,
+                    borderRadius: 99,
+                    padding: "2px 8px",
+                    textTransform: "uppercase",
+                  }}
+                >
                   {Math.round(result.confidence * 100)}%
                 </span>
               </div>
-              <p className="mt-3 whitespace-pre-line text-sm leading-6 text-slate-700 dark:text-slate-200">
-                {result.response}
-              </p>
+
+              {/* NAIA response */}
+              {result.response ? (
+                <p
+                  style={{
+                    padding: "10px 12px",
+                    fontSize: 12.5,
+                    lineHeight: 1.6,
+                    color: T.textMid,
+                    margin: 0,
+                    whiteSpace: "pre-line",
+                    borderBottom: result.actions.length
+                      ? `1px solid ${T.borderLight}`
+                      : "none",
+                  }}
+                >
+                  {result.response}
+                </p>
+              ) : null}
+
+              {/* Action cards */}
               {result.actions.length ? (
-                <div className="mt-3 grid gap-2">
+                <div style={{ padding: "10px 12px", display: "grid", gap: 8 }}>
+                  <div
+                    style={{
+                      fontFamily: T.MONO,
+                      fontSize: 9,
+                      letterSpacing: ".18em",
+                      textTransform: "uppercase",
+                      color: T.textFaint,
+                      marginBottom: 4,
+                    }}
+                  >
+                    Validation requise
+                  </div>
                   {result.actions.map((action) => (
                     <ActionCard
                       action={action}
@@ -734,28 +962,56 @@ export function NaiaFloatingAssistant() {
                   ))}
                 </div>
               ) : null}
-            </section>
+            </div>
           ) : null}
 
-          {notice ? (
-            <p className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900 dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100">
-              {notice}
-            </p>
-          ) : null}
+          {/* Disclaimer */}
+          <div
+            style={{
+              marginTop: 10,
+              fontSize: 9.5,
+              color: T.textFaint,
+              lineHeight: 1.5,
+              textAlign: "center",
+            }}
+          >
+            NAIA pr\u00e9pare \u2014 vous validez. Aucune action sans accord.
+          </div>
         </section>
       ) : null}
 
+      {/* ── Floating orb bubble ── */}
       <button
         aria-label={isOpen ? "Fermer NAIA" : "Ouvrir NAIA"}
-        className="fixed z-[80] flex cursor-grab touch-none items-center justify-center rounded-full border shadow-2xl transition hover:scale-105 active:cursor-grabbing focus-visible:outline-none focus-visible:ring-2"
         style={{
-          background: "var(--maison-brass)",
-          color: "var(--maison-brass-text)",
-          borderColor: "var(--maison-border)",
+          position: "fixed",
+          zIndex: 80,
+          display: "flex",
+          cursor: "grab",
+          touchAction: "none",
+          alignItems: "center",
+          justifyContent: "center",
+          borderRadius: "50%",
+          border: `1px solid rgba(255, 255, 255, 0.35)`,
+          boxShadow:
+            "0 8px 24px rgba(176, 141, 79, 0.40), 0 2px 6px rgba(0, 0, 0, 0.12)",
+          background: "linear-gradient(135deg, #c69243 0%, #b08d4f 100%)",
+          color: "#FFFFFF",
           height: BUBBLE_SIZE,
           left: position.x,
           top: position.y,
           width: BUBBLE_SIZE,
+          transition: "transform .18s, box-shadow .18s",
+        }}
+        onMouseEnter={(e) => {
+          e.currentTarget.style.transform = "scale(1.08)";
+          e.currentTarget.style.boxShadow =
+            "0 10px 28px rgba(176, 141, 79, 0.55)";
+        }}
+        onMouseLeave={(e) => {
+          e.currentTarget.style.transform = "scale(1)";
+          e.currentTarget.style.boxShadow =
+            "0 8px 24px rgba(176, 141, 79, 0.40)";
         }}
         onPointerDown={handleBubblePointerDown}
         onPointerMove={handleBubblePointerMove}
@@ -763,14 +1019,16 @@ export function NaiaFloatingAssistant() {
         type="button"
       >
         {isOpen ? (
-          <X className="h-6 w-6" aria-hidden="true" />
+          <X style={{ width: 22, height: 22 }} aria-hidden="true" />
         ) : (
-          <MessageCircle className="h-6 w-6" aria-hidden="true" />
+          <MessageCircle style={{ width: 22, height: 22 }} aria-hidden="true" />
         )}
       </button>
     </>
   );
 }
+
+// ── ActionCard ─────────────────────────────────────────────────────────────────
 
 function ActionCard({
   action,
@@ -792,48 +1050,94 @@ function ActionCard({
   }
 
   return (
-    <article className="rounded-md border border-emerald-300/45 bg-emerald-50 p-3 dark:border-emerald-300/25 dark:bg-emerald-300/10">
-      <div className="flex items-start gap-3">
+    <article
+      style={{
+        background: T.cardAlt,
+        border: `1px solid ${T.border}`,
+        borderRadius: 8,
+        padding: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <CheckCircle2
-          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-200"
+          style={{
+            width: 14,
+            height: 14,
+            color: T.accent,
+            flexShrink: 0,
+            marginTop: 2,
+          }}
           aria-hidden="true"
         />
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-emerald-950 dark:text-slate-50">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h3
+            style={{
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: T.text,
+              margin: 0,
+            }}
+          >
             {action.label}
           </h3>
-          <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
+          <p
+            style={{
+              fontSize: 11.5,
+              color: T.textSub,
+              lineHeight: 1.5,
+              marginTop: 3,
+            }}
+          >
             {action.description}
           </p>
           {action.kind === "calendar.createReminder" && (
-            <div className="mt-3 grid gap-1 rounded-md border border-emerald-200 bg-white/75 p-3 text-sm text-emerald-950 dark:border-emerald-200/20 dark:bg-slate-950/60 dark:text-emerald-50">
+            <div
+              style={{
+                marginTop: 8,
+                padding: "8px 10px",
+                background: T.card,
+                border: `1px solid ${T.borderLight}`,
+                borderRadius: 6,
+                fontSize: 11.5,
+                color: T.textMid,
+                display: "grid",
+                gap: 3,
+              }}
+            >
               <span>
                 <strong>Rappel:</strong> {action.payload.title}
               </span>
               <span>
                 <strong>Date:</strong>{" "}
-                {action.payload.scheduledAt ?? "À préciser"}
+                {action.payload.scheduledAt ?? "\u00c0 pr\u00e9ciser"}
               </span>
               <span>
                 <strong>Fuseau:</strong> {action.payload.timeZone}
               </span>
               {action.payload.timeWasInferred && (
-                <span className="text-amber-700 dark:text-amber-200">
-                  Heure inférée, à vérifier
+                <span style={{ color: T.brass }}>
+                  Heure inf\u00e9r\u00e9e, \u00e0 v\u00e9rifier
                 </span>
               )}
             </div>
           )}
           <button
-            className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200"
+            className="naia-fa-validate-btn"
             disabled={disabled}
             onClick={() => onApply()}
             type="button"
           >
             {disabled ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <Loader2
+                style={{ width: 13, height: 13 }}
+                className="animate-spin"
+                aria-hidden="true"
+              />
             ) : (
-              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              <ShieldCheck
+                style={{ width: 13, height: 13 }}
+                aria-hidden="true"
+              />
             )}
             Valider action
           </button>
@@ -842,6 +1146,8 @@ function ActionCard({
     </article>
   );
 }
+
+// ── LeadDraftActionCard ────────────────────────────────────────────────────────
 
 function LeadDraftActionCard({
   action,
@@ -859,28 +1165,61 @@ function LeadDraftActionCard({
   };
 
   return (
-    <article className="rounded-md border border-emerald-300/45 bg-emerald-50 p-3 dark:border-emerald-300/25 dark:bg-emerald-300/10">
-      <div className="flex items-start gap-3">
+    <article
+      style={{
+        background: T.cardAlt,
+        border: `1px solid ${T.border}`,
+        borderRadius: 8,
+        padding: 10,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
         <CheckCircle2
-          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-200"
+          style={{
+            width: 14,
+            height: 14,
+            color: T.accent,
+            flexShrink: 0,
+            marginTop: 2,
+          }}
           aria-hidden="true"
         />
-        <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-emerald-950 dark:text-slate-50">
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <h3
+            style={{
+              fontSize: 12.5,
+              fontWeight: 700,
+              color: T.text,
+              margin: 0,
+            }}
+          >
             {action.label}
           </h3>
-          <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
+          <p
+            style={{
+              fontSize: 11.5,
+              color: T.textSub,
+              lineHeight: 1.5,
+              marginTop: 3,
+            }}
+          >
             {action.description}
           </p>
 
-          <div className="mt-3 grid gap-3">
+          <div style={{ marginTop: 10, display: "grid", gap: 8 }}>
             <LeadField
               label="Projet"
               onChange={(value) => updateDraft({ topic: value })}
               required
               value={draft.topic}
             />
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+              }}
+            >
               <LeadField
                 label="Entreprise"
                 onChange={(value) => updateDraft({ companyName: value })}
@@ -902,7 +1241,7 @@ function LeadDraftActionCard({
                 value={draft.contactEmail ?? ""}
               />
               <LeadField
-                label="Téléphone"
+                label="T\u00e9l\u00e9phone"
                 onChange={(value) => updateDraft({ contactPhone: value })}
                 value={draft.contactPhone ?? ""}
               />
@@ -917,7 +1256,7 @@ function LeadDraftActionCard({
                 value={draft.source ?? ""}
               />
               <LeadField
-                label="Date planifiée"
+                label="Date planifi\u00e9e"
                 onChange={(value) => updateDraft({ leadDate: value })}
                 value={draft.leadDate ?? ""}
               />
@@ -927,10 +1266,11 @@ function LeadDraftActionCard({
               onChange={(value) => updateDraft({ nextAction: value })}
               value={draft.nextAction ?? ""}
             />
-            <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
+            <label className="naia-fa-label">
               Statut initial
               <select
-                className={emeraldFieldClassName}
+                className="naia-fa-field"
+                style={{ marginTop: 3 }}
                 onChange={(event) =>
                   updateDraft({ status: event.target.value })
                 }
@@ -943,10 +1283,11 @@ function LeadDraftActionCard({
                 ))}
               </select>
             </label>
-            <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
-              Notes & contexte
+            <label className="naia-fa-label">
+              Notes &amp; contexte
               <textarea
-                className="mt-1 min-h-20 w-full resize-none rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm leading-5 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-emerald-200"
+                className="naia-fa-field"
+                style={{ marginTop: 3, minHeight: 56, resize: "none" }}
                 onChange={(event) => updateDraft({ notes: event.target.value })}
                 value={draft.notes ?? ""}
               />
@@ -954,23 +1295,32 @@ function LeadDraftActionCard({
           </div>
 
           <button
-            className="mt-3 inline-flex min-h-10 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200"
+            className="naia-fa-validate-btn"
             disabled={disabled || !draft.topic.trim()}
             onClick={() => onApply(draft)}
             type="button"
           >
             {disabled ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <Loader2
+                style={{ width: 13, height: 13 }}
+                className="animate-spin"
+                aria-hidden="true"
+              />
             ) : (
-              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              <ShieldCheck
+                style={{ width: 13, height: 13 }}
+                aria-hidden="true"
+              />
             )}
-            Valider et créer le lead
+            Valider et cr\u00e9er le lead
           </button>
         </div>
       </div>
     </article>
   );
 }
+
+// ── LeadField ──────────────────────────────────────────────────────────────────
 
 function LeadField({
   label,
@@ -984,17 +1334,20 @@ function LeadField({
   value: string;
 }) {
   return (
-    <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
+    <label className="naia-fa-label">
       {label}
       {required ? " *" : ""}
       <input
-        className={emeraldFieldClassName}
+        className="naia-fa-field"
+        style={{ marginTop: 3 }}
         onChange={(event) => onChange(event.target.value)}
         value={value}
       />
     </label>
   );
 }
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
 
 function pickDefaultVoice(payload: VoiceCatalog) {
   return payload.configuredVoiceId || undefined;

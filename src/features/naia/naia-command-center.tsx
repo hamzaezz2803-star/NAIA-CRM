@@ -1,39 +1,19 @@
 /* eslint-disable react-hooks/set-state-in-effect */
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import {
-  type CSSProperties,
-  type ReactNode,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import {
-  ArrowRight,
-  CheckCircle2,
-  Headphones,
-  Loader2,
-  Mic,
-  Play,
-  Route,
-  ShieldCheck,
-  Sparkles,
-  Volume2,
-  WandSparkles,
-  Square,
-  type LucideIcon,
-} from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+
+import { CheckCircle2, Loader2, ShieldCheck } from "lucide-react";
 
 import {
-  accentClasses,
   getNaiaAgent,
-  naiaDelegatedAgents,
+  naiaAgents,
+  type NaiaAgent,
   type NaiaAgentId,
 } from "./agents";
 import type { NaiaActionDraft, NaiaOrchestrationResult } from "./orchestrator";
-import WakeSequence from "./vendor/jarvis/WakeSequence";
+
 import {
   buildNaiaVoiceUrl,
   createVoiceSilenceDetector,
@@ -42,6 +22,7 @@ import {
   VOICE_RECORDING_MAX_MS,
   type VoicePlaybackHandle,
 } from "./voice-client";
+import { buildFirstClickHandler, shouldTriggerGreeting } from "./greeting";
 import { crmLeadStatuses, type CrmLeadDraft } from "@/features/crm/contracts";
 
 type ApiResult = Omit<NaiaOrchestrationResult, "actions"> & {
@@ -111,123 +92,21 @@ type SpeechRecognitionEventLike = {
 };
 
 const commandExamples = [
-  "Salma, passe Atlas en meeting booked et prepare le pitch",
-  "Nora, prevois le cash sur 90 jours et priorise les relances",
+  "Salma, passe Atlas en meeting booked et pr\u00e9pare le pitch",
+  "Nora, pr\u00e9vois le cash sur 90 jours et priorise les relances",
   "Ilyas, liste les projets avec risque de retard ce trimestre",
-  "Rayan, prepare une spec pour ajouter une nouvelle feature CRM",
+  "Rayan, pr\u00e9pare une spec pour ajouter une nouvelle feature CRM",
 ];
 
 const crmStatusLabels: Record<string, string> = {
-  contacted: "Contacté",
+  contacted: "Contact\u00e9",
   "dead-end": "Dead end",
-  "lead-to-contact": "À contacter",
-  "meeting-booked": "Meeting fixé",
-  "proposal-sent": "Propale envoyée",
-  "to-follow-up": "À relancer",
-  won: "Gagné",
+  "lead-to-contact": "\u00c0 contacter",
+  "meeting-booked": "Meeting fix\u00e9",
+  "proposal-sent": "Propale envoy\u00e9e",
+  "to-follow-up": "\u00c0 relancer",
+  won: "Gagn\u00e9",
 };
-
-const fieldClassName =
-  "mt-1 min-h-10 w-full rounded-md border border-slate-200 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-cyan-200 dark:focus:ring-cyan-200/40";
-
-const emeraldFieldClassName =
-  "mt-1 min-h-10 w-full rounded-md border border-emerald-200 bg-white px-3 text-sm text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-emerald-200 dark:focus:ring-emerald-200/40";
-
-const bootLines = [
-  "NAIA OS ................. ONLINE",
-  "voice kernel ............ READY",
-  "crm agent SALMA ......... LINKED",
-  "calendar agent ADAM ..... GUARDED",
-  "docs agent MAYA ......... GUARDED",
-];
-
-type AgentGroupId = "preSales" | "projectManagement" | "support";
-
-const agentGroupById: Partial<Record<NaiaAgentId, AgentGroupId>> = {
-  automations: "projectManagement",
-  crm: "preSales",
-  developer: "support",
-  finance: "support",
-  hr: "support",
-  integrations: "support",
-  leads: "preSales",
-  meetings: "preSales",
-  projects: "projectManagement",
-  proposals: "preSales",
-  settings: "support",
-};
-
-const groupStyles: Record<
-  AgentGroupId,
-  {
-    card: string;
-    label: string;
-    node: string;
-    stroke: string;
-  }
-> = {
-  preSales: {
-    card: "border-cyan-300/60 bg-cyan-300/12 text-cyan-50 shadow-cyan-500/25",
-    label: "border-cyan-300/35 bg-cyan-300/10 text-cyan-100",
-    node: "rgba(103,232,249,0.92)",
-    stroke: "rgba(34,211,238,0.28)",
-  },
-  projectManagement: {
-    card: "border-violet-300/60 bg-violet-300/12 text-violet-50 shadow-violet-500/25",
-    label: "border-violet-300/35 bg-violet-300/10 text-violet-100",
-    node: "rgba(196,181,253,0.92)",
-    stroke: "rgba(167,139,250,0.28)",
-  },
-  support: {
-    card: "border-emerald-300/55 bg-emerald-300/12 text-emerald-50 shadow-emerald-500/22",
-    label: "border-emerald-300/35 bg-emerald-300/10 text-emerald-100",
-    node: "rgba(110,231,183,0.9)",
-    stroke: "rgba(52,211,153,0.27)",
-  },
-};
-
-const processLabels: Array<{
-  className: string;
-  groupId: AgentGroupId;
-  label: string;
-}> = [
-  {
-    className: "left-[9%] top-[18%]",
-    groupId: "preSales",
-    label: "Avant vente",
-  },
-  {
-    className: "bottom-[11%] left-1/2 -translate-x-1/2",
-    groupId: "projectManagement",
-    label: "Project management",
-  },
-  {
-    className: "right-[16%] top-[18%]",
-    groupId: "support",
-    label: "Fonctions support",
-  },
-];
-
-const agentStats = [
-  {
-    label: "Agents",
-    value: naiaDelegatedAgents.length,
-  },
-  {
-    label: "Live",
-    value: naiaDelegatedAgents.filter((agent) => agent.status === "live")
-      .length,
-  },
-  {
-    label: "Guarded",
-    value: naiaDelegatedAgents.filter((agent) => agent.status === "guarded")
-      .length,
-  },
-  {
-    label: "Orchestrateur",
-    value: 1,
-  },
-];
 
 export function NaiaCommandCenter() {
   const router = useRouter();
@@ -237,6 +116,10 @@ export function NaiaCommandCenter() {
   const [isRunning, setIsRunning] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
+  const isSpeakingRef = useRef(false);
+  useEffect(() => {
+    isSpeakingRef.current = isSpeaking;
+  }, [isSpeaking]);
   const [isApplyingAction, setIsApplyingAction] = useState(false);
   const [transcript, setTranscript] = useState("");
   const [notice, setNotice] = useState("");
@@ -244,7 +127,11 @@ export function NaiaCommandCenter() {
   const [voiceCatalog, setVoiceCatalog] = useState<VoiceCatalog | null>(null);
   const [selectedVoiceId, setSelectedVoiceId] = useState("");
   const [forceBrowserSpeech, setForceBrowserSpeech] = useState(false);
-  const [userName, setUserName] = useState("Ali");
+  const [userName, setUserName] = useState("");
+  const [isProfileLoaded, setIsProfileLoaded] = useState(false);
+  const welcomeTriggeredRef = useRef(false);
+  // True once the greeting audio has actually started playing (avoids replay on first click)
+  const greetingPlayedRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
@@ -256,8 +143,17 @@ export function NaiaCommandCenter() {
   );
   const audioChunksRef = useRef<Blob[]>([]);
 
-  const activeAgentId = result?.agent.id ?? "naia";
-  const activeAgent = getNaiaAgent(activeAgentId);
+  // â”€â”€â”€ New UI state â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  const [screen, setScreen] = useState<"home" | "cockpit">("home");
+  const [selectedRailId, setSelectedRailId] = useState<NaiaAgentId>("naia");
+  const [hoveredAgentId, setHoveredAgentId] = useState<NaiaAgentId | null>(
+    null,
+  );
+  const [ringPhase, setRingPhase] = useState(0);
+  const ringRafRef = useRef<number | undefined>(undefined);
+  const ringLastTRef = useRef(0);
+  const heroRef = useRef<HTMLDivElement>(null);
+
   const selectedVoice =
     voiceCatalog?.voices.find((voice) => voice.voiceId === selectedVoiceId) ??
     voiceCatalog?.activeVoice;
@@ -358,6 +254,10 @@ export function NaiaCommandCenter() {
         }
       } catch (err) {
         console.error("Failed to load user name:", err);
+      } finally {
+        // Mark profile as loaded regardless of success so the greeting
+        // can fire with whatever name we have (or skip gracefully).
+        if (isMounted) setIsProfileLoaded(true);
       }
     };
 
@@ -378,6 +278,98 @@ export function NaiaCommandCenter() {
     };
   }, []);
 
+  // Sync rail agent selection when orchestration produces a result
+  useEffect(() => {
+    if (result?.agent.id) {
+      setSelectedRailId(result.agent.id as NaiaAgentId);
+    }
+  }, [result]);
+
+  // Animated ring — runs only on the home screen (~30fps)
+  useEffect(() => {
+    if (screen !== "home") {
+      if (ringRafRef.current !== undefined)
+        cancelAnimationFrame(ringRafRef.current);
+      return;
+    }
+    const loop = (t: number) => {
+      ringRafRef.current = requestAnimationFrame(loop);
+      if (t - ringLastTRef.current < 33) return;
+      ringLastTRef.current = t;
+      setRingPhase(t / 1000);
+    };
+    ringRafRef.current = requestAnimationFrame(loop);
+    return () => {
+      if (ringRafRef.current !== undefined)
+        cancelAnimationFrame(ringRafRef.current);
+    };
+  }, [screen]);
+
+  const speakText = useCallback(
+    (rawText: string) => {
+      const text = rawText.replace(/\s+/g, " ").slice(0, 900);
+      speechAudioRef.current?.pause();
+      setManualAudioUrl("");
+      speechAudioRef.current = playElevenLabsVoice({
+        onBlocked: (message) => {
+          setNotice(message);
+          setManualAudioUrl(buildNaiaVoiceUrl(text, selectedVoiceId));
+        },
+        onEnded: () => setIsSpeaking(false),
+        onStarted: () => {
+          setNotice("");
+          setIsSpeaking(true);
+          // Mark greeting as played so the first-click fallback won't replay it.
+          greetingPlayedRef.current = true;
+        },
+        text,
+        voiceId: selectedVoiceId,
+      });
+    },
+    [selectedVoiceId],
+  );
+
+  // Jarvis welcome greeting on entry.
+  // Guards:
+  //   1. isProfileLoaded — profile must be fetched first so userName is real.
+  //   2. userName       — must be non-empty (avoids greeting with a blank name).
+  //   3. selectedVoiceId — voice config must be ready.
+  useEffect(() => {
+    if (
+      shouldTriggerGreeting({
+        alreadyTriggered: welcomeTriggeredRef.current,
+        isProfileLoaded,
+        userName,
+        selectedVoiceId,
+      })
+    ) {
+      welcomeTriggeredRef.current = true;
+      const greetingText = `Bonjour ${userName}. Système NAIA opérationnel. Prête pour vos commandes.`;
+
+      // Try speaking immediately (may be blocked by browser autoplay policy).
+      const timer = setTimeout(() => {
+        speakText(greetingText);
+      }, 1000);
+
+      // Autoplay blocker bypass: on the very first user interaction, replay
+      // the greeting ONLY if it hasn't already started playing.
+      const handleFirstClick = buildFirstClickHandler({
+        greetingPlayedRef,
+        primeVoice: () => primeVoicePlayback(),
+        clearTimer: () => clearTimeout(timer),
+        speak: () => speakText(greetingText),
+        cleanup: () => document.removeEventListener("click", handleFirstClick),
+      });
+
+      document.addEventListener("click", handleFirstClick);
+
+      return () => {
+        clearTimeout(timer);
+        document.removeEventListener("click", handleFirstClick);
+      };
+    }
+  }, [isProfileLoaded, userName, selectedVoiceId, speakText]);
+
   const runCommand = async (
     nextCommand = command,
     options: { speak?: boolean } = {},
@@ -385,6 +377,7 @@ export function NaiaCommandCenter() {
     const cleanCommand = nextCommand.trim();
     if (!cleanCommand) return;
 
+    setCommand(""); // Supprime le message dans l'input
     setIsRunning(true);
     setNotice("");
     setTranscript(cleanCommand);
@@ -764,25 +757,6 @@ export function NaiaCommandCenter() {
     }
   };
 
-  const speakText = (rawText: string) => {
-    const text = rawText.replace(/\s+/g, " ").slice(0, 900);
-    speechAudioRef.current?.pause();
-    setManualAudioUrl("");
-    speechAudioRef.current = playElevenLabsVoice({
-      onBlocked: (message) => {
-        setNotice(message);
-        setManualAudioUrl(buildNaiaVoiceUrl(text, selectedVoiceId));
-      },
-      onEnded: () => setIsSpeaking(false),
-      onStarted: () => {
-        setNotice("");
-        setIsSpeaking(true);
-      },
-      text,
-      voiceId: selectedVoiceId,
-    });
-  };
-
   const speakCurrentAnswer = async () => {
     primeVoicePlayback();
     speakText(result?.response ?? "NAIA est en ligne.");
@@ -793,406 +767,175 @@ export function NaiaCommandCenter() {
     window.localStorage.setItem("naia_voice_id", voiceId);
   };
 
+  const selectedRailAgent = getNaiaAgent(selectedRailId);
+
   return (
-    <section className="relative min-h-dvh overflow-hidden bg-[#020611] text-slate-50">
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_46%,transparent_0,transparent_28%,rgba(2,6,17,0.34)_52%,rgba(2,6,17,0.82)_100%)]" />
-      <div className="pointer-events-none absolute inset-0 bg-[linear-gradient(90deg,rgba(34,211,238,0.08)_1px,transparent_1px),linear-gradient(0deg,rgba(34,211,238,0.05)_1px,transparent_1px)] bg-[size:72px_72px] opacity-35" />
-
-      <div className="relative min-h-dvh overflow-hidden bg-black/10 shadow-2xl shadow-cyan-950/50 backdrop-blur-sm">
-        <div className="absolute inset-0">
-          <WakeSequence
-            bootLines={bootLines}
-            requireFace={false}
-            skippable={false}
-            statusLabel="NAIA ACTIVE"
-            userName="ALI"
-          />
-        </div>
-
-        <div className="pointer-events-none absolute left-4 top-4 z-40">
-          <div className="inline-flex min-h-9 items-center gap-2 rounded-full border border-cyan-300/30 bg-cyan-300/10 px-3 text-xs font-semibold uppercase text-cyan-100 shadow-lg shadow-cyan-500/10">
-            <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-            Qarizmi Operating System
-          </div>
-          <div className="mt-3 hidden max-w-[360px] grid-cols-4 gap-2 md:grid">
-            {agentStats.map((stat) => (
-              <div
-                className="min-h-14 rounded-md border border-slate-50/10 bg-slate-950/50 px-3 py-2 shadow-lg shadow-slate-950/30 backdrop-blur-md"
-                key={stat.label}
-              >
-                <p className="text-lg font-semibold leading-none text-slate-50">
-                  {stat.value}
-                </p>
-                <p className="mt-1 text-[10px] font-semibold uppercase text-slate-300">
-                  {stat.label}
-                </p>
-              </div>
-            ))}
-          </div>
-          <h1 className="sr-only">
-            NAIA orchestre les agents Qarizmi autour de la sphere.
-          </h1>
-        </div>
-
-        <div className="relative h-full min-h-dvh">
-          <OrbitLines />
-          <ProcessLabels />
-          <div className="pointer-events-none absolute left-1/2 top-1/2 z-20 hidden -translate-x-1/2 translate-y-[105px] text-center md:block">
-            <p className="text-xs font-semibold uppercase text-cyan-100/80">
-              Voice orchestrator
-            </p>
-            <p className="mt-2 text-3xl font-semibold text-slate-50">NAIA</p>
-          </div>
-
-          {naiaDelegatedAgents.map((agent) => {
-            const Icon = agent.icon;
-            const group = getAgentGroup(agent.id);
-
-            return (
-              <Link
-                className={`absolute z-30 hidden min-h-12 w-[156px] -translate-x-1/2 -translate-y-1/2 items-center gap-2 rounded-md border px-3 py-2 text-left shadow-lg backdrop-blur-md transition hover:scale-[1.03] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200 md:flex ${groupStyles[group].card}`}
-                href={agent.route}
-                key={agent.id}
-                style={
-                  {
-                    left: `${agent.orbit.desktop.x}%`,
-                    top: `${agent.orbit.desktop.y}%`,
-                  } as CSSProperties
-                }
-              >
-                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-slate-50/10">
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                </span>
-                <span className="min-w-0">
-                  <span className="block truncate text-sm font-semibold">
-                    {agent.label}
-                  </span>
-                  <span className="block truncate text-xs text-slate-100/68">
-                    {agent.name}
-                  </span>
-                  <span className="mt-1 inline-flex rounded-full border border-slate-50/10 bg-slate-50/8 px-2 py-0.5 text-[10px] font-semibold uppercase text-slate-100/72">
-                    {agent.status === "guarded" ? "Guarded" : "Live"}
-                  </span>
-                </span>
-              </Link>
-            );
-          })}
-
-          <div className="absolute inset-x-4 bottom-24 z-30 grid max-h-[420px] gap-2 overflow-y-auto pr-1 md:hidden">
-            {naiaDelegatedAgents.map((agent) => {
-              const Icon = agent.icon;
-              const group = getAgentGroup(agent.id);
-
-              return (
-                <Link
-                  className={`flex min-h-12 items-center gap-3 rounded-md border px-3 py-2 shadow-lg backdrop-blur-md ${groupStyles[group].card}`}
-                  href={agent.route}
-                  key={agent.id}
-                >
-                  <Icon className="h-4 w-4" aria-hidden="true" />
-                  <span className="min-w-0 text-sm font-semibold">
-                    {agent.label}
-                    <span className="ml-2 text-xs font-medium uppercase text-slate-600 dark:text-slate-100/58">
-                      {agent.status}
-                    </span>
-                  </span>
-                </Link>
-              );
-            })}
-          </div>
-        </div>
-
-        <aside className="space-y-4">
-          <Panel>
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <p className="text-sm font-semibold text-cyan-700 dark:text-cyan-100">
-                  Agent actif
-                </p>
-                <h2 className="mt-1 text-2xl font-semibold text-slate-950 dark:text-slate-50">
-                  {activeAgent.name}
-                </h2>
-                <p className="mt-1 text-sm text-slate-500 dark:text-slate-300">
-                  {activeAgent.role}
-                </p>
-              </div>
-              <span
-                className={`flex h-11 w-11 items-center justify-center rounded-md border shadow-lg ${
-                  accentClasses[activeAgent.accent]
-                }`}
-              >
-                <activeAgent.icon className="h-5 w-5" aria-hidden="true" />
-              </span>
-            </div>
-            <p className="mt-4 text-sm leading-6 text-slate-700 dark:text-slate-200">
-              {activeAgent.mission}
-            </p>
-            <Link
-              className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md border border-slate-200 bg-white px-3 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-50 dark:hover:bg-slate-800 dark:focus-visible:ring-cyan-200"
-              href={activeAgent.route}
-            >
-              Ouvrir le module
-              <ArrowRight className="h-4 w-4" aria-hidden="true" />
-            </Link>
-          </Panel>
-
-          <Panel>
-            <div className="flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-slate-50">
-              <Route className="h-4 w-4 text-cyan-200" aria-hidden="true" />
-              Console NAIA
-            </div>
-            <label className="mt-4 block text-sm font-semibold text-slate-700 dark:text-slate-200">
-              Commande
-              <textarea
-                className="mt-2 min-h-24 w-full resize-none rounded-md border border-slate-200 bg-white px-3 py-3 text-sm leading-6 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-cyan-500 focus:ring-2 focus:ring-cyan-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-cyan-200 dark:focus:ring-cyan-200/40"
-                onChange={(event) => setCommand(event.target.value)}
-                value={command}
-              />
-            </label>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <ActionButton
-                disabled={isListening || isRunning}
-                icon={isRunning ? Loader2 : WandSparkles}
-                label={isRunning ? "Orchestration" : "Lancer"}
-                loading={isRunning}
-                onClick={() => void runCommand(command)}
-                tone="primary"
-              />
-              <ActionButton
-                icon={isListening ? Square : Mic}
-                label={isListening ? "Arrêter" : "Parler"}
-                onClick={isListening ? stopVoiceControl : startVoiceControl}
-                tone="secondary"
-              />
-              <ActionButton
-                disabled={isSpeaking}
-                icon={Volume2}
-                label={isSpeaking ? "Lecture" : "Audio"}
-                onClick={() => void speakCurrentAnswer()}
-                tone="secondary"
-              />
-            </div>
-
-            {manualAudioUrl ? (
-              <audio
-                className="mt-3 w-full"
-                controls
-                preload="none"
-                src={manualAudioUrl}
-              >
-                <track kind="captions" />
-              </audio>
-            ) : null}
-
-            <div className="mt-4 rounded-md border border-slate-200 bg-slate-50/80 p-3 dark:border-slate-700 dark:bg-slate-900/70">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-slate-50">
-                    <Headphones
-                      className="h-4 w-4 text-cyan-200"
-                      aria-hidden="true"
-                    />
-                    Voix ElevenLabs
-                  </div>
-                  <p className="mt-1 text-xs leading-5 text-slate-600 dark:text-slate-300">
-                    {selectedVoice
-                      ? selectedVoice.name
-                      : !voiceCatalog
-                        ? "Chargement..."
-                        : voiceCatalog.mode === "missing-elevenlabs-key"
-                          ? "Clé ElevenLabs manquante"
-                          : voiceCatalog.mode === "elevenlabs-permissions-error"
-                            ? "Permissions API clé insuffisantes (voices_read)"
-                            : voiceCatalog.mode === "elevenlabs-error"
-                              ? "Erreur ElevenLabs (Clé invalide ?)"
-                              : voiceCatalog.mode === "elevenlabs-network-error"
-                                ? "Erreur réseau ElevenLabs"
-                                : "Moteur ElevenLabs indisponible"}
-                  </p>
-                </div>
-                <button
-                  className="inline-flex min-h-10 items-center justify-center rounded-md border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-50 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-50 dark:hover:bg-slate-700 dark:focus-visible:ring-cyan-200"
-                  disabled={!selectedVoiceId || isSpeaking}
-                  onClick={() => {
-                    primeVoicePlayback();
-                    speakText(
-                      `Bonjour ${userName}, je suis NAIA. Je t'ecoute.`,
-                    );
-                  }}
-                  type="button"
-                >
-                  Tester
-                </button>
-              </div>
-              {voiceCatalog?.voices.length ? (
-                <label className="mt-3 block">
-                  <span className="sr-only">Choisir la voix ElevenLabs</span>
-                  <select
-                    className={fieldClassName}
-                    onChange={(event) => changeVoice(event.target.value)}
-                    value={selectedVoiceId}
-                  >
-                    {voiceCatalog.voices.map((voice) => (
-                      <option key={voice.voiceId} value={voice.voiceId}>
-                        {voice.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-              {selectedVoice ? (
-                <p className="mt-2 text-xs leading-5 text-slate-500 dark:text-slate-400">
-                  {[
-                    selectedVoice.category,
-                    selectedVoice.labels.gender,
-                    selectedVoice.labels.accent,
-                  ]
-                    .filter(Boolean)
-                    .join(" · ")}
-                </p>
-              ) : null}
-            </div>
-
-            <div className="mt-4 grid gap-2">
-              {commandExamples.map((example) => (
-                <button
-                  className="flex min-h-11 items-start gap-2 rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-sm leading-5 text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200 dark:hover:bg-slate-800 dark:focus-visible:ring-cyan-200"
-                  disabled={isRunning}
-                  key={example}
-                  onClick={() => {
-                    setCommand(example);
-                    void runCommand(example);
-                  }}
-                  type="button"
-                >
-                  <Play
-                    className="mt-0.5 h-4 w-4 shrink-0 text-cyan-200"
-                    aria-hidden="true"
-                  />
-                  <span>{example}</span>
-                </button>
-              ))}
-            </div>
-          </Panel>
-
-          <Panel>
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 text-sm font-semibold text-slate-950 dark:text-slate-50">
-                <ShieldCheck
-                  className="h-4 w-4 text-emerald-200"
-                  aria-hidden="true"
-                />
-                Decision
-              </div>
-              {result ? (
-                <div className="flex flex-wrap justify-end gap-2">
-                  <span className="rounded-full border border-cyan-200 bg-cyan-50 px-2 py-1 text-xs font-semibold text-cyan-800 dark:border-slate-700 dark:bg-slate-900/70 dark:text-cyan-100">
-                    {Math.round(result.confidence * 100)}%
-                  </span>
-                  {result.mode ? (
-                    <span className="rounded-full border border-slate-200 bg-white px-2 py-1 text-xs font-semibold text-slate-700 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-200">
-                      {result.mode === "groq-orchestrated" ? "Groq" : "Local"}
-                    </span>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-
-            <p className="mt-4 min-h-20 whitespace-pre-line text-sm leading-6 text-slate-700 dark:text-slate-200">
-              {result?.response ??
-                "NAIA attend une instruction vocale ou texte pour router vers le bon agent."}
-            </p>
-
-            {transcript ? (
-              <p className="mt-3 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-300">
-                {transcript}
-              </p>
-            ) : null}
-
-            {result?.actions.length ? (
-              <div className="mt-4 space-y-2">
-                {result.actions.map((action) => (
-                  <ActionCard
-                    action={action}
-                    disabled={isApplyingAction}
-                    key={action.id}
-                    onApply={(leadInput) =>
-                      void executeAction(action, leadInput)
-                    }
-                  />
-                ))}
-              </div>
-            ) : null}
-
-            {notice ? (
-              <p className="mt-4 rounded-md border border-amber-300/40 bg-amber-50 px-3 py-2 text-sm leading-6 text-amber-900 dark:border-amber-300/25 dark:bg-amber-300/10 dark:text-amber-100">
-                {notice}
-              </p>
-            ) : null}
-          </Panel>
-        </aside>
-      </div>
-    </section>
-  );
-}
-
-function OrbitLines() {
-  return (
-    <svg
-      aria-hidden="true"
-      className="pointer-events-none absolute inset-0 hidden h-full w-full md:block"
-      preserveAspectRatio="none"
-      viewBox="0 0 100 100"
+    <div
+      style={{
+        fontFamily: "'Helvetica Neue',Helvetica,Arial,sans-serif",
+        color: "#3A2E1E",
+        background: "#EAE3D3",
+        minHeight: "100dvh",
+        WebkitFontSmoothing: "antialiased",
+      }}
     >
-      <defs>
-        <radialGradient id="naiaNodeGlow">
-          <stop offset="0%" stopColor="rgba(255,255,255,0.88)" />
-          <stop offset="100%" stopColor="rgba(34,211,238,0)" />
-        </radialGradient>
-      </defs>
-      {naiaDelegatedAgents.map((agent) => (
-        <g key={agent.id}>
-          <path
-            d={`M50 50 C ${50 + (agent.orbit.desktop.x - 50) * 0.22} ${
-              50 + (agent.orbit.desktop.y - 50) * 0.18
-            }, ${agent.orbit.desktop.x} ${
-              50 + (agent.orbit.desktop.y - 50) * 0.42
-            }, ${agent.orbit.desktop.x} ${agent.orbit.desktop.y}`}
-            fill="none"
-            stroke={groupStyles[getAgentGroup(agent.id)].stroke}
-            strokeWidth={0.16}
-          />
-          <circle
-            cx={agent.orbit.desktop.x}
-            cy={agent.orbit.desktop.y}
-            fill={groupStyles[getAgentGroup(agent.id)].node}
-            opacity={agent.status === "live" ? 0.52 : 0.34}
-            r={agent.status === "live" ? 2.3 : 1.9}
-          />
-        </g>
-      ))}
-    </svg>
+      <style>{`
+        @keyframes naiaSpin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+        @keyframes naiaBreath{0%,100%{transform:scale(.985)}50%{transform:scale(1.035)}}
+        @keyframes naiaGlow{0%,100%{box-shadow:0 0 0 0 rgba(222,91,43,.38)}50%{box-shadow:0 0 0 16px rgba(222,91,43,0)}}
+        @keyframes naiaIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+        @keyframes naiaDot{0%,80%,100%{opacity:.25}40%{opacity:1}}
+        @keyframes naiaPillAura{
+          0%,100%{box-shadow:0 0 0 3px rgba(222,91,43,.08),0 10px 28px rgba(222,91,43,.16),0 3px 10px rgba(46,36,23,.10)}
+          50%{box-shadow:0 0 0 7px rgba(222,91,43,.04),0 14px 36px rgba(222,91,43,.26),0 4px 14px rgba(46,36,23,.14)}
+        }
+        .naia-pill {
+          transition: transform .32s cubic-bezier(0.16,1,0.3,1), border-color .2s ease, background-color .2s ease !important;
+          will-change: transform, box-shadow !important;
+        }
+        .naia-pill:hover {
+          transform: scale(1.12) translateY(-5px) !important;
+          border-color: #DE5B2B !important;
+          background: rgba(255,255,255,0.98) !important;
+          animation: naiaPillAura 2s ease-in-out infinite !important;
+          z-index: 20 !important;
+          position: relative !important;
+        }
+        .naia-pill .naia-pill-name {
+          transition: color .2s ease !important;
+        }
+        .naia-pill:hover .naia-pill-name {
+          color: #DE5B2B !important;
+        }
+        .naia-rail-row{transition:background .15s}
+        .naia-rail-row:hover{background:rgba(247,243,233,.95)!important}
+        .naia-primary-btn{transition:background .2s,color .2s}
+        .naia-primary-btn:hover{background:#DE5B2B!important}
+        .naia-outline-btn{transition:all .15s}
+        .naia-outline-btn:hover{border-color:#DE5B2B!important;color:#DE5B2B!important}
+        ::selection{background:#DE5B2B;color:#F4EFE3}
+        ::-webkit-scrollbar{width:8px;height:8px}
+        ::-webkit-scrollbar-thumb{background:rgba(62,49,32,.16);border-radius:99px}
+        ::-webkit-scrollbar-track{background:transparent}
+        input::placeholder,textarea::placeholder{color:rgba(62,49,32,.38)}
+        .naia-form-card {
+          background: #F5F0E4 !important;
+          border: 1px solid rgba(62,49,32,.16) !important;
+          border-radius: 10px;
+          padding: 13px;
+          width: 100%;
+        }
+        .naia-form-header {
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          margin-bottom: 9px;
+          gap: 8px;
+        }
+        .naia-form-badge {
+          font-family: ui-monospace, 'SF Mono', Menlo, monospace;
+          font-size: 8.5px;
+          letter-spacing: .13em;
+          color: #A87A1E;
+          border: 1px solid rgba(168,122,30,.45);
+          padding: 2px 8px;
+          border-radius: 99px;
+          text-transform: uppercase;
+          white-space: nowrap;
+        }
+        .naia-form-title {
+          font-size: 12.5px;
+          font-weight: 700;
+          line-height: 1.4;
+          color: #3A2E1E;
+        }
+        .naia-form-desc {
+          font-size: 11.5px;
+          color: #6E5F49;
+          line-height: 1.55;
+          margin-top: 4px;
+        }
+        .naia-form-label {
+          display: block;
+          font-size: 11px;
+          font-weight: 600;
+          color: #4A3B26;
+          margin-bottom: 3px;
+        }
+        .naia-form-input, .naia-form-select, .naia-form-textarea {
+          width: 100%;
+          min-height: 32px;
+          background: #FBF7EC !important;
+          border: 1px solid rgba(62,49,32,.18) !important;
+          border-radius: 7px;
+          padding: 4px 10px;
+          font-size: 12px;
+          color: #3A2E1E !important;
+          outline: none;
+          transition: border-color .15s, box-shadow .15s;
+        }
+        .naia-form-input:focus, .naia-form-select:focus, .naia-form-textarea:focus {
+          border-color: #DE5B2B !important;
+          box-shadow: 0 0 0 3px rgba(222,91,43,.12);
+        }
+        .naia-form-checkbox {
+          accent-color: #DE5B2B;
+          width: 13px;
+          height: 13px;
+          cursor: pointer;
+        }
+      `}</style>
+
+      {screen === "home" ? (
+        <NaiaHomeScreen
+          ringPhase={ringPhase}
+          heroRef={heroRef}
+          hoveredAgentId={hoveredAgentId}
+          setHoveredAgentId={setHoveredAgentId}
+          onEnterCockpit={() => setScreen("cockpit")}
+          onAgentClick={(id) => {
+            setSelectedRailId(id as NaiaAgentId);
+            setScreen("cockpit");
+          }}
+          voiceCatalog={voiceCatalog}
+          selectedVoiceId={selectedVoiceId}
+          onChangeVoice={changeVoice}
+        />
+      ) : (
+        <NaiaCockpitScreen
+          selectedRailId={selectedRailId}
+          selectedRailAgent={selectedRailAgent}
+          setSelectedRailId={setSelectedRailId}
+          result={result}
+          isRunning={isRunning}
+          isListening={isListening}
+          isApplyingAction={isApplyingAction}
+          command={command}
+          setCommand={setCommand}
+          transcript={transcript}
+          notice={notice}
+          manualAudioUrl={manualAudioUrl}
+          userName={userName}
+          onGoHome={() => setScreen("home")}
+          onRunCommand={(cmd) => void runCommand(cmd)}
+          onStartVoice={startVoiceControl}
+          onStopVoice={stopVoiceControl}
+          onExecuteAction={(action, leadInput) =>
+            void executeAction(action, leadInput)
+          }
+          voiceCatalog={voiceCatalog}
+          selectedVoiceId={selectedVoiceId}
+          selectedVoice={selectedVoice}
+          isSpeaking={isSpeaking}
+          onSpeakCurrentAnswer={speakCurrentAnswer}
+          onChangeVoice={changeVoice}
+        />
+      )}
+    </div>
   );
 }
 
-function ProcessLabels() {
-  return (
-    <>
-      {processLabels.map((item) => (
-        <div
-          className={`pointer-events-none absolute z-20 hidden rounded-full border px-3 py-1.5 text-xs font-semibold uppercase md:block ${groupStyles[item.groupId].label} ${item.className}`}
-          key={item.label}
-        >
-          {item.label}
-        </div>
-      ))}
-    </>
-  );
-}
-
-function getAgentGroup(agentId: NaiaAgentId): AgentGroupId {
-  return agentGroupById[agentId] ?? "support";
-}
+// OrbitLines and ProcessLabels replaced by NaiaHomeScreen galaxy visualization.
 
 function ActionCard({
   action,
@@ -1214,48 +957,64 @@ function ActionCard({
   }
 
   return (
-    <article className="rounded-md border border-emerald-300/45 bg-emerald-50 p-3 dark:border-emerald-300/25 dark:bg-emerald-300/10">
+    <article className="naia-form-card">
       <div className="flex items-start gap-3">
         <CheckCircle2
-          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-200"
+          className="mt-0.5 h-4 w-4 shrink-0"
+          style={{ color: "#DE5B2B" }}
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-emerald-950 dark:text-slate-50">
-            {action.label}
-          </h3>
-          <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
-            {action.description}
-          </p>
+          <h3 className="naia-form-title">{action.label}</h3>
+          <p className="naia-form-desc">{action.description}</p>
           {action.kind === "calendar.createReminder" && (
-            <div className="mt-3 grid gap-1 rounded-md border border-emerald-200 bg-white/75 p-3 text-sm text-emerald-950 dark:border-emerald-200/20 dark:bg-slate-950/60 dark:text-emerald-50 sm:grid-cols-2">
+            <div className="mt-3 grid gap-1 rounded-md border border-rgba(62,49,32,.12) bg-[#FBF7EC] p-3 text-sm text-[#3A2E1E] sm:grid-cols-2">
               <span>
                 <strong>Rappel:</strong> {action.payload.title}
               </span>
               <span>
                 <strong>Date:</strong>{" "}
-                {action.payload.scheduledAt ?? "À préciser"}
+                {action.payload.scheduledAt ?? "\u00c0 pr\u00e9ciser"}
               </span>
               <span>
                 <strong>Fuseau:</strong> {action.payload.timeZone}
               </span>
               {action.payload.timeWasInferred && (
-                <span className="text-amber-700 dark:text-amber-200">
-                  Heure inférée, à vérifier
+                <span style={{ color: "#A87A1E" }}>
+                  Heure inf\u00e9r\u00e9e, \u00e0 v\u00e9rifier
                 </span>
               )}
             </div>
           )}
           <button
-            className="mt-3 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200 dark:focus-visible:ring-emerald-100"
+            className="naia-primary-btn"
             disabled={disabled}
             onClick={() => onApply()}
+            style={{
+              marginTop: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              font: "inherit",
+              fontSize: 12,
+              fontWeight: 600,
+              background: "#2E2417",
+              color: "#F4EFE3",
+              border: "none",
+              borderRadius: 99,
+              padding: "7px 18px",
+              cursor: disabled ? "not-allowed" : "pointer",
+              opacity: disabled ? 0.6 : 1,
+            }}
             type="button"
           >
             {disabled ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <Loader2
+                className="h-3.5 w-3.5 animate-spin"
+                aria-hidden="true"
+              />
             ) : (
-              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
             )}
             Valider action
           </button>
@@ -1320,28 +1079,37 @@ function LeadDraftActionCard({
   };
 
   return (
-    <article className="rounded-md border border-emerald-300/45 bg-emerald-50 p-3 dark:border-emerald-300/25 dark:bg-emerald-300/10">
+    <article
+      className="naia-form-card"
+      style={{
+        animation: "naiaIn .3s ease",
+        border: "none",
+        background: "none",
+        padding: 0,
+      }}
+    >
       <div className="flex items-start gap-3">
         <CheckCircle2
-          className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-200"
+          className="mt-0.5 h-4 w-4 shrink-0"
+          style={{ color: "#DE5B2B" }}
           aria-hidden="true"
         />
         <div className="min-w-0 flex-1">
-          <h3 className="text-sm font-semibold text-emerald-950 dark:text-slate-50">
+          <h3 className="naia-form-title" style={{ fontSize: 13.5 }}>
             {action.label}
           </h3>
-          <p className="mt-1 text-sm leading-5 text-emerald-800 dark:text-emerald-50/82">
+          <p className="naia-form-desc" style={{ fontSize: 12, marginTop: 2 }}>
             {action.description}
           </p>
 
-          <div className="mt-3 grid gap-3">
+          <div className="mt-3 grid gap-2.5">
             <LeadField
               label="Projet"
               onChange={(value) => updateDraft({ topic: value })}
               required
               value={draft.topic}
             />
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-2 sm:grid-cols-2">
               <LeadField
                 label="Entreprise"
                 onChange={(value) => updateDraft({ companyName: value })}
@@ -1363,7 +1131,7 @@ function LeadDraftActionCard({
                 value={draft.contactEmail ?? ""}
               />
               <LeadField
-                label="Téléphone"
+                label={"T\u00e9l\u00e9phone"}
                 onChange={(value) => updateDraft({ contactPhone: value })}
                 value={draft.contactPhone ?? ""}
               />
@@ -1378,7 +1146,7 @@ function LeadDraftActionCard({
                 value={draft.source ?? ""}
               />
               <LeadField
-                label="Date planifiée"
+                label={"Date planifi\u00e9e"}
                 onChange={(value) => updateDraft({ leadDate: value })}
                 value={draft.leadDate ?? ""}
               />
@@ -1388,10 +1156,10 @@ function LeadDraftActionCard({
               onChange={(value) => updateDraft({ nextAction: value })}
               value={draft.nextAction ?? ""}
             />
-            <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
+            <label className="naia-form-label">
               Statut initial
               <select
-                className={emeraldFieldClassName}
+                className="naia-form-select"
                 onChange={(event) =>
                   updateDraft({ status: event.target.value })
                 }
@@ -1404,25 +1172,26 @@ function LeadDraftActionCard({
                 ))}
               </select>
             </label>
-            <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
+            <label className="naia-form-label">
               Notes & contexte
               <textarea
-                className="mt-1 min-h-20 w-full resize-none rounded-md border border-emerald-200 bg-white px-3 py-2 text-sm leading-5 text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 dark:border-slate-700 dark:bg-slate-950/78 dark:text-slate-50 dark:placeholder:text-slate-500 dark:focus:border-emerald-200 dark:focus:ring-emerald-200/40"
+                className="naia-form-textarea"
+                style={{ minHeight: 52, resize: "none" }}
                 onChange={(event) => updateDraft({ notes: event.target.value })}
                 value={draft.notes ?? ""}
               />
             </label>
 
             {draft.tags && draft.tags.length > 0 && (
-              <div className="mt-2">
-                <span className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50 mb-1">
-                  Tags détectés
+              <div className="mt-1">
+                <span className="naia-form-label" style={{ marginBottom: 4 }}>
+                  {"Tags d\u00e9tect\u00e9s"}
                 </span>
-                <div className="flex flex-wrap gap-1.5">
+                <div className="flex flex-wrap gap-1">
                   {draft.tags.map((t) => (
                     <span
                       key={t}
-                      className="inline-flex items-center gap-1 rounded bg-teal-100 dark:bg-teal-900/35 px-2 py-0.5 text-[10px] font-bold text-teal-850 dark:text-teal-350 border border-teal-200/50 dark:border-teal-800/30"
+                      className="inline-flex items-center gap-1 rounded bg-[#EAE3D3] px-2 py-0.5 text-[10px] font-bold text-[#6E5F49] border border-rgba(62,49,32,.12)"
                     >
                       {t}
                     </span>
@@ -1432,18 +1201,20 @@ function LeadDraftActionCard({
             )}
 
             {/* Google Integrations Checkboxes */}
-            <div className="flex flex-col gap-2.5 mt-2 border-t border-emerald-200/30 pt-3">
-              <label className="flex items-center gap-2 text-xs font-semibold text-emerald-900 dark:text-emerald-50 cursor-pointer select-none">
+            <div className="flex flex-col gap-1.5 mt-1 border-t border-rgba(62,49,32,.12) pt-2">
+              <label className="flex items-center gap-2 text-xs font-semibold text-[#4A3B26] cursor-pointer select-none">
                 <input
                   type="checkbox"
                   checked={createDrive}
                   onChange={(e) => setCreateDrive(e.target.checked)}
-                  className="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500/40 dark:border-slate-700 dark:bg-slate-950"
+                  className="naia-form-checkbox"
                 />
-                Créer automatiquement un dossier Google Drive pour ce client
+                {
+                  "Cr\u00e9er automatiquement un dossier Google Drive pour ce client"
+                }
               </label>
               <label
-                className={`flex items-center gap-2 text-xs font-semibold text-emerald-900 dark:text-emerald-50 cursor-pointer select-none ${!draft.leadDate ? "opacity-50" : ""}`}
+                className={`flex items-center gap-2 text-xs font-semibold text-[#4A3B26] cursor-pointer select-none ${!draft.leadDate ? "opacity-50" : ""}`}
               >
                 <input
                   type="checkbox"
@@ -1453,16 +1224,16 @@ function LeadDraftActionCard({
                     setCalendarPreferenceTouched(true);
                     setCreateCalendar(e.target.checked);
                   }}
-                  className="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500/40 dark:border-slate-700 dark:bg-slate-950 disabled:opacity-50"
+                  className="naia-form-checkbox"
                 />
-                {"Planifier l'événement sur Google Calendar"}{" "}
-                {!draft.leadDate && "(Nécessite une date planifiée)"}
+                {"Planifier l'\u00e9v\u00e9nement sur Google Calendar"}{" "}
+                {!draft.leadDate && "(N\u00e9cessite une date planifi\u00e9e)"}
               </label>
             </div>
           </div>
 
           <button
-            className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-md bg-emerald-500 px-3 text-sm font-semibold text-slate-50 transition hover:bg-emerald-600 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-emerald-300 dark:text-emerald-950 dark:hover:bg-emerald-200 dark:focus-visible:ring-emerald-100"
+            className="naia-primary-btn"
             disabled={disabled || !draft.topic.trim()}
             onClick={() =>
               onApply({
@@ -1471,14 +1242,34 @@ function LeadDraftActionCard({
                 createGoogleCalendar: createCalendar && Boolean(draft.leadDate),
               })
             }
+            style={{
+              marginTop: 12,
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              font: "inherit",
+              fontSize: 12,
+              fontWeight: 600,
+              background: "#2E2417",
+              color: "#F4EFE3",
+              border: "none",
+              borderRadius: 99,
+              padding: "7px 18px",
+              cursor:
+                disabled || !draft.topic.trim() ? "not-allowed" : "pointer",
+              opacity: disabled || !draft.topic.trim() ? 0.6 : 1,
+            }}
             type="button"
           >
             {disabled ? (
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              <Loader2
+                className="h-3.5 w-3.5 animate-spin"
+                aria-hidden="true"
+              />
             ) : (
-              <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+              <ShieldCheck className="h-3.5 w-3.5" aria-hidden="true" />
             )}
-            Valider et créer le lead
+            {"Valider et cr\u00e9er le lead"}
           </button>
         </div>
       </div>
@@ -1498,11 +1289,11 @@ function LeadField({
   value: string;
 }) {
   return (
-    <label className="block text-xs font-semibold text-emerald-900 dark:text-emerald-50">
+    <label className="naia-form-label">
       {label}
       {required ? " *" : ""}
       <input
-        className={emeraldFieldClassName}
+        className="naia-form-input"
         onChange={(event) => onChange(event.target.value)}
         value={value}
       />
@@ -1510,45 +1301,1857 @@ function LeadField({
   );
 }
 
-function Panel({ children }: { children: ReactNode }) {
+// Panel and ActionButton replaced by inline-styled components in NaiaHomeScreen / NaiaCockpitScreen.
+
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// NAIA design components
+// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+const RING_PAL = ["#DE5B2B", "#6E5A41", "#C7BFAC"] as const;
+
+const NAIA_ORBIT_SECTORS: Array<{
+  label: string;
+  start: number;
+  span: number;
+  agentIds: NaiaAgentId[];
+}> = [
+  {
+    label: "AVANT-VENTE",
+    start: -104,
+    span: 130,
+    agentIds: ["leads", "crm", "meetings", "proposals"],
+  },
+  {
+    label: "PROJECT MANAGEMENT",
+    start: 26,
+    span: 100,
+    agentIds: ["projects", "automations", "developer"],
+  },
+  {
+    label: "FONCTIONS SUPPORT",
+    start: 126,
+    span: 130,
+    agentIds: ["finance", "hr", "integrations", "settings"],
+  },
+];
+
+const COCKPIT_POLES: Array<{ label: string; ids: NaiaAgentId[] }> = [
+  { label: "ORCHESTRATEUR", ids: ["naia"] },
+  {
+    label: "AVANT-VENTE",
+    ids: ["leads", "crm", "meetings", "proposals"],
+  },
+  {
+    label: "PROJECT MANAGEMENT",
+    ids: ["projects", "automations", "developer"],
+  },
+  {
+    label: "FONCTIONS SUPPORT",
+    ids: ["finance", "hr", "integrations", "settings"],
+  },
+];
+
+// â”€â”€â”€ Orbit computation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function computeOrbitNodes(R: number) {
+  const RX = R + 66,
+    RY = R + 52;
+  const out: Array<
+    NaiaAgent & { x: number; y: number; ang: number; pole: string }
+  > = [];
+  for (const s of NAIA_ORBIT_SECTORS) {
+    const agents = s.agentIds
+      .map((id) => naiaAgents.find((a) => a.id === id))
+      .filter(Boolean) as NaiaAgent[];
+    const pad = 17,
+      usable = s.span - pad * 2;
+    agents.forEach((agent, j) => {
+      const degA =
+        s.start +
+        pad +
+        (agents.length > 1 ? (usable * j) / (agents.length - 1) : usable / 2);
+      const ang = (degA * Math.PI) / 180;
+      out.push({
+        ...agent,
+        x: Math.round(Math.cos(ang) * RX),
+        y: Math.round(Math.sin(ang) * RY),
+        ang,
+        pole: s.label,
+      });
+    });
+  }
+  return out;
+}
+
+// â”€â”€â”€ NaiaRing â€” animated radial SVG â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function NaiaRing({
+  W,
+  H,
+  phase,
+  speed = 36,
+}: {
+  W: number;
+  H: number;
+  phase: number;
+  speed?: number;
+}) {
+  const TAU = Math.PI * 2;
+  const cx = W / 2,
+    cy = H / 2;
+  const BX = W / 2 - 12,
+    BY = H / 2 - 12;
+  const n = Math.max(120, Math.min(230, Math.round((W + H) / 12)));
+  const sw = Math.max(1.2, Math.min(W, H) * 0.0062);
+  const rot = (phase * TAU) / Math.max(8, speed);
+  const lines: React.ReactElement[] = [];
+
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU + rot;
+    const w1 =
+      Math.sin(a * 3 + 1.1 + phase * 0.8) * 0.055 +
+      Math.sin(a * 5 + 3.9 - phase * 0.5) * 0.035;
+    const w2 =
+      Math.sin(a * 3 + 2.7 - phase * 0.6) * 0.06 +
+      Math.sin(a * 7 + 0.6 + phase * 0.9) * 0.03;
+    const f1 = 0.56 + w1,
+      f2 = 0.92 + w2;
+    const d = (i % 2 ? 1 : -1) * (0.05 + 0.018 * Math.sin(phase * 1.3 + a * 4));
+    const x1 = cx + Math.cos(a) * BX * f1;
+    const y1 = cy + Math.sin(a) * BY * f1;
+    const x2 = cx + Math.cos(a + d) * BX * f2;
+    const y2 = cy + Math.sin(a + d) * BY * f2;
+    const deg = ((a * 360) / TAU + Math.sin(a * 9.3 + i) * 7 + 360) % 360;
+    let col: string = RING_PAL[0];
+    if (deg >= 80 && deg < 205) col = RING_PAL[2];
+    else if (deg >= 205 && deg < 318) col = RING_PAL[1];
+    lines.push(
+      <line
+        key={i}
+        x1={x1.toFixed(1)}
+        y1={y1.toFixed(1)}
+        x2={x2.toFixed(1)}
+        y2={y2.toFixed(1)}
+        stroke={col}
+        strokeWidth={sw}
+        strokeLinecap="round"
+      />,
+    );
+  }
+
   return (
-    <section className="rounded-lg border border-slate-200 bg-white/92 p-4 shadow-xl shadow-slate-200/70 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/72 dark:shadow-2xl dark:shadow-black/30">
-      {children}
-    </section>
+    <svg
+      viewBox={`0 0 ${W} ${H}`}
+      width="100%"
+      height="100%"
+      style={{ display: "block", overflow: "visible" }}
+    >
+      <g>{lines}</g>
+    </svg>
   );
 }
 
-function ActionButton({
-  disabled,
-  icon: Icon,
-  label,
-  loading,
-  onClick,
-  tone,
-}: {
-  disabled?: boolean;
-  icon: LucideIcon;
-  label: string;
-  loading?: boolean;
-  onClick: () => void;
-  tone: "primary" | "secondary";
-}) {
+// â”€â”€â”€ NaiaMiniOrb â€” 40px ring for the mic button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function NaiaMiniOrb({ listening }: { listening: boolean }) {
+  const size = 40;
+  const n = 56;
+  const R = size / 2;
+  const TAU = Math.PI * 2;
+  const lines: React.ReactElement[] = [];
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU;
+    const w1 = Math.sin(a * 3 + 1.1) * 0.055 + Math.sin(a * 5 + 3.9) * 0.035;
+    const w2 = Math.sin(a * 3 + 2.7) * 0.06 + Math.sin(a * 7 + 0.6) * 0.03;
+    const r1 = R * (0.56 + w1),
+      r2 = R * (0.92 + w2);
+    const d = (i % 2 ? 1 : -1) * 0.05;
+    const x1 = R + Math.cos(a) * r1,
+      y1 = R + Math.sin(a) * r1;
+    const x2 = R + Math.cos(a + d) * r2,
+      y2 = R + Math.sin(a + d) * r2;
+    const deg = ((a * 360) / TAU + Math.sin(a * 9.3 + i) * 7 + 360) % 360;
+    let col: string = RING_PAL[0];
+    if (deg >= 80 && deg < 205) col = RING_PAL[2];
+    else if (deg >= 205 && deg < 318) col = RING_PAL[1];
+    lines.push(
+      <line
+        key={i}
+        x1={x1.toFixed(1)}
+        y1={y1.toFixed(1)}
+        x2={x2.toFixed(1)}
+        y2={y2.toFixed(1)}
+        stroke={col}
+        strokeWidth={Math.max(1.05, size * 0.0062)}
+        strokeLinecap="round"
+      />,
+    );
+  }
+  const spd = listening ? "7s" : "36s";
   return (
-    <button
-      className={
-        tone === "primary"
-          ? "inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-cyan-200 px-4 text-sm font-semibold text-slate-950 transition hover:bg-cyan-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:focus-visible:ring-cyan-100"
-          : "inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-slate-200 bg-white px-4 text-sm font-semibold text-slate-900 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-500/50 disabled:cursor-not-allowed disabled:opacity-60 dark:border-slate-700 dark:bg-slate-900/70 dark:text-slate-50 dark:hover:bg-slate-800 dark:focus-visible:ring-cyan-200"
-      }
-      disabled={disabled}
-      onClick={onClick}
-      type="button"
+    <svg
+      viewBox={`0 0 ${size} ${size}`}
+      width={size}
+      height={size}
+      style={{ display: "block", overflow: "visible" }}
     >
-      <Icon
-        className={`h-4 w-4 ${loading ? "animate-spin" : ""}`}
-        aria-hidden="true"
-      />
-      {label}
-    </button>
+      <g
+        style={{
+          transformOrigin: "50% 50%",
+          animation: `naiaSpin ${spd} linear infinite`,
+        }}
+      >
+        {lines}
+      </g>
+    </svg>
+  );
+}
+
+// â”€â”€â”€ NaiaHomeScreen â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+function NaiaHomeScreen({
+  ringPhase,
+  heroRef,
+  hoveredAgentId,
+  setHoveredAgentId,
+  onEnterCockpit,
+  onAgentClick,
+  voiceCatalog,
+  selectedVoiceId,
+  onChangeVoice,
+}: {
+  ringPhase: number;
+  heroRef: React.RefObject<HTMLDivElement | null>;
+  hoveredAgentId: NaiaAgentId | null;
+  setHoveredAgentId: (id: NaiaAgentId | null) => void;
+  onEnterCockpit: () => void;
+  onAgentClick: (id: string) => void;
+  voiceCatalog: VoiceCatalog | null;
+  selectedVoiceId: string;
+  onChangeVoice: (voiceId: string) => void;
+}) {
+  const router = useRouter();
+  const [heroSize, setHeroSize] = useState({ w: 1280, h: 640 });
+
+  useEffect(() => {
+    const el = heroRef.current;
+    if (!el) return;
+    const update = () => setHeroSize({ w: el.clientWidth, h: el.clientHeight });
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [heroRef]);
+
+  const { w: hw, h: hh } = heroSize;
+  const R = Math.max(185, Math.min(hh / 2 - 132, hw / 2 - 215));
+  const ringD = R * 2;
+  const nodes = computeOrbitNodes(R);
+  const RW = R + 122;
+  const hoveredNode = hoveredAgentId
+    ? nodes.find((nd) => nd.id === hoveredAgentId)
+    : null;
+
+  // Background SVG: wedge sectors + dashed divider lines + spoke lines to agents
+  const tints = [
+    "rgba(62,49,32,.022)",
+    "rgba(62,49,32,.055)",
+    "rgba(62,49,32,.038)",
+  ];
+  const wedges: React.ReactElement[] = [];
+  const secLines: React.ReactElement[] = [];
+  NAIA_ORBIT_SECTORS.forEach((s, si) => {
+    const a0 = (s.start * Math.PI) / 180;
+    const a1 = ((s.start + s.span) * Math.PI) / 180;
+    wedges.push(
+      <path
+        key={`w${si}`}
+        d={`M0,0 L${(Math.cos(a0) * RW).toFixed(1)},${(Math.sin(a0) * RW).toFixed(1)} A${RW} ${RW} 0 0 1 ${(Math.cos(a1) * RW).toFixed(1)},${(Math.sin(a1) * RW).toFixed(1)} Z`}
+        fill={tints[si]}
+        stroke="none"
+      />,
+    );
+    secLines.push(
+      <line
+        key={`sl${si}`}
+        x1="0"
+        y1="0"
+        x2={(Math.cos(a0) * RW).toFixed(1)}
+        y2={(Math.sin(a0) * RW).toFixed(1)}
+        stroke="rgba(62,49,32,.28)"
+        strokeWidth="1"
+        strokeDasharray="2 5"
+      />,
+    );
+  });
+  const agentLines = nodes.map((nd) => (
+    <line
+      key={nd.id}
+      x1="0"
+      y1="0"
+      x2={nd.x}
+      y2={nd.y}
+      stroke={hoveredAgentId === nd.id ? "#DE5B2B" : "rgba(62,49,32,.16)"}
+      strokeWidth={hoveredAgentId === nd.id ? "1.4" : "1"}
+    />
+  ));
+
+  return (
+    <div
+      style={{
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        padding: "0 44px",
+        overflow: "hidden",
+        position: "relative",
+      }}
+    >
+      {/* ── Header ── */}
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          paddingTop: 26,
+          fontSize: 11,
+          color: "#4A3B26",
+        }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              fontWeight: 600,
+              letterSpacing: ".01em",
+              fontSize: 14,
+            }}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src="/brand/naia-os-q.png"
+              alt="Q"
+              style={{
+                width: 16,
+                height: 16,
+                display: "block",
+                borderRadius: "50%",
+              }}
+            />
+            Qarizmi
+          </div>
+          <button
+            onClick={() => router.push("/dashboard")}
+            style={{
+              fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
+              fontSize: 10,
+              fontWeight: 600,
+              color: "#8A7A5F",
+              background: "rgba(62,49,32,.05)",
+              border: "1px solid rgba(62,49,32,.12)",
+              borderRadius: 99,
+              padding: "4px 10px",
+              cursor: "pointer",
+              display: "inline-flex",
+              alignItems: "center",
+              gap: 4,
+              transition: "all .15s",
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = "#2E2417";
+              e.currentTarget.style.color = "#F4EFE3";
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = "rgba(62,49,32,.05)";
+              e.currentTarget.style.color = "#8A7A5F";
+            }}
+          >
+            {"\u2190 Dashboard"}
+          </button>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "flex-end",
+            alignItems: "center",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              flexDirection: "column",
+              gap: 4,
+              alignItems: "flex-end",
+            }}
+          >
+            <label
+              style={{
+                fontSize: 10,
+                fontWeight: 600,
+                color: "#8A7A5F",
+                textTransform: "uppercase",
+                letterSpacing: "0.05em",
+              }}
+            >
+              Voix de l&apos;OS
+            </label>
+            {voiceCatalog?.voices && voiceCatalog.voices.length > 0 ? (
+              <select
+                value={selectedVoiceId}
+                onChange={(e) => onChangeVoice(e.target.value)}
+                style={{
+                  fontFamily: "inherit",
+                  fontSize: 11,
+                  fontWeight: 500,
+                  color: "#4A3B26",
+                  background: "rgba(62,49,32,.05)",
+                  border: "1px solid rgba(62,49,32,.15)",
+                  borderRadius: 99,
+                  padding: "5px 24px 5px 12px",
+                  outline: "none",
+                  cursor: "pointer",
+                  maxWidth: 160,
+                  transition: "all .15s",
+                  appearance: "none",
+                  WebkitAppearance: "none",
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238A7A5F' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: "no-repeat",
+                  backgroundPosition: "right 8px center",
+                }}
+              >
+                {voiceCatalog.voices.map((voice) => (
+                  <option
+                    key={voice.voiceId}
+                    value={voice.voiceId}
+                    style={{ background: "#EAE3D3", color: "#3A2E1E" }}
+                  >
+                    {voice.name}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <div style={{ fontSize: 11, color: "#8A7A5F" }}>
+                Chargement...
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* ── Hero zone ── */}
+      <div
+        ref={heroRef}
+        style={{
+          flex: 1,
+          position: "relative",
+          minHeight: 440,
+          margin: "0 -44px",
+        }}
+      >
+        {/* Background SVG */}
+        <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+          <svg
+            viewBox={`${-hw / 2} ${-hh / 2} ${hw} ${hh}`}
+            width="100%"
+            height="100%"
+            style={{ display: "block", overflow: "visible" }}
+          >
+            <g transform={`translate(${hw / 2},${hh / 2})`}>
+              {/* Rotating background group */}
+              <g transform={`rotate(${(ringPhase * 1.5) % 360})`}>
+                {wedges}
+                {secLines}
+              </g>
+              {/* Static lines connecting to agent pills */}
+              {agentLines}
+            </g>
+          </svg>
+        </div>
+
+        {/* Clickable ring */}
+        <div
+          onClick={onEnterCockpit}
+          title="Entrer dans le cockpit"
+          style={{ position: "absolute", inset: 0, cursor: "pointer" }}
+        >
+          <div
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%,-50%)",
+              width: ringD,
+              height: ringD,
+            }}
+          >
+            <div
+              style={{
+                width: "100%",
+                height: "100%",
+                animation: "naiaBreath 7s ease-in-out infinite",
+              }}
+            >
+              <NaiaRing W={ringD} H={ringD} phase={ringPhase} />
+            </div>
+          </div>
+        </div>
+
+        {/* Agent hover info at ring center */}
+        {hoveredNode && (
+          <div
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              transform: "translate(-50%,-50%)",
+              width: 184,
+              textAlign: "center",
+              pointerEvents: "none",
+              animation: "naiaIn .18s ease",
+            }}
+          >
+            <div
+              style={{ fontSize: 15, fontWeight: 700, letterSpacing: "-.01em" }}
+            >
+              {hoveredNode.name}
+            </div>
+            <div
+              style={{
+                fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
+                fontSize: 9,
+                letterSpacing: ".16em",
+                textTransform: "uppercase",
+                color: "#8A7A5F",
+                marginTop: 3,
+              }}
+            >
+              {hoveredNode.role}
+            </div>
+            <div
+              style={{
+                fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
+                fontSize: 8.5,
+                letterSpacing: ".18em",
+                marginTop: 8,
+                color: hoveredNode.status === "live" ? "#5C7A3B" : "#A87A1E",
+              }}
+            >
+              {hoveredNode.status === "live" ? "\u25cf LIVE" : "\u25cf GUARDED"}
+            </div>
+          </div>
+        )}
+
+        {/* Agent nodes (origin = ring center) */}
+        <div style={{ position: "absolute", left: "50%", top: "50%" }}>
+          {nodes.map((nd) => (
+            <div
+              key={nd.id}
+              style={{
+                position: "absolute",
+                left: nd.x,
+                top: nd.y,
+                transform: "translate(-50%,-50%)",
+              }}
+            >
+              <div
+                className="naia-pill"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onAgentClick(nd.id);
+                }}
+                onMouseEnter={() => setHoveredAgentId(nd.id as NaiaAgentId)}
+                onMouseLeave={() => setHoveredAgentId(null)}
+                style={{
+                  cursor: "pointer",
+                  textAlign: "center",
+                  padding: "7px 12px",
+                  borderRadius: 9,
+                  border: "1px solid rgba(62,49,32,.10)",
+                  background: "rgba(237,231,217,.94)",
+                }}
+              >
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 6,
+                    justifyContent: "center",
+                  }}
+                >
+                  <span
+                    style={{
+                      width: 5,
+                      height: 5,
+                      borderRadius: "50%",
+                      flexShrink: 0,
+                      background: nd.status === "live" ? "#5C7A3B" : "#A87A1E",
+                      display: "inline-block",
+                    }}
+                  />
+                  <span
+                    className="naia-pill-name"
+                    style={{
+                      fontSize: 13.5,
+                      fontWeight: 600,
+                      letterSpacing: "-.01em",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    {nd.name}
+                  </span>
+                </div>
+                <div
+                  style={{
+                    fontSize: 10,
+                    color: "#8A7A5F",
+                    marginTop: 2,
+                    letterSpacing: ".02em",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {nd.role}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* ── Footer ── */}
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "1fr auto 1fr",
+          alignItems: "end",
+          gap: 24,
+          padding: "6px 2px 36px",
+        }}
+      >
+        <div />
+        <div style={{ textAlign: "center" }}>
+          <h1
+            style={{
+              margin: 0,
+              fontSize: "clamp(44px,6.5vw,80px)",
+              fontWeight: 500,
+              letterSpacing: "-.045em",
+              lineHeight: 0.95,
+              color: "#46351A",
+            }}
+          >
+            Meet NAIA
+          </h1>
+          <div
+            style={{
+              marginTop: 20,
+              display: "flex",
+              justifyContent: "center",
+              alignItems: "center",
+              marginBottom: 12,
+            }}
+          >
+            <button
+              onClick={onEnterCockpit}
+              className="naia-primary-btn"
+              style={{
+                font: "inherit",
+                fontSize: 13,
+                fontWeight: 600,
+                background: "#2E2417",
+                color: "#F4EFE3",
+                border: "none",
+                borderRadius: 99,
+                padding: "11px 26px",
+                cursor: "pointer",
+              }}
+            >
+              Entrer dans le cockpit
+            </button>
+          </div>
+        </div>
+        <div />
+      </div>
+    </div>
+  );
+}
+
+// ————————————————————————————————————————————————————————————————————————————
+
+function NaiaCockpitScreen({
+  selectedRailId,
+  selectedRailAgent,
+  setSelectedRailId,
+  result,
+  isRunning,
+  isListening,
+  isApplyingAction,
+  command,
+  setCommand,
+  transcript,
+  notice,
+  manualAudioUrl,
+  userName,
+  onGoHome,
+  onRunCommand,
+  onStartVoice,
+  onStopVoice,
+  onExecuteAction,
+  voiceCatalog,
+  selectedVoiceId,
+  selectedVoice,
+  isSpeaking,
+  onSpeakCurrentAnswer,
+  onChangeVoice,
+}: {
+  selectedRailId: NaiaAgentId;
+  selectedRailAgent: NaiaAgent;
+  setSelectedRailId: (id: NaiaAgentId) => void;
+  result: ApiResult | null;
+  isRunning: boolean;
+  isListening: boolean;
+  isApplyingAction: boolean;
+  command: string;
+  setCommand: (v: string) => void;
+  transcript: string;
+  notice: string;
+  manualAudioUrl: string;
+  userName: string;
+  onGoHome: () => void;
+  onRunCommand: (cmd: string) => void;
+  onStartVoice: () => void;
+  onStopVoice: () => void;
+  onExecuteAction: (
+    action: SignedNaiaAction,
+    leadInput?: Partial<CrmLeadDraft>,
+  ) => void;
+  voiceCatalog: VoiceCatalog | null;
+  selectedVoiceId: string;
+  selectedVoice?: VoiceOption;
+  isSpeaking: boolean;
+  onSpeakCurrentAnswer: () => void;
+  onChangeVoice: (v: string) => void;
+}) {
+  const router = useRouter();
+  const hasPending = (result?.actions?.length ?? 0) > 0;
+  const [activeLeadAction, setActiveLeadAction] =
+    useState<SignedNaiaAction | null>(null);
+  const MONO = "ui-monospace,'SF Mono',Menlo,monospace";
+
+  return (
+    <div
+      style={{
+        height: "100vh",
+        display: "flex",
+        flexDirection: "column",
+        background: "#EAE3D3",
+        overflow: "hidden",
+      }}
+    >
+      {/* — Topbar — */}
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "0 20px",
+          minHeight: 54,
+          borderBottom: "1px solid rgba(62,49,32,.14)",
+          flexShrink: 0,
+          flexWrap: "wrap",
+        }}
+      >
+        {/* Left cluster — 2 rows */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 4,
+            padding: "8px 0",
+          }}
+        >
+          {/* Row 1: nav buttons */}
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={onGoHome}
+              title={"Retour \u00e0 l'accueil"}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 7,
+                cursor: "pointer",
+                background: "none",
+                border: "none",
+                font: "inherit",
+                padding: "4px 8px 4px 4px",
+                borderRadius: 6,
+                color: "inherit",
+                transition: "background .15s",
+              }}
+              onMouseEnter={(e) =>
+                (e.currentTarget.style.background = "rgba(62,49,32,.06)")
+              }
+              onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+            >
+              <span style={{ fontSize: 16, fontWeight: "bold" }}>
+                {"\u2190"}
+              </span>
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/brand/naia-os-q.png"
+                alt="Qarizmi"
+                style={{
+                  width: 24,
+                  height: 24,
+                  display: "block",
+                  borderRadius: "50%",
+                }}
+              />
+              <span
+                style={{
+                  fontWeight: 700,
+                  fontSize: 13.5,
+                  letterSpacing: ".02em",
+                }}
+              >
+                NAIA
+              </span>
+            </button>
+
+            <button
+              onClick={() => router.push("/dashboard")}
+              style={{
+                fontFamily: MONO,
+                fontSize: 10,
+                fontWeight: 600,
+                color: "#8A7A5F",
+                background: "rgba(62,49,32,.05)",
+                border: "1px solid rgba(62,49,32,.12)",
+                borderRadius: 99,
+                padding: "4px 10px",
+                cursor: "pointer",
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                transition: "all .15s",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.background = "#2E2417";
+                e.currentTarget.style.color = "#F4EFE3";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.background = "rgba(62,49,32,.05)";
+                e.currentTarget.style.color = "#8A7A5F";
+              }}
+            >
+              {"\u2190 Dashboard"}
+            </button>
+
+            <span
+              style={{
+                fontFamily: MONO,
+                fontSize: 8.5,
+                letterSpacing: ".2em",
+                color: "#8A7A5F",
+                border: "1px solid rgba(62,49,32,.2)",
+                borderRadius: 99,
+                padding: "3px 9px",
+              }}
+            >
+              COCKPIT
+            </span>
+          </div>
+
+          {/* Row 2: Voice dropdown — only when catalog is ready */}
+          {voiceCatalog?.voices.length ? (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 8.5,
+                  letterSpacing: ".12em",
+                  textTransform: "uppercase",
+                  color: "#A2937A",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Voix
+              </span>
+              <select
+                onChange={(e) => onChangeVoice(e.target.value)}
+                value={selectedVoiceId}
+                title="Choisir la voix de NAIA"
+                style={{
+                  fontSize: 10.5,
+                  fontFamily: "inherit",
+                  background: "rgba(62,49,32,.05)",
+                  border: "1px solid rgba(62,49,32,.18)",
+                  borderRadius: 6,
+                  padding: "2px 22px 2px 7px",
+                  color: "#4A3B26",
+                  cursor: "pointer",
+                  maxWidth: 164,
+                  outline: "none",
+                  appearance: "none",
+                  WebkitAppearance: "none",
+                  backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' fill='none'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238A7A5F' stroke-width='1.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E")`,
+                  backgroundRepeat: "no-repeat",
+                  backgroundPosition: "right 6px center",
+                }}
+              >
+                {voiceCatalog.voices.map((v) => (
+                  <option key={v.voiceId} value={v.voiceId}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                disabled={!selectedVoiceId || isSpeaking}
+                onClick={onSpeakCurrentAnswer}
+                style={{
+                  font: "inherit",
+                  fontSize: 9.5,
+                  fontWeight: 600,
+                  background: "none",
+                  border: "1px solid rgba(62,49,32,.20)",
+                  borderRadius: 99,
+                  padding: "2px 8px",
+                  cursor:
+                    !selectedVoiceId || isSpeaking ? "not-allowed" : "pointer",
+                  color: "#6E5F49",
+                  opacity: !selectedVoiceId || isSpeaking ? 0.5 : 1,
+                  transition: "all .15s",
+                }}
+                onMouseEnter={(e) => {
+                  if (selectedVoiceId && !isSpeaking) {
+                    e.currentTarget.style.borderColor = "#DE5B2B";
+                    e.currentTarget.style.color = "#DE5B2B";
+                  }
+                }}
+                onMouseLeave={(e) => {
+                  e.currentTarget.style.borderColor = "rgba(62,49,32,.20)";
+                  e.currentTarget.style.color = "#6E5F49";
+                }}
+              >
+                {isSpeaking ? "\u25a0 Stop" : "\u25b6 Tester"}
+              </button>
+            </div>
+          ) : null}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* Right: status dot + username */}
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 7,
+            fontSize: 11,
+            color: "#6E5F49",
+          }}
+        >
+          <span
+            style={{
+              width: 6,
+              height: 6,
+              borderRadius: "50%",
+              background: "#A87A1E",
+              display: "inline-block",
+            }}
+          />
+          {"CRM connect\u00e9 \u00b7 Gmail en attente (Lina)"}
+        </div>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            marginLeft: 10,
+          }}
+        >
+          <span
+            style={{
+              width: 26,
+              height: 26,
+              borderRadius: "50%",
+              background: "#2E2417",
+              color: "#F4EFE3",
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              fontSize: 11,
+              fontWeight: 600,
+            }}
+          >
+            {userName.charAt(0).toUpperCase()}
+          </span>
+          <span style={{ fontSize: 12, fontWeight: 600 }}>{userName}</span>
+        </div>
+      </div>
+
+      {/* â”€â”€ 3-column grid â”€â”€ */}
+      <div
+        style={{
+          flex: 1,
+          display: "grid",
+          gridTemplateColumns: "248px minmax(0,1fr) 384px",
+          minHeight: 0,
+          overflow: "hidden",
+        }}
+      >
+        {/* â”€â”€ Left rail â€” agents â”€â”€ */}
+        <div
+          style={{
+            borderRight: "1px solid rgba(62,49,32,.14)",
+            overflowY: "auto",
+            padding: "12px 10px 18px",
+            minHeight: 0,
+          }}
+        >
+          {COCKPIT_POLES.map((pole) => (
+            <div key={pole.label}>
+              <div
+                style={{
+                  padding: "12px 8px 5px",
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  letterSpacing: ".2em",
+                  color: "#A2937A",
+                  textTransform: "uppercase",
+                }}
+              >
+                {pole.label}
+              </div>
+              {pole.ids.map((id) => {
+                const agent = getNaiaAgent(id);
+                const isActive = selectedRailId === id;
+                return (
+                  <div
+                    key={id}
+                    className="naia-rail-row"
+                    onClick={() => setSelectedRailId(id)}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 9,
+                      padding: 8,
+                      borderRadius: 8,
+                      cursor: "pointer",
+                      background: isActive
+                        ? "rgba(247,243,233,.95)"
+                        : "transparent",
+                    }}
+                  >
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: "50%",
+                        flexShrink: 0,
+                        background:
+                          agent.status === "live" ? "#5C7A3B" : "#A87A1E",
+                        display: "inline-block",
+                      }}
+                    />
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span
+                        style={{
+                          display: "block",
+                          fontSize: 12.5,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {agent.name}
+                      </span>
+                      <span
+                        style={{
+                          display: "block",
+                          fontSize: 10.5,
+                          color: "#8A7A5F",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {agent.role}
+                      </span>
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: MONO,
+                        fontSize: 8,
+                        letterSpacing: ".12em",
+                        color: agent.status === "live" ? "#5C7A3B" : "#A87A1E",
+                      }}
+                    >
+                      {agent.status.toUpperCase()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+
+          {/* Legend */}
+          <div
+            style={{
+              marginTop: 18,
+              padding: "12px 8px 0",
+              borderTop: "1px solid rgba(62,49,32,.12)",
+              fontSize: 10.5,
+              lineHeight: 1.7,
+              color: "#8A7A5F",
+            }}
+          >
+            <span
+              style={{
+                display: "inline-block",
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "#5C7A3B",
+                marginRight: 6,
+                verticalAlign: "middle",
+              }}
+            />
+            {"Live \u2014 peut agir directement"}
+            <br />
+            <span
+              style={{
+                display: "inline-block",
+                width: 6,
+                height: 6,
+                borderRadius: "50%",
+                background: "#A87A1E",
+                marginRight: 6,
+                verticalAlign: "middle",
+              }}
+            />
+            {"Guarded \u2014 validation humaine"}
+          </div>
+
+          {/* ElevenLabs voice selector */}
+          <div
+            style={{
+              marginTop: 18,
+              padding: "12px 8px 0",
+              borderTop: "1px solid rgba(62,49,32,.12)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                justifyContent: "space-between",
+                gap: 6,
+              }}
+            >
+              <div>
+                <div
+                  style={{ fontSize: 11, fontWeight: 605, color: "#4A3B26" }}
+                >
+                  Voix ElevenLabs
+                </div>
+                <div style={{ fontSize: 9.5, color: "#8A7A5F", marginTop: 2 }}>
+                  {selectedVoice ? selectedVoice.name : "Chargement..."}
+                </div>
+              </div>
+              <button
+                disabled={!selectedVoiceId || isSpeaking}
+                onClick={onSpeakCurrentAnswer}
+                style={{
+                  font: "inherit",
+                  fontSize: 10,
+                  fontWeight: 600,
+                  background: "none",
+                  border: "1px solid rgba(62,49,32,.25)",
+                  borderRadius: 99,
+                  padding: "2px 8px",
+                  cursor:
+                    !selectedVoiceId || isSpeaking ? "not-allowed" : "pointer",
+                }}
+              >
+                Tester
+              </button>
+            </div>
+            {voiceCatalog?.voices.length ? (
+              <select
+                onChange={(e) => onChangeVoice(e.target.value)}
+                value={selectedVoiceId}
+                style={{
+                  width: "100%",
+                  marginTop: 6,
+                  fontSize: 11,
+                  background: "#EAE3D3",
+                  border: "1px solid rgba(62,49,32,.2)",
+                  borderRadius: 6,
+                  padding: "3px 6px",
+                  color: "inherit",
+                }}
+              >
+                {voiceCatalog.voices.map((v) => (
+                  <option key={v.voiceId} value={v.voiceId}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            ) : null}
+          </div>
+        </div>
+
+        {/* â”€â”€ Center workspace â”€â”€ */}
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            minWidth: 0,
+            minHeight: 0,
+            background: "#EFE9D9",
+          }}
+        >
+          {/* Agent header */}
+          <div
+            style={{
+              padding: "12px 22px 13px",
+              borderBottom: "1px solid rgba(62,49,32,.12)",
+              flexShrink: 0,
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "baseline",
+                gap: 11,
+                flexWrap: "wrap",
+              }}
+            >
+              <span
+                style={{
+                  fontSize: 15,
+                  fontWeight: 700,
+                  letterSpacing: "-.01em",
+                }}
+              >
+                {selectedRailAgent.name}
+              </span>
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  letterSpacing: ".16em",
+                  textTransform: "uppercase",
+                  color: "#8A7A5F",
+                }}
+              >
+                {selectedRailAgent.role}
+              </span>
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 8.5,
+                  letterSpacing: ".16em",
+                  color:
+                    selectedRailAgent.status === "live" ? "#5C7A3B" : "#A87A1E",
+                }}
+              >
+                {selectedRailAgent.status.toUpperCase()}
+              </span>
+            </div>
+            <div
+              style={{
+                fontSize: 11.5,
+                color: "#6E5F49",
+                lineHeight: 1.5,
+                marginTop: 4,
+                maxWidth: 680,
+              }}
+            >
+              {selectedRailAgent.mission}
+            </div>
+          </div>
+
+          {/* Scrollable response area */}
+          <div
+            style={{
+              flex: 1,
+              overflowY: "auto",
+              padding: "16px 22px 8px",
+              minHeight: 0,
+            }}
+          >
+            {/* NAIA response / welcome */}
+            <div
+              style={{
+                display: "flex",
+                gap: 10,
+                marginBottom: 13,
+                animation: "naiaIn .3s ease",
+              }}
+            >
+              <div
+                style={{
+                  width: 52,
+                  flexShrink: 0,
+                  textAlign: "right",
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  letterSpacing: ".13em",
+                  color: "#A2937A",
+                  paddingTop: 3,
+                  textTransform: "uppercase",
+                }}
+              >
+                NAIA
+              </div>
+              <div
+                style={{
+                  flex: 1,
+                  fontSize: 12.5,
+                  lineHeight: 1.55,
+                  color: "#3A2E1E",
+                }}
+              >
+                {result?.response ??
+                  `Bonjour ${userName}. Les 12 agents sont en ligne. Que puis-je pr\u00e9parer ?`}
+              </div>
+            </div>
+
+            {/* User transcript */}
+            {transcript && (
+              <div
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  marginBottom: 13,
+                  animation: "naiaIn .3s ease",
+                }}
+              >
+                <div
+                  style={{
+                    width: 52,
+                    flexShrink: 0,
+                    textAlign: "right",
+                    fontFamily: MONO,
+                    fontSize: 9,
+                    letterSpacing: ".13em",
+                    color: "#DE5B2B",
+                    paddingTop: 3,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  VOUS
+                </div>
+                <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.55 }}>
+                  {transcript}
+                </div>
+              </div>
+            )}
+
+            {/* Thinking animation */}
+            {isRunning && (
+              <div style={{ display: "flex", gap: 10, marginBottom: 13 }}>
+                <div
+                  style={{
+                    width: 52,
+                    flexShrink: 0,
+                    textAlign: "right",
+                    fontFamily: MONO,
+                    fontSize: 9,
+                    letterSpacing: ".13em",
+                    color: "#A2937A",
+                    paddingTop: 3,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  NAIA
+                </div>
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 5,
+                    alignItems: "center",
+                    paddingTop: 8,
+                  }}
+                >
+                  {[0, 0.2, 0.4].map((delay) => (
+                    <span
+                      key={delay}
+                      style={{
+                        width: 5,
+                        height: 5,
+                        borderRadius: "50%",
+                        background: "#A2937A",
+                        display: "inline-block",
+                        animation: `naiaDot 1.2s ${delay}s ease-in-out infinite`,
+                      }}
+                    />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Notice / alert */}
+            {notice && (
+              <div
+                style={{
+                  padding: "8px 12px",
+                  background: "rgba(168,122,30,.10)",
+                  border: "1px solid rgba(168,122,30,.25)",
+                  borderRadius: 8,
+                  fontSize: 11.5,
+                  color: "#6E5F49",
+                  lineHeight: 1.5,
+                  marginBottom: 12,
+                  animation: "naiaIn .3s ease",
+                }}
+              >
+                <div>{notice}</div>
+                {notice.toLowerCase().includes("lead crm cr") && (
+                  <button
+                    className="naia-primary-btn"
+                    onClick={() => router.push("/dashboard/leads")}
+                    style={{
+                      marginTop: 8,
+                      font: "inherit",
+                      fontSize: 11,
+                      fontWeight: 600,
+                      background: "#2E2417",
+                      color: "#F4EFE3",
+                      border: "none",
+                      borderRadius: 99,
+                      padding: "4px 12px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {"Voir dans le pipeline"}
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* â”€â”€ Bottom input zone â”€â”€ */}
+          <div
+            style={{
+              flexShrink: 0,
+              borderTop: "1px solid rgba(62,49,32,.12)",
+              padding: "10px 22px 14px",
+            }}
+          >
+            {/* Suggestion chips */}
+            <div
+              style={{
+                display: "flex",
+                gap: 8,
+                flexWrap: "wrap",
+                marginBottom: 12,
+              }}
+            >
+              {commandExamples.slice(0, 3).map((ex) => (
+                <button
+                  key={ex}
+                  className="naia-outline-btn"
+                  disabled={isRunning}
+                  onClick={() => {
+                    setCommand(ex);
+                    onRunCommand(ex);
+                  }}
+                  style={{
+                    font: "inherit",
+                    fontSize: 10.5,
+                    fontWeight: 600,
+                    color: "#6E5F49",
+                    background: "none",
+                    border: "1px solid rgba(62,49,32,.25)",
+                    borderRadius: 99,
+                    padding: "4px 12px",
+                    cursor: isRunning ? "not-allowed" : "pointer",
+                    opacity: isRunning ? 0.6 : 1,
+                  }}
+                >
+                  {ex.length > 38 ? `${ex.slice(0, 38)}...` : ex}
+                </button>
+              ))}
+            </div>
+
+            {/* Input row */}
+            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              {/* Mic / orb button */}
+              <button
+                onClick={isListening ? onStopVoice : onStartVoice}
+                style={{
+                  width: 44,
+                  height: 44,
+                  flexShrink: 0,
+                  borderRadius: "50%",
+                  border: isListening
+                    ? "2px solid #DE5B2B"
+                    : "1px solid rgba(62,49,32,.20)",
+                  background: "rgba(237,231,217,.94)",
+                  cursor: "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: 0,
+                  animation: isListening
+                    ? "naiaGlow 1.4s ease-in-out infinite"
+                    : "none",
+                  transition: "border .2s",
+                }}
+              >
+                <NaiaMiniOrb listening={isListening} />
+              </button>
+
+              {/* Textarea */}
+              <div
+                style={{
+                  flex: 1,
+                  borderBottom: "1px solid rgba(62,49,32,.25)",
+                  paddingBottom: 4,
+                }}
+              >
+                <textarea
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey) {
+                      e.preventDefault();
+                      if (command.trim()) onRunCommand(command);
+                    }
+                  }}
+                  placeholder={
+                    isListening
+                      ? "Je vous \u00e9coute\u2026"
+                      : "Parlez ou \u00e9crivez \u00e0 NAIA..."
+                  }
+                  rows={1}
+                  style={{
+                    width: "100%",
+                    resize: "none",
+                    background: "none",
+                    border: "none",
+                    outline: "none",
+                    font: "inherit",
+                    fontSize: 12.5,
+                    color: "#3A2E1E",
+                    lineHeight: 1.55,
+                    padding: "4px 0",
+                  }}
+                />
+              </div>
+
+              {/* Send */}
+              <button
+                disabled={isRunning || !command.trim()}
+                onClick={() => {
+                  if (command.trim()) onRunCommand(command);
+                }}
+                style={{
+                  width: 36,
+                  height: 36,
+                  flexShrink: 0,
+                  borderRadius: "50%",
+                  background: "#2E2417",
+                  color: "#F4EFE3",
+                  border: "none",
+                  cursor:
+                    isRunning || !command.trim() ? "not-allowed" : "pointer",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 16,
+                  opacity: isRunning || !command.trim() ? 0.45 : 1,
+                  transition: "opacity .2s",
+                }}
+              >
+                {"\u2191"}
+              </button>
+            </div>
+
+            {/* Disclaimer */}
+            <div
+              style={{
+                fontSize: 9.5,
+                color: "#A2937A",
+                marginTop: 8,
+                lineHeight: 1.5,
+              }}
+            >
+              {
+                "NAIA pr\u00e9pare, vous validez \u2014 aucune \u00e9criture CRM, envoi externe ou document sensible sans votre accord."
+              }
+            </div>
+          </div>
+        </div>
+
+        {/* â”€â”€ Right panel â€” validations + journal â”€â”€ */}
+        <div
+          style={{
+            borderLeft: "1px solid rgba(62,49,32,.14)",
+            display: "flex",
+            flexDirection: "column",
+            minHeight: 0,
+            minWidth: 0,
+            overflow: "hidden",
+          }}
+        >
+          {/* Validations humaines */}
+          <div
+            style={{
+              flexShrink: 0,
+              maxHeight: "44%",
+              overflowY: "auto",
+              padding: "14px 14px 6px",
+              borderBottom: "1px solid rgba(62,49,32,.12)",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                paddingBottom: 10,
+              }}
+            >
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  letterSpacing: ".2em",
+                  color: "#A2937A",
+                  textTransform: "uppercase",
+                  flex: 1,
+                }}
+              >
+                Validations humaines
+              </span>
+              {hasPending && (
+                <span
+                  style={{
+                    fontSize: 10,
+                    fontWeight: 700,
+                    background: "#DE5B2B",
+                    color: "#F4EFE3",
+                    borderRadius: 99,
+                    minWidth: 18,
+                    height: 18,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "0 5px",
+                  }}
+                >
+                  {result?.actions?.length}
+                </span>
+              )}
+            </div>
+
+            {hasPending ? (
+              result?.actions?.map((action) => {
+                if (action.kind === "crm.createLead") {
+                  return (
+                    <div
+                      key={action.id}
+                      style={{
+                        background: "#F5F0E4",
+                        border: "1px solid rgba(62,49,32,.16)",
+                        borderRadius: 10,
+                        padding: 12,
+                        marginBottom: 10,
+                        animation: "naiaIn .3s ease",
+                      }}
+                    >
+                      <div className="naia-form-header">
+                        <span className="naia-form-badge">Action requise</span>
+                        <span style={{ fontSize: 10, color: "#8A7A5F" }}>
+                          CRM
+                        </span>
+                      </div>
+                      <h3
+                        className="naia-form-title"
+                        style={{ fontSize: 12.5 }}
+                      >
+                        {action.label}
+                      </h3>
+                      <p
+                        className="naia-form-desc"
+                        style={{ fontSize: 11.5, marginTop: 4 }}
+                      >
+                        {action.description}
+                      </p>
+                      <button
+                        className="naia-primary-btn"
+                        onClick={() => setActiveLeadAction(action)}
+                        style={{
+                          marginTop: 10,
+                          width: "100%",
+                          font: "inherit",
+                          fontSize: 12,
+                          fontWeight: 600,
+                          background: "#2E2417",
+                          color: "#F4EFE3",
+                          border: "none",
+                          borderRadius: 99,
+                          padding: "6px 0",
+                          cursor: "pointer",
+                        }}
+                      >
+                        Compl&eacute;ter & Valider
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div key={action.id} style={{ marginBottom: 10 }}>
+                    <ActionCard
+                      action={action}
+                      disabled={isApplyingAction}
+                      onApply={(leadInput) =>
+                        onExecuteAction(action, leadInput)
+                      }
+                    />
+                  </div>
+                );
+              })
+            ) : (
+              <div
+                style={{
+                  fontSize: 11,
+                  color: "#A2937A",
+                  lineHeight: 1.6,
+                  paddingBottom: 10,
+                }}
+              >
+                Aucune action en attente. NAIA demandera votre accord avant
+                toute action sensible.
+              </div>
+            )}
+          </div>
+
+          {/* Journal d'audit */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "14px" }}>
+            <div style={{ paddingBottom: 10 }}>
+              <span
+                style={{
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  letterSpacing: ".2em",
+                  color: "#A2937A",
+                  textTransform: "uppercase",
+                }}
+              >
+                Journal d&apos;audit
+              </span>
+            </div>
+            <div style={{ fontSize: 11.5, color: "#A2937A", lineHeight: 1.6 }}>
+              {
+                "Chaque action approuv\u00e9e, refus\u00e9e ou ex\u00e9cut\u00e9e sera trac\u00e9e ici (audit Amine)."
+              }
+            </div>
+
+            {/* Manual audio player (ElevenLabs fallback) */}
+            {manualAudioUrl && (
+              <audio
+                controls
+                preload="none"
+                src={manualAudioUrl}
+                style={{ marginTop: 12, width: "100%" }}
+              >
+                <track kind="captions" />
+              </audio>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {activeLeadAction && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(46, 36, 23, 0.45)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            zIndex: 9999,
+            animation: "naiaIn .2s ease",
+            padding: "20px 10px",
+          }}
+          onClick={() => setActiveLeadAction(null)}
+        >
+          <div
+            style={{
+              background: "#F5F0E4",
+              border: "1px solid rgba(62, 49, 32, 0.16)",
+              borderRadius: 12,
+              padding: "18px 22px",
+              width: "540px",
+              maxWidth: "100%",
+              maxHeight: "88vh",
+              overflowY: "auto",
+              position: "relative",
+              boxShadow:
+                "0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Modal header */}
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "flex-start",
+                marginBottom: 16,
+              }}
+            >
+              <div>
+                <span
+                  className="naia-form-badge"
+                  style={{ marginBottom: 4, display: "inline-block" }}
+                >
+                  Validation humaine
+                </span>
+                <h3 className="naia-form-title" style={{ fontSize: 15 }}>
+                  {activeLeadAction.label}
+                </h3>
+              </div>
+              <button
+                onClick={() => setActiveLeadAction(null)}
+                style={{
+                  background: "none",
+                  border: "none",
+                  fontSize: 18,
+                  cursor: "pointer",
+                  color: "#6E5F49",
+                  padding: 0,
+                }}
+              >
+                &times;
+              </button>
+            </div>
+
+            {/* Form */}
+            <LeadDraftActionCard
+              action={
+                activeLeadAction as Extract<
+                  SignedNaiaAction,
+                  { kind: "crm.createLead" }
+                >
+              }
+              disabled={isApplyingAction}
+              onApply={(leadInput) => {
+                if (activeLeadAction) {
+                  onExecuteAction(activeLeadAction, leadInput);
+                  setActiveLeadAction(null);
+                }
+              }}
+            />
+          </div>
+        </div>
+      )}
+    </div>
   );
 }

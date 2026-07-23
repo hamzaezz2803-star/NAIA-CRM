@@ -25,46 +25,50 @@ const statusLabel: Record<IntegrationHealthStatus, string> = {
   "not-implemented": "Non implemente",
 };
 
-const statusClassName: Record<IntegrationHealthStatus, string> = {
-  connected:
-    "border-emerald-200 bg-emerald-50 text-emerald-800 dark:border-emerald-900/30 dark:bg-emerald-950/20 dark:text-emerald-300",
-  "needs-review":
-    "border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-900/30 dark:bg-amber-950/20 dark:text-amber-300",
-  "ready-to-connect":
-    "border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-900/30 dark:bg-sky-950/20 dark:text-sky-300",
-  "not-configured":
-    "border-stone-200 bg-stone-100 text-stone-600 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-300",
-  "not-implemented":
-    "border-stone-200 bg-white text-stone-500 dark:border-stone-800 dark:bg-stone-950 dark:text-stone-400",
-};
-
 export default async function IntegrationsPage() {
   const integrations = await getIntegrationReadiness();
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <PageHeader
         actions={<StatusBadge status={integrationsModule.status} />}
         description={integrationsModule.summary}
-        eyebrow="Platform"
-        title="Integrations"
+        eyebrow="Plateforme · Connecteurs"
+        title="Intégrations"
       />
 
-      <section className="rounded-lg border border-amber-200 bg-amber-50 p-5 dark:border-amber-900/40 dark:bg-amber-950/20">
-        <div className="flex items-start gap-3">
-          <PlugZap
-            aria-hidden="true"
-            className="mt-0.5 h-5 w-5 flex-none text-amber-700 dark:text-amber-300"
-          />
+      <section
+        className="rounded-xl border p-4 sm:p-5 shadow-xs transition-all"
+        style={{
+          background: "rgba(176,141,79,0.05)",
+          borderColor: "var(--maison-border)",
+        }}
+      >
+        <div className="flex items-start gap-3.5">
+          <div
+            className="flex h-9 w-9 flex-none items-center justify-center rounded-lg shadow-2xs"
+            style={{
+              background: "rgba(176,141,79,0.12)",
+              color: "var(--maison-brass)",
+            }}
+          >
+            <PlugZap aria-hidden="true" className="h-4.5 w-4.5" />
+          </div>
           <div>
-            <h2 className="text-sm font-semibold text-amber-950 dark:text-amber-100">
-              Etat reel des connecteurs
+            <h2
+              className="text-sm font-semibold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              État réel des connecteurs
             </h2>
-            <p className="mt-1 text-sm leading-6 text-amber-800 dark:text-amber-200">
+            <p
+              className="mt-1 text-xs md:text-sm leading-relaxed"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
               Google Drive, Calendar et Gmail ont un backend OAuth/API. Slack
-              peut preparer des notifications approuvees via token bot. WhatsApp
-              et Microsoft 365 restent derriere une fondation d&apos;approbation
-              tant que leurs routes OAuth/API ne sont pas implementees dans
+              peut préparer des notifications approuvées via token bot. WhatsApp
+              et Microsoft 365 restent derrière une fondation d&apos;approbation
+              tant que leurs routes OAuth/API ne sont pas implémentées dans
               NAIA.
             </p>
           </div>
@@ -92,50 +96,97 @@ function IntegrationCard({ integration }: { integration: IntegrationHealth }) {
         : CircleDashed;
 
   return (
-    <article className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="text-base font-semibold text-stone-950">
-            {integration.label}
-          </h2>
-          <span
-            className={`mt-2 inline-flex rounded-full border px-2 py-0.5 text-xs font-semibold ${statusClassName[integration.status]}`}
-          >
-            {statusLabel[integration.status]}
-          </span>
+    <article
+      className="rounded-xl border p-5 shadow-xs dark:border-stone-800 dark:bg-stone-950 transition-all flex flex-col justify-between"
+      style={{
+        background: "var(--maison-card)",
+        borderColor: "var(--maison-border)",
+      }}
+    >
+      <div>
+        <div
+          className="flex items-start justify-between gap-3 pb-3 border-b"
+          style={{ borderColor: "var(--maison-border-subtle)" }}
+        >
+          <div>
+            <h2
+              className="text-base font-semibold tracking-tight"
+              style={{
+                fontFamily: "var(--font-playfair), Georgia, serif",
+                color: "var(--maison-text-primary)",
+              }}
+            >
+              {integration.label}
+            </h2>
+            <span
+              className="mt-2 inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold tracking-wide shadow-2xs"
+              style={{
+                background: "rgba(176,141,79,0.08)",
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-text-primary)",
+              }}
+            >
+              ● {statusLabel[integration.status]}
+            </span>
+          </div>
+          <StatusIcon
+            aria-hidden="true"
+            className={
+              integration.status === "connected"
+                ? "h-5 w-5 text-emerald-600"
+                : integration.status === "needs-review"
+                  ? "h-5 w-5 text-amber-600"
+                  : "h-5 w-5"
+            }
+            style={
+              integration.status !== "connected" &&
+              integration.status !== "needs-review"
+                ? { color: "var(--maison-text-muted)" }
+                : undefined
+            }
+          />
         </div>
-        <StatusIcon
-          aria-hidden="true"
-          className={
-            integration.status === "connected"
-              ? "h-5 w-5 text-emerald-600"
-              : integration.status === "needs-review"
-                ? "h-5 w-5 text-amber-600"
-                : "h-5 w-5 text-stone-400"
-          }
-        />
-      </div>
 
-      <p className="mt-4 text-sm leading-6 text-stone-600">
-        {integration.detail}
-      </p>
+        <p
+          className="mt-3 text-xs md:text-sm leading-relaxed"
+          style={{ color: "var(--maison-text-secondary)" }}
+        >
+          {integration.detail}
+        </p>
 
-      <div className="mt-4 space-y-3">
-        <div>
-          <p className="text-xs font-semibold uppercase text-stone-500">
-            Capacites
-          </p>
-          <p className="mt-1 text-sm leading-6 text-stone-600">
-            {integration.capabilities.join(", ")}
-          </p>
-        </div>
-        <div>
-          <p className="text-xs font-semibold uppercase text-stone-500">
-            Variables
-          </p>
-          <p className="mt-1 text-xs font-medium leading-5 text-stone-500">
-            {integration.envVars.join(", ")}
-          </p>
+        <div className="mt-4 space-y-3">
+          <div>
+            <p
+              className="text-[10px] font-bold uppercase tracking-[0.08em]"
+              style={{ color: "var(--maison-brass)" }}
+            >
+              Capacités
+            </p>
+            <p
+              className="mt-1 text-xs leading-relaxed"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              {integration.capabilities.join(", ")}
+            </p>
+          </div>
+          <div>
+            <p
+              className="text-[10px] font-bold uppercase tracking-[0.08em]"
+              style={{ color: "var(--maison-brass)" }}
+            >
+              Variables
+            </p>
+            <p
+              className="mt-1 rounded-md px-2.5 py-1 text-[11px] font-mono border inline-block"
+              style={{
+                background: "var(--maison-border-subtle)",
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-text-primary)",
+              }}
+            >
+              {integration.envVars.join(", ")}
+            </p>
+          </div>
         </div>
       </div>
 

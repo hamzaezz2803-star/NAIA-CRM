@@ -94,12 +94,16 @@ describe("NAIA voice client", () => {
     vi.stubGlobal("Audio", FakeAudio);
     stubObjectUrls();
     const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(new Blob(["audio-bytes"], { type: "audio/mpeg" }), {
-          headers: { "Content-Type": "audio/mpeg" },
-          status: 200,
-        }),
-      ),
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === "content-type" ? "audio/mpeg" : null,
+        },
+        blob: () =>
+          Promise.resolve(new Blob(["audio-bytes"], { type: "audio/mpeg" })),
+      } as unknown as Response),
     );
     vi.stubGlobal("fetch", fetchMock);
     const onBlocked = vi.fn();
@@ -129,12 +133,16 @@ describe("NAIA voice client", () => {
     vi.stubGlobal("Audio", FakeAudio);
     stubObjectUrls();
     const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(new Blob(["audio-bytes"], { type: "audio/mpeg" }), {
-          headers: { "Content-Type": "audio/mpeg" },
-          status: 200,
-        }),
-      ),
+      Promise.resolve({
+        ok: true,
+        status: 200,
+        headers: {
+          get: (name: string) =>
+            name.toLowerCase() === "content-type" ? "audio/mpeg" : null,
+        },
+        blob: () =>
+          Promise.resolve(new Blob(["audio-bytes"], { type: "audio/mpeg" })),
+      } as unknown as Response),
     );
     vi.stubGlobal("fetch", fetchMock);
 

@@ -1176,11 +1176,11 @@ function CashPanel({
       </div>
 
       {/* KPIs */}
-      <div className="grid gap-4 sm:grid-cols-2 2xl:grid-cols-4">
+      <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">
         {cashKpis.map((kpi) => (
           <div
             key={kpi.label}
-            className="rounded-xl border p-5 shadow-sm"
+            className="rounded-xl border p-3.5 sm:p-4 shadow-xs"
             style={{
               background: "var(--maison-card)",
               borderColor: "var(--maison-border)",
@@ -1188,7 +1188,7 @@ function CashPanel({
           >
             <p
               className="text-[10px] font-bold uppercase tracking-wider flex items-center gap-2"
-              style={{ color: "var(--maison-text-secondary)" }}
+              style={{ color: "var(--maison-brass)" }}
             >
               <span
                 className="h-1.5 w-1.5 rounded-full"
@@ -1197,14 +1197,14 @@ function CashPanel({
               {kpi.label}
             </p>
             <h3
-              className="mt-2 text-2xl font-bold"
+              className="mt-1 text-xl font-bold tracking-tight"
               style={{ color: "var(--maison-text-primary)" }}
             >
               {kpi.value}
             </h3>
             {kpi.sub && (
               <p
-                className="mt-1 text-xs"
+                className="mt-1 text-[11px] font-medium"
                 style={{ color: "var(--maison-text-secondary)" }}
               >
                 {kpi.sub}
@@ -1713,38 +1713,59 @@ function CashPanel({
         </Panel>
 
         <Panel>
-          <div className="flex items-center justify-between gap-3">
+          <div
+            className="flex items-center justify-between gap-3 pb-3 border-b"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
             <h2
-              className="text-lg font-semibold"
-              style={{ color: "var(--maison-text-primary)" }}
+              className="text-base font-semibold tracking-tight"
+              style={{
+                fontFamily: "var(--font-playfair), Georgia, serif",
+                color: "var(--maison-text-primary)",
+              }}
             >
               Clients à relancer
             </h2>
-            <span className="rounded-full border border-amber-200 bg-amber-50 px-3 py-1 text-xs font-semibold text-amber-800">
+            <span
+              className="rounded-full border px-2.5 py-0.5 text-xs font-bold shadow-2xs"
+              style={{
+                background: "rgba(176,141,79,0.12)",
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-brass)",
+              }}
+            >
               {clientRelances.length}
             </span>
           </div>
-          <div className="mt-4 grid gap-3">
+          <div
+            className="divide-y"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
             {clientRelances.map((relance) => (
-              <article
-                className="rounded-md border p-3"
+              <div
+                className="py-3 transition-colors hover:bg-[rgba(176,141,79,0.03)] px-1 rounded-lg"
                 key={relance.client}
-                style={{ borderColor: "var(--maison-border)" }}
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p
-                      className="font-semibold"
-                      style={{ color: "var(--maison-text-primary)" }}
+                      className="font-semibold text-sm tracking-tight"
+                      style={{
+                        fontFamily: "var(--font-playfair), Georgia, serif",
+                        color: "var(--maison-text-primary)",
+                      }}
                     >
                       {relance.client}
                     </p>
-                    <p className="mt-1 text-xs font-semibold text-amber-700">
+                    <p
+                      className="mt-0.5 text-xs font-bold"
+                      style={{ color: "#b91c1c" }}
+                    >
                       {formatMad(relance.amount)} · {relance.dueDate}
                     </p>
                   </div>
                   <button
-                    className="rounded-md border px-2 py-1 text-xs font-semibold transition hover:opacity-75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600"
+                    className="rounded-lg border px-2.5 py-1 text-xs font-semibold transition hover:opacity-80 shadow-2xs"
                     onClick={() =>
                       setDelayedClients((current) => ({
                         ...current,
@@ -1752,6 +1773,7 @@ function CashPanel({
                       }))
                     }
                     style={{
+                      background: "var(--maison-page)",
                       borderColor: "var(--maison-border)",
                       color: "var(--maison-text-secondary)",
                     }}
@@ -1761,7 +1783,7 @@ function CashPanel({
                   </button>
                 </div>
                 <p
-                  className="mt-2 text-sm leading-6"
+                  className="mt-1.5 text-xs leading-relaxed"
                   style={{ color: "var(--maison-text-secondary)" }}
                 >
                   {relance.reason}
@@ -1775,7 +1797,7 @@ function CashPanel({
                 >
                   Préparer relance
                 </MiniButton>
-              </article>
+              </div>
             ))}
           </div>
         </Panel>
@@ -1798,58 +1820,63 @@ function CashGroup({
   const signedValue = (value: number) => (tone === "cost" ? -value : value);
 
   return (
-    <details
-      className="rounded-md border open:bg-stone-50/40"
-      open
-      style={{ borderColor: "var(--maison-border)" }}
-    >
+    <details className="group" open>
       <summary
-        className="grid cursor-pointer list-none items-center gap-2 px-3 py-2 text-sm font-semibold"
+        className="grid cursor-pointer list-none items-center gap-2 rounded-lg px-2 py-2 text-xs font-bold"
         style={{
+          background: "var(--maison-border-subtle)",
           color: "var(--maison-text-primary)",
           gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
         }}
       >
-        <span>{label}</span>
-        {monthlyCash.map((value, index) => (
-          <span
-            className={
-              tone === "cost"
-                ? "text-right text-rose-700"
-                : "text-right text-emerald-700"
-            }
-            key={`${label}-${index}`}
+        <div>{label}</div>
+        {monthlyCash.map((val, idx) => (
+          <div
+            className={`text-right font-mono text-xs ${
+              tone === "revenue" ? "text-emerald-700" : "text-rose-700"
+            }`}
+            key={`${label}-${idx}`}
           >
-            {formatShortMad(signedValue(value))}
-          </span>
+            {val !== 0 ? formatShortMad(signedValue(val)) : "-"}
+          </div>
         ))}
       </summary>
       <div
-        className="border-t px-3 py-2"
+        className="divide-y divide-[var(--maison-border-subtle)] border-t"
         style={{ borderColor: "var(--maison-border)" }}
       >
         {detailRows.map((row) => (
           <div
-            className="grid items-center gap-2 py-1 text-xs"
+            className="grid items-center gap-2 py-1.5 px-2 text-xs transition-colors hover:bg-[rgba(176,141,79,0.02)]"
             key={row.label}
             style={{
-              color: "var(--maison-text-secondary)",
               gridTemplateColumns: "190px repeat(12, minmax(70px, 1fr))",
             }}
           >
-            <span className="min-w-0 truncate">
-              <span
-                className="font-semibold"
+            <div className="min-w-0 pr-2">
+              <p
+                className="font-medium truncate"
                 style={{ color: "var(--maison-text-primary)" }}
               >
                 {row.label}
-              </span>
-              {row.note ? <span className="ml-2">{row.note}</span> : null}
-            </span>
-            {row.monthlyCash.map((value, index) => (
-              <span className="text-right" key={`${row.label}-${index}`}>
-                {value ? formatShortMad(signedValue(value)) : "-"}
-              </span>
+              </p>
+              {row.note ? (
+                <p
+                  className="truncate text-[10px]"
+                  style={{ color: "var(--maison-text-secondary)" }}
+                >
+                  {row.note}
+                </p>
+              ) : null}
+            </div>
+            {row.monthlyCash.map((val, idx) => (
+              <div
+                className="text-right font-mono text-[11px]"
+                style={{ color: "var(--maison-text-secondary)" }}
+                key={`${row.label}-${idx}`}
+              >
+                {val !== 0 ? formatShortMad(signedValue(val)) : "-"}
+              </div>
             ))}
           </div>
         ))}
@@ -2354,83 +2381,139 @@ function ProjectsPanel({
 function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
   return (
     <div className="space-y-3">
-      <div className="grid gap-4 lg:grid-cols-3">
+      <div className="grid gap-3 lg:grid-cols-3">
         <KpiCard
-          detail="Aout-Septembre"
+          detail="Août – Septembre"
           icon={Users}
-          label="Capacite manquante"
+          label="Capacité manquante"
           value="3.5 ETP"
         />
         <KpiCard
           detail="Next.js + AI Ops"
           icon={FileText}
-          label="Tests prets"
+          label="Tests prêts"
           value="2 tests"
         />
         <KpiCard
           detail="Semaine prochaine"
           icon={Send}
-          label="Entretiens"
-          value="6 creneaux"
+          label="Entretiens prévus"
+          value="6 créneaux"
         />
       </div>
       <Panel>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div
+          className="flex flex-col gap-2 pb-3 border-b md:flex-row md:items-center md:justify-between"
+          style={{ borderColor: "var(--maison-border)" }}
+        >
           <div>
-            <h2 className="text-xl font-semibold text-stone-950">
+            <p
+              className="text-[10px] font-bold uppercase tracking-[0.08em]"
+              style={{ color: "var(--maison-brass)" }}
+            >
+              Recrutement & Staffing
+            </p>
+            <h2
+              className="mt-0.5 text-lg font-semibold tracking-tight"
+              style={{
+                fontFamily: "var(--font-playfair), Georgia, serif",
+                color: "var(--maison-text-primary)",
+              }}
+            >
               Plan de recrutement
             </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              Besoins calcules depuis les projets signes et les risques
-              delivery.
+            <p
+              className="text-xs"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              Besoins stratégiques calculés depuis les projets signés et les
+              risques de delivery.
             </p>
           </div>
           <ActionButton
             icon={Send}
-            label="Preparer RH"
+            label="Préparer RH"
             onClick={() =>
               onGenerate(
-                "Prepare l'annonce, le test technique et le plan d'entretiens pour validation.",
+                "Prépare l'annonce, le test technique et le plan d'entretiens pour validation.",
               )
             }
             variant="primary"
           />
         </div>
-        <div className="mt-5 grid gap-3">
+
+        <div
+          className="divide-y"
+          style={{ borderColor: "var(--maison-border)" }}
+        >
           {hiringNeeds.map((need) => (
-            <article
-              className="rounded-md border border-stone-200 p-4 dark:border-stone-800"
+            <div
+              className="py-2.5 px-2 transition-colors hover:bg-[rgba(176,141,79,0.03)] rounded-lg"
               key={need.role}
             >
-              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-                <div>
-                  <p className="text-sm font-semibold text-rose-700">
-                    {need.when} · {need.load}
-                  </p>
-                  <h3 className="mt-1 text-lg font-semibold text-stone-950">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div className="space-y-0.5">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-block h-1.5 w-1.5 rounded-full bg-rose-500" />
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700">
+                      {need.when} · {need.load}
+                    </span>
+                  </div>
+                  <h3
+                    className="text-sm font-semibold tracking-tight"
+                    style={{ color: "var(--maison-text-primary)" }}
+                  >
                     {need.role}
                   </h3>
-                  <p className="mt-2 text-sm leading-6 text-stone-700">
+                  <p
+                    className="text-xs max-w-2xl"
+                    style={{ color: "var(--maison-text-secondary)" }}
+                  >
                     {need.reason}
                   </p>
                 </div>
-                <span className="w-fit rounded-full border border-stone-200 bg-stone-50 px-3 py-1 text-xs font-semibold text-stone-700">
-                  {need.status}
+                <span
+                  className="w-fit self-start md:self-center rounded-full border px-2.5 py-0.5 text-[10px] font-semibold tracking-wide shadow-2xs"
+                  style={{
+                    background: "rgba(176, 141, 79, 0.08)",
+                    borderColor: "var(--maison-border)",
+                    color: "var(--maison-text-primary)",
+                  }}
+                >
+                  ● {need.status}
                 </span>
               </div>
-            </article>
+            </div>
           ))}
         </div>
       </Panel>
 
       <Panel>
-        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div
+          className="flex flex-col gap-2 pb-3 border-b md:flex-row md:items-center md:justify-between"
+          style={{ borderColor: "var(--maison-border)" }}
+        >
           <div>
-            <h2 className="text-xl font-semibold text-stone-950">
+            <p
+              className="text-[10px] font-bold uppercase tracking-[0.08em]"
+              style={{ color: "var(--maison-brass)" }}
+            >
+              Planning équipes
+            </p>
+            <h2
+              className="mt-0.5 text-lg font-semibold tracking-tight"
+              style={{
+                fontFamily: "var(--font-playfair), Georgia, serif",
+                color: "var(--maison-text-primary)",
+              }}
+            >
               Staffing projets
             </h2>
-            <p className="mt-1 text-sm leading-6 text-stone-600">
-              Charge par projet, personnes staffees et alertes liees au plan de
+            <p
+              className="text-xs"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              Charge par projet, personnes staffées et alertes liées au plan de
               recrutement.
             </p>
           </div>
@@ -2445,11 +2528,13 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
             variant="secondary"
           />
         </div>
-        <div className="mt-5 overflow-x-auto">
+        <div className="mt-3 overflow-x-auto">
           <div className="min-w-[1180px]">
             <div
-              className="grid gap-2 border-b border-stone-200 pb-2 text-xs font-semibold uppercase text-stone-500"
+              className="grid gap-2 border-b pb-2 text-[10px] font-bold uppercase tracking-wider"
               style={{
+                borderColor: "var(--maison-border)",
+                color: "var(--maison-brass)",
                 gridTemplateColumns: `240px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
               }}
             >
@@ -2460,20 +2545,26 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
                 </div>
               ))}
             </div>
-            <div className="mt-3 grid gap-2">
+            <div className="mt-2 grid gap-1.5">
               {staffingPlan.map((staffing) => (
                 <div
-                  className="grid items-center gap-2"
+                  className="grid items-center gap-2 py-0.5"
                   key={`${staffing.project}-${staffing.person}`}
                   style={{
                     gridTemplateColumns: `240px repeat(${projectTimelineMonths.length}, minmax(70px, 1fr))`,
                   }}
                 >
                   <div className="min-w-0">
-                    <p className="truncate font-semibold text-stone-950">
+                    <p
+                      className="truncate text-xs font-semibold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
                       {staffing.project}
                     </p>
-                    <p className="truncate text-sm text-stone-500">
+                    <p
+                      className="truncate text-[10px]"
+                      style={{ color: "var(--maison-text-secondary)" }}
+                    >
                       {staffing.person} · {staffing.role}
                     </p>
                   </div>
@@ -2485,10 +2576,10 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
                     }}
                   >
                     <div
-                      className={`flex h-9 items-center justify-between rounded-md border px-3 text-xs font-semibold ${
+                      className={`flex h-7 items-center justify-between rounded-md border px-2.5 text-xs font-semibold shadow-2xs ${
                         staffing.needsRecruitment
-                          ? "border-rose-200 bg-rose-50 text-rose-800"
-                          : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                          ? "border-rose-300 bg-rose-50/80 text-rose-900"
+                          : "border-emerald-300 bg-emerald-50/80 text-emerald-900"
                       }`}
                       style={{
                         gridColumn: `${staffing.start + 1} / span ${staffing.duration}`,
@@ -2497,10 +2588,10 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
                       <span className="truncate">{staffing.person}</span>
                       {staffing.needsRecruitment ? (
                         <span
-                          className="ml-2 inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[11px] font-bold text-white"
+                          className="ml-2 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[9px] font-bold text-white shadow-2xs"
                           title={staffing.linkedNeed}
                         >
-                          X
+                          !
                         </span>
                       ) : null}
                     </div>
@@ -2510,16 +2601,18 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
             </div>
           </div>
         </div>
-        <div className="mt-4 grid gap-2 md:grid-cols-3">
+        <div className="mt-3 grid gap-2 md:grid-cols-3">
           {staffingPlan
             .filter((staffing) => staffing.needsRecruitment)
             .map((staffing) => (
               <div
-                className="rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-900"
+                className="rounded-lg border border-rose-200/80 bg-rose-50/50 p-2.5 text-xs text-rose-950 shadow-2xs"
                 key={staffing.linkedNeed}
               >
-                <p className="font-semibold">X recrutement</p>
-                <p className="mt-1 leading-6">
+                <p className="font-bold uppercase tracking-wider text-[9px] text-rose-700">
+                  Recrutement requis
+                </p>
+                <p className="mt-0.5 font-semibold leading-tight text-xs">
                   {staffing.project}: {staffing.linkedNeed}
                 </p>
               </div>
@@ -2533,7 +2626,7 @@ function HrPanel({ onGenerate }: { onGenerate: (prompt: string) => void }) {
 function Panel({ children }: { children: ReactNode }) {
   return (
     <section
-      className="rounded-lg border p-5 shadow-sm"
+      className="rounded-xl border p-4 shadow-xs dark:border-stone-800 dark:bg-stone-950 transition-all"
       style={{
         background: "var(--maison-card)",
         borderColor: "var(--maison-border)",
@@ -2601,16 +2694,37 @@ function KpiCard({
 }) {
   return (
     <Panel>
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex items-start justify-between gap-2">
         <div>
-          <p className="text-sm font-semibold text-stone-500">{label}</p>
-          <p className="mt-2 text-2xl font-semibold text-stone-950">{value}</p>
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
+            {label}
+          </p>
+          <p
+            className="mt-1 text-xl font-bold tracking-tight"
+            style={{ color: "var(--maison-text-primary)" }}
+          >
+            {value}
+          </p>
         </div>
-        <span className="flex h-10 w-10 items-center justify-center rounded-md border border-teal-200 bg-teal-50 text-teal-800">
-          <Icon className="h-5 w-5" aria-hidden="true" />
+        <span
+          className="flex h-7.5 w-7.5 items-center justify-center rounded-lg shadow-2xs"
+          style={{
+            background: "rgba(176, 141, 79, 0.12)",
+            color: "var(--maison-brass)",
+          }}
+        >
+          <Icon className="h-4 w-4" aria-hidden="true" />
         </span>
       </div>
-      <p className="mt-3 text-sm text-stone-600">{detail}</p>
+      <p
+        className="mt-2 text-[11px] font-medium"
+        style={{ color: "var(--maison-text-secondary)" }}
+      >
+        {detail}
+      </p>
     </Panel>
   );
 }
@@ -2632,17 +2746,23 @@ function ActionButton({
 }) {
   return (
     <button
-      className={
+      className="inline-flex min-h-9 items-center justify-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold uppercase tracking-wider shadow-sm transition hover:opacity-90 active:scale-98 disabled:cursor-not-allowed disabled:opacity-60"
+      style={
         variant === "primary"
-          ? "inline-flex min-h-11 items-center justify-center gap-2 rounded-md bg-teal-700 px-4 py-2 text-sm font-semibold text-white transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:opacity-60"
-          : "inline-flex min-h-11 items-center justify-center gap-2 rounded-md border border-stone-300 bg-white px-4 py-2 text-sm font-semibold text-stone-800 transition hover:bg-stone-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:opacity-60"
+          ? { background: "var(--maison-sidebar)", color: "#FFFFFF" }
+          : {
+              background: "var(--maison-page)",
+              borderColor: "var(--maison-border)",
+              borderWidth: "1px",
+              color: "var(--maison-text-primary)",
+            }
       }
       disabled={disabled}
       onClick={onClick}
       type="button"
     >
       <Icon
-        className={`h-4 w-4 ${loading || label === "Generation" ? "animate-spin" : ""}`}
+        className={`h-3.5 w-3.5 ${loading || label === "Generation" ? "animate-spin" : ""}`}
         aria-hidden="true"
       />
       {label}

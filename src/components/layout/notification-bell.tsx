@@ -149,13 +149,32 @@ export function NotificationBell() {
       </Button>
 
       {isOpen && (
-        <div className="absolute right-0 mt-2 w-80 overflow-hidden rounded-md border border-stone-200 bg-white text-stone-950 shadow-md dark:border-stone-800 dark:bg-stone-950 dark:text-stone-50 z-50">
-          <div className="flex items-center justify-between border-b border-stone-200 px-4 py-3 dark:border-stone-800">
-            <h4 className="text-sm font-semibold text-stone-900 dark:text-stone-50">
+        <div
+          className="absolute right-0 mt-2 w-80 overflow-hidden rounded-xl border shadow-lg z-50 dark:border-stone-800 dark:bg-stone-950"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+            color: "var(--maison-text-primary)",
+          }}
+        >
+          <div
+            className="flex items-center justify-between border-b px-4 py-3"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
+            <h4
+              className="text-sm font-semibold"
+              style={{ color: "var(--maison-text-primary)" }}
+            >
               Notifications
             </h4>
             {unreadCount > 0 && (
-              <span className="rounded-full bg-stone-100 px-2 py-0.5 text-xs font-medium text-stone-600 dark:bg-stone-800 dark:text-stone-300">
+              <span
+                className="rounded-full px-2 py-0.5 text-xs font-semibold"
+                style={{
+                  background: "rgba(176,141,79,0.15)",
+                  color: "var(--maison-brass-text)",
+                }}
+              >
                 {unreadCount} nouvelle{unreadCount > 1 ? "s" : ""}
               </span>
             )}
@@ -163,11 +182,17 @@ export function NotificationBell() {
 
           <div className="flex max-h-[400px] flex-col overflow-y-auto p-1">
             {isLoading && notifications.length === 0 ? (
-              <div className="p-4 text-center text-sm text-stone-500">
+              <div
+                className="p-4 text-center text-sm"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
                 Chargement...
               </div>
             ) : notifications.length === 0 ? (
-              <div className="p-4 text-center text-sm text-stone-500">
+              <div
+                className="p-4 text-center text-sm"
+                style={{ color: "var(--maison-text-secondary)" }}
+              >
                 Aucune notification
               </div>
             ) : (
@@ -175,25 +200,37 @@ export function NotificationBell() {
                 const NotificationBody = (
                   <div
                     key={notification.id}
-                    className={`relative flex gap-3 rounded-lg p-3 text-left transition hover:bg-stone-50 dark:hover:bg-stone-800/50 ${
-                      !notification.is_read
-                        ? "bg-stone-50 dark:bg-stone-800/20"
-                        : ""
-                    }`}
+                    className="relative flex gap-3 rounded-lg p-3 text-left transition hover:bg-[var(--maison-border-subtle)]/50 dark:hover:bg-stone-800/50"
+                    style={{
+                      background: !notification.is_read
+                        ? "rgba(176,141,79,0.06)"
+                        : "transparent",
+                    }}
                   >
                     <div className="mt-0.5 flex-none">
                       {getIconForType(notification.type)}
                     </div>
                     <div className="flex-1 space-y-1">
                       <p
-                        className={`text-sm ${!notification.is_read ? "font-semibold text-stone-900 dark:text-stone-50" : "font-medium text-stone-700 dark:text-stone-300"}`}
+                        className={`text-sm ${
+                          !notification.is_read
+                            ? "font-semibold"
+                            : "font-medium"
+                        }`}
+                        style={{ color: "var(--maison-text-primary)" }}
                       >
                         {notification.title}
                       </p>
-                      <p className="text-xs text-stone-500 dark:text-stone-400">
+                      <p
+                        className="text-xs"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
                         {notification.description}
                       </p>
-                      <p className="text-[10px] text-stone-400 dark:text-stone-500">
+                      <p
+                        className="text-[10px]"
+                        style={{ color: "var(--maison-text-muted)" }}
+                      >
                         {formatDistanceToNow(
                           new Date(notification.created_at),
                           {
@@ -238,13 +275,17 @@ export function NotificationBell() {
           </div>
 
           {notifications.length > 0 && (
-            <div className="border-t border-stone-200 p-2 text-center dark:border-stone-800">
+            <div
+              className="border-t p-2 text-center"
+              style={{ borderColor: "var(--maison-border)" }}
+            >
               <Link
                 href="/dashboard/notifications"
                 onClick={() => setIsOpen(false)}
-                className="text-xs font-medium text-teal-600 hover:text-teal-700 dark:text-teal-500 dark:hover:text-teal-400"
+                className="text-xs font-semibold hover:underline"
+                style={{ color: "var(--maison-brass)" }}
               >
-                See all notifications
+                Voir toutes les notifications →
               </Link>
             </div>
           )}

@@ -12,16 +12,32 @@ export function PageHeader({
   actions?: ReactNode;
 }) {
   return (
-    <header className="flex flex-col gap-4 border-b border-stone-200 pb-6 md:flex-row md:items-end md:justify-between">
+    <header
+      className="flex flex-col gap-4 border-b pb-6 md:flex-row md:items-end md:justify-between"
+      style={{ borderColor: "var(--maison-border)" }}
+    >
       <div className="max-w-3xl">
         {eyebrow ? (
-          <p className="text-xs font-semibold uppercase text-teal-700">
+          <p
+            className="text-[10px] font-bold uppercase tracking-[0.08em]"
+            style={{ color: "var(--maison-brass)" }}
+          >
             {eyebrow}
           </p>
         ) : null}
-        <h1 className="mt-2 text-3xl font-semibold text-stone-950">{title}</h1>
+        <h1
+          className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl"
+          style={{ color: "var(--maison-text-primary)" }}
+        >
+          {title}
+        </h1>
         {description ? (
-          <p className="mt-3 text-sm leading-6 text-stone-600">{description}</p>
+          <p
+            className="mt-2 text-xs md:text-sm leading-relaxed"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            {description}
+          </p>
         ) : null}
       </div>
       {actions ? (
