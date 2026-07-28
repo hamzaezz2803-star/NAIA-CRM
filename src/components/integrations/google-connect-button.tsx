@@ -60,7 +60,8 @@ export function GoogleConnectButton({
   return (
     <div className={cn("flex flex-col items-start gap-2", className)}>
       <button
-        className="inline-flex min-h-11 items-center gap-2 rounded-md bg-stone-950 px-4 text-sm font-semibold text-white transition hover:bg-stone-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-500/40 disabled:cursor-not-allowed disabled:opacity-60 dark:bg-white dark:text-stone-950 dark:hover:bg-stone-200"
+        className="inline-flex min-h-9 items-center gap-2 rounded-xl px-4 text-xs font-semibold uppercase tracking-wider text-white shadow-2xs transition hover:opacity-90 active:scale-98 disabled:cursor-not-allowed disabled:opacity-60"
+        style={{ background: "var(--maison-sidebar)" }}
         disabled={isConnecting}
         onClick={connect}
         type="button"

@@ -2466,11 +2466,23 @@ export default function LeadsPage() {
               )}
 
               {calendarMode === "day" && (
-                <div className="p-6 bg-white">
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b border-stone-100 pb-4 mb-6">
+                <div
+                  className="p-5 sm:p-6 transition-all"
+                  style={{ background: "var(--maison-card)" }}
+                >
+                  <div
+                    className="flex flex-col md:flex-row md:items-center justify-between gap-4 border-b pb-4 mb-6"
+                    style={{ borderColor: "var(--maison-border)" }}
+                  >
                     <div>
-                      <div className="flex items-center gap-2">
-                        <h4 className="text-base font-extrabold text-stone-900 capitalize">
+                      <div className="flex items-center gap-2.5">
+                        <h4
+                          className="text-lg font-bold capitalize tracking-tight"
+                          style={{
+                            fontFamily: "var(--font-playfair), Georgia, serif",
+                            color: "var(--maison-text-primary)",
+                          }}
+                        >
                           {calendarDate.toLocaleDateString("fr-FR", {
                             weekday: "long",
                             day: "numeric",
@@ -2479,19 +2491,33 @@ export default function LeadsPage() {
                           })}
                         </h4>
                         {isCurrentDay && (
-                          <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-2 py-0.5 text-[10px] font-semibold text-teal-800 border border-teal-200">
-                            Aujourd&apos;hui
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-bold shadow-2xs"
+                            style={{
+                              background: "rgba(176,141,79,0.12)",
+                              borderColor: "var(--maison-border)",
+                              color: "var(--maison-brass)",
+                            }}
+                          >
+                            ● Aujourd&apos;hui
                           </span>
                         )}
                       </div>
-                      <p className="text-xs text-stone-500 mt-1">
+                      <p
+                        className="text-xs mt-1"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
                         {dayLeads.length} lead{dayLeads.length !== 1 ? "s" : ""}{" "}
                         planifié{dayLeads.length !== 1 ? "s" : ""} pour ce jour
                       </p>
                     </div>
                     <Button
                       onClick={() => handleCellClick(dateKey)}
-                      className="text-xs gap-1.5 self-start md:self-auto"
+                      className="text-xs font-semibold uppercase tracking-wider gap-1.5 self-start md:self-auto rounded-xl shadow-2xs"
+                      style={{
+                        background: "var(--maison-sidebar)",
+                        color: "#FFFFFF",
+                      }}
                     >
                       <Plus className="h-4 w-4" />
                       Planifier un lead
@@ -2499,26 +2525,55 @@ export default function LeadsPage() {
                   </div>
 
                   {dayLeads.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-16 border border-dashed border-stone-200 rounded-xl bg-stone-50/20">
-                      <div className="rounded-full bg-stone-100 p-4 text-stone-400 mb-3">
-                        <CalendarDays className="h-8 w-8 text-stone-400" />
+                    <div
+                      className="flex flex-col items-center justify-center py-12 sm:py-16 border border-dashed rounded-xl transition-all"
+                      style={{
+                        background: "rgba(176,141,79,0.03)",
+                        borderColor: "var(--maison-border)",
+                      }}
+                    >
+                      <div
+                        className="rounded-xl p-3.5 mb-3 shadow-2xs flex items-center justify-center"
+                        style={{
+                          background: "rgba(176,141,79,0.12)",
+                          color: "var(--maison-brass)",
+                        }}
+                      >
+                        <CalendarDays className="h-7 w-7" aria-hidden="true" />
                       </div>
-                      <h5 className="text-sm font-semibold text-stone-700">
+                      <h5
+                        className="text-base font-semibold tracking-tight"
+                        style={{
+                          fontFamily: "var(--font-playfair), Georgia, serif",
+                          color: "var(--maison-text-primary)",
+                        }}
+                      >
                         Aucun lead planifié
                       </h5>
-                      <p className="text-xs text-stone-400 mt-1 max-w-sm text-center">
+                      <p
+                        className="text-xs mt-1.5 max-w-sm text-center leading-relaxed"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
                         Il n&apos;y a aucun lead ou rappel d&apos;action
                         enregistré pour cette date. Cliquer ci-dessous pour en
                         ajouter un.
                       </p>
-                      <Button
+                      <button
                         onClick={() => handleCellClick(dateKey)}
-                        variant="outline"
-                        className="mt-4 text-xs gap-1.5 border-stone-200 hover:bg-stone-50 text-stone-700"
+                        className="mt-5 inline-flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold transition hover:opacity-85 shadow-2xs"
+                        style={{
+                          background: "var(--maison-page)",
+                          borderColor: "var(--maison-border)",
+                          color: "var(--maison-text-primary)",
+                        }}
+                        type="button"
                       >
-                        <Plus className="h-3.5 w-3.5 text-teal-600" />
+                        <Plus
+                          className="h-3.5 w-3.5"
+                          style={{ color: "var(--maison-brass)" }}
+                        />
                         Nouveau lead
-                      </Button>
+                      </button>
                     </div>
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
@@ -2537,7 +2592,7 @@ export default function LeadsPage() {
                         return (
                           <div
                             key={lead.id}
-                            className={`rounded-xl border p-4 shadow-xs hover:shadow transition-all flex flex-col justify-between ${
+                            className={`rounded-xl border p-4 shadow-xs hover:shadow-md transition-all flex flex-col justify-between ${
                               colConfig.color
                             }`}
                           >
@@ -2545,7 +2600,12 @@ export default function LeadsPage() {
                               <div className="flex items-start justify-between gap-3">
                                 <button
                                   onClick={() => openEditModal(lead)}
-                                  className="text-left font-bold text-stone-900 hover:underline hover:text-teal-700 transition leading-snug text-sm"
+                                  className="text-left font-bold tracking-tight hover:underline transition leading-snug text-sm"
+                                  style={{
+                                    fontFamily:
+                                      "var(--font-playfair), Georgia, serif",
+                                    color: "var(--maison-text-primary)",
+                                  }}
                                 >
                                   {lead.topic}
                                 </button>
@@ -2561,13 +2621,23 @@ export default function LeadsPage() {
 
                               <div className="mt-3 space-y-1.5 text-xs">
                                 {companyName && (
-                                  <div className="flex items-center gap-1.5 font-medium text-stone-700">
+                                  <div
+                                    className="flex items-center gap-1.5 font-medium"
+                                    style={{
+                                      color: "var(--maison-text-primary)",
+                                    }}
+                                  >
                                     <Building2 className="h-3.5 w-3.5 text-stone-400" />
                                     {companyName}
                                   </div>
                                 )}
                                 {contactName && (
-                                  <div className="flex items-center gap-1.5 text-stone-500">
+                                  <div
+                                    className="flex items-center gap-1.5"
+                                    style={{
+                                      color: "var(--maison-text-secondary)",
+                                    }}
+                                  >
                                     <User className="h-3.5 w-3.5 text-stone-400" />
                                     {contactName}
                                   </div>
@@ -2575,7 +2645,14 @@ export default function LeadsPage() {
                               </div>
 
                               {lead.notes && (
-                                <div className="mt-3 text-xs bg-stone-50/60 p-2.5 rounded-lg border border-stone-200/50 text-stone-700 line-clamp-3">
+                                <div
+                                  className="mt-3 text-xs p-2.5 rounded-lg border line-clamp-3 leading-relaxed"
+                                  style={{
+                                    background: "var(--maison-page)",
+                                    borderColor: "var(--maison-border)",
+                                    color: "var(--maison-text-secondary)",
+                                  }}
+                                >
                                   {lead.notes
                                     .replace(/Entreprise:[^\n]*\n?/, "")
                                     .replace(/Contact:[^\n]*\n?/, "")

@@ -461,26 +461,30 @@ function ShellSidebar({
     >
       {showBrand ? (
         <div
-          className="flex h-16 items-center justify-between px-5 transition-all"
+          className={cn(
+            "flex h-16 items-center transition-all",
+            isCollapsed ? "justify-center px-2" : "justify-between px-4",
+          )}
           style={{ borderBottom: "1px solid var(--maison-sidebar-border)" }}
         >
           <Brand isCollapsed={isCollapsed} />
           {onToggleCollapse && (
-            <Button
-              variant="ghost"
+            <button
               className={cn(
-                "h-9 w-9 shrink-0 rounded-lg border border-white/10 text-white/60 hover:border-[#c9a84c]/40 hover:bg-[#c9a84c]/10 hover:text-[#c9a84c] transition-all",
-                isCollapsed ? "mx-auto" : "",
+                "inline-flex items-center justify-center rounded-xl border border-[rgba(201,168,76,0.35)] bg-[rgba(201,168,76,0.12)] text-[#e0c07a] shadow-2xs transition-all hover:bg-[rgba(201,168,76,0.22)] hover:border-[#c9a84c] active:scale-95 focus:outline-none focus:ring-2 focus:ring-[#c9a84c]/50",
+                isCollapsed ? "h-10 w-10" : "h-9 w-9",
               )}
               onClick={onToggleCollapse}
               aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              title={isCollapsed ? "Déplier le menu" : "Réduire le menu"}
+              type="button"
             >
               {isCollapsed ? (
-                <PanelLeftOpen className="h-4 w-4" />
+                <PanelLeftOpen className="h-5 w-5" />
               ) : (
-                <PanelLeftClose className="h-4 w-4" />
+                <PanelLeftClose className="h-5 w-5" />
               )}
-            </Button>
+            </button>
           )}
         </div>
       ) : null}

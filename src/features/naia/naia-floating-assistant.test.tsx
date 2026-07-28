@@ -68,4 +68,72 @@ describe("NaiaFloatingAssistant", () => {
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("\\u");
   });
+
+  it("renders readable French labels in a proposed CRM lead", async () => {
+    vi.mocked(fetch).mockImplementation(async (input) => {
+      if (String(input).endsWith("/api/naia/voice/voices")) {
+        return Response.json({
+          configuredVoiceId: "voice-123",
+          recommendedVoiceId: "voice-123",
+          voices: [
+            {
+              category: "custom",
+              name: "NAIA Paris",
+              voiceId: "voice-123",
+            },
+          ],
+        });
+      }
+
+      return Response.json({
+        actions: [
+          {
+            agentId: "crm",
+            approvalRequired: true,
+            approvalToken: "approval-token",
+            description: "Vérifier les informations avant création.",
+            id: "create-lead",
+            kind: "crm.createLead",
+            label: "Créer le lead",
+            payload: {
+              contactPhone: "+212600000000",
+              leadDate: "2026-07-30T10:00:00+01:00",
+              status: "meeting-booked",
+              topic: "Projet Maison",
+            },
+          },
+        ],
+        agent: { id: "crm", name: "Salma" },
+        confidence: 0.96,
+        response: "J'ai préparé la fiche du lead.",
+      });
+    });
+
+    render(<NaiaFloatingAssistant />);
+
+    const trigger = await screen.findByRole("button", {
+      name: "Ouvrir NAIA",
+    });
+    fireEvent.pointerDown(trigger, {
+      clientX: 0,
+      clientY: 0,
+      pointerId: 1,
+    });
+    fireEvent.pointerUp(trigger, { pointerId: 1 });
+
+    const command = await screen.findByPlaceholderText(
+      "Exécute une commande vocale ou texte…",
+    );
+    fireEvent.change(command, {
+      target: { value: "Crée un lead pour Projet Maison" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Lancer" }));
+
+    expect(await screen.findByText("Téléphone")).toBeInTheDocument();
+    expect(screen.getByText("Date planifiée")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Valider et créer le lead" }),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("\\u");
+  });
 });

@@ -6,13 +6,13 @@ export type ButtonVariant = "primary" | "secondary" | "ghost" | "outline";
 
 const variantClasses: Record<ButtonVariant, string> = {
   primary:
-    "border-transparent bg-stone-950 text-white shadow-sm hover:bg-stone-800 dark:bg-stone-50 dark:text-stone-950 dark:hover:bg-stone-200",
+    "border-transparent bg-[var(--maison-sidebar)] text-white shadow-2xs hover:opacity-90 active:scale-98 dark:bg-stone-50 dark:text-stone-950",
   secondary:
-    "border-transparent bg-white text-stone-900 shadow-sm ring-1 ring-stone-200 hover:bg-stone-50 dark:bg-stone-900 dark:text-stone-100 dark:ring-stone-800 dark:hover:bg-stone-800/80",
+    "border-[var(--maison-border)] bg-[var(--maison-card)] text-[var(--maison-text-primary)] shadow-2xs hover:bg-[var(--maison-page)] dark:bg-stone-900 dark:text-stone-100",
   ghost:
-    "border-transparent bg-transparent text-stone-700 hover:bg-stone-100 hover:text-stone-950 dark:text-stone-300 dark:hover:bg-stone-800 dark:hover:text-stone-50",
+    "border-transparent bg-transparent text-[var(--maison-text-secondary)] hover:bg-[rgba(176,141,79,0.06)] hover:text-[var(--maison-text-primary)]",
   outline:
-    "border-stone-300 bg-transparent text-stone-800 hover:bg-stone-100 hover:text-stone-950 dark:border-stone-700 dark:text-stone-200 dark:hover:bg-stone-800 dark:hover:text-stone-50",
+    "border-[var(--maison-border)] bg-transparent text-[var(--maison-text-primary)] hover:bg-[rgba(176,141,79,0.05)]",
 };
 
 export function buttonVariants({
@@ -23,7 +23,7 @@ export function buttonVariants({
   className?: string;
 } = {}) {
   return cn(
-    "inline-flex h-10 items-center justify-center gap-2 rounded-md border px-3 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50",
+    "inline-flex h-9 items-center justify-center gap-2 rounded-xl border px-4 text-xs font-semibold uppercase tracking-wider transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#b08d4f] disabled:pointer-events-none disabled:opacity-50",
     variantClasses[variant],
     className,
   );

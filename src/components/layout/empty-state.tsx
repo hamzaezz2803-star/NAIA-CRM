@@ -12,14 +12,37 @@ export function EmptyState({
   actions?: ReactNode;
 }) {
   return (
-    <section className="rounded-lg border border-dashed border-stone-300 bg-white p-8 text-center shadow-sm">
+    <section
+      className="rounded-xl border border-dashed p-8 text-center shadow-xs transition-all"
+      style={{
+        background: "var(--maison-card)",
+        borderColor: "var(--maison-border)",
+      }}
+    >
       {icon ? (
-        <div className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-md bg-teal-50 text-teal-700">
+        <div
+          className="mx-auto mb-4 flex h-11 w-11 items-center justify-center rounded-lg shadow-2xs"
+          style={{
+            background: "rgba(176,141,79,0.12)",
+            color: "var(--maison-brass)",
+          }}
+        >
           {icon}
         </div>
       ) : null}
-      <h2 className="text-lg font-semibold text-stone-950">{title}</h2>
-      <p className="mx-auto mt-2 max-w-2xl text-sm leading-6 text-stone-600">
+      <h2
+        className="text-lg font-semibold tracking-tight"
+        style={{
+          fontFamily: "var(--font-playfair), Georgia, serif",
+          color: "var(--maison-text-primary)",
+        }}
+      >
+        {title}
+      </h2>
+      <p
+        className="mx-auto mt-2 max-w-2xl text-xs sm:text-sm leading-relaxed"
+        style={{ color: "var(--maison-text-secondary)" }}
+      >
         {description}
       </p>
       {actions ? (
