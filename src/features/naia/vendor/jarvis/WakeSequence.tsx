@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import * as THREE from "three";
+import { MEDIAPIPE_WASM_BASE } from "./mediapipe-config";
 
 // ---------------------------------------------------------------------------
 // Config
@@ -27,8 +28,6 @@ const IGNITE_DURATION = 2.2; // s : la vague court jusqu'au bord de l'écran
 const FACE_SCAN_DURATION = 2.6; // s
 const EASE = "cubic-bezier(0.32, 0.72, 0, 1)"; // courbe signature Apple
 
-const MEDIAPIPE_WASM_BASE =
-  "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
 const FACE_MODEL_URL =
   "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
