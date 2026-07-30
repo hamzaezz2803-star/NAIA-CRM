@@ -16,6 +16,7 @@ import {
   MessageSquare,
   Loader2,
   ExternalLink,
+  CheckSquare,
 } from "lucide-react";
 import {
   fetchLeadsForTodoAction,
@@ -476,44 +477,52 @@ export default function TodoPage() {
   });
   const active = leads.filter((l) => STATUS_TO_COLUMN[l.status] !== "done");
   const doneLeads = leads.filter((l) => STATUS_TO_COLUMN[l.status] === "done");
-
   const selectCls =
-    "flex w-full rounded-lg border py-2 px-3 text-xs outline-none transition rounded-lg";
+    "w-full rounded-lg border py-2 px-3 text-xs outline-none transition";
 
   return (
-    <div className="space-y-6">
-      {/* Header section matches Pipeline page header exactly */}
+    <div className="space-y-4 md:h-[calc(100vh-140px)] flex flex-col md:overflow-hidden">
+      {/* Top Header styled as Maison bar */}
       <div
-        className="flex flex-col gap-2 border-b pb-4 sm:flex-row sm:items-center sm:justify-between"
-        style={{ borderColor: "var(--maison-border)" }}
+        className="flex flex-wrap items-center justify-between gap-3 rounded-xl p-4 shadow-sm shrink-0"
+        style={{
+          background: "var(--maison-card)",
+          border: "1px solid var(--maison-border)",
+        }}
       >
-        <div>
-          <p
-            className="text-[10px] font-bold uppercase tracking-[0.08em]"
-            style={{ color: "var(--maison-brass)" }}
-          >
-            CRM - Tâches
-          </p>
-          <h1
-            className="mt-1 text-2xl font-semibold tracking-tight md:text-3xl font-serif"
+        <div className="flex items-center gap-3">
+          <div
+            className="flex h-9 w-9 items-center justify-center rounded-lg border shadow-2xs"
             style={{
-              fontFamily: "var(--font-playfair), Georgia, serif",
-              color: "var(--maison-text-primary)",
+              background: "rgba(201, 168, 76, 0.12)",
+              borderColor: "var(--maison-border)",
+              color: "var(--maison-brass)",
             }}
           >
-            Todo List
-          </h1>
-          <p
-            className="mt-1 text-xs"
-            style={{ color: "var(--maison-text-secondary)" }}
-          >
-            Vue Kanban des leads - synchronisée automatiquement avec le Pipeline
-            CRM.
-          </p>
+            <CheckSquare className="h-5 w-5" />
+          </div>
+          <div>
+            <h1
+              className="text-lg font-bold tracking-tight"
+              style={{
+                fontFamily: "var(--font-playfair), Georgia, serif",
+                color: "var(--maison-text-primary)",
+              }}
+            >
+              Tâches & Pipeline Lead
+            </h1>
+            <p
+              className="text-xs"
+              style={{ color: "var(--maison-text-secondary)" }}
+            >
+              Suivez et organisez l&apos;avancement de vos affaires en
+              glisser-déposer.
+            </p>
+          </div>
         </div>
         <button
           onClick={() => router.push("/dashboard/leads")}
-          className="inline-flex items-center gap-1.5 self-start rounded-lg px-4 py-2.5 text-xs font-bold shadow-sm transition"
+          className="flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-bold uppercase tracking-wider transition shadow-2xs"
           style={{
             background: "var(--maison-brass)",
             color: "var(--maison-brass-text)",
@@ -531,7 +540,7 @@ export default function TodoPage() {
       </div>
 
       {/* KPI Cards styled as Maison premium cards */}
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-3 gap-3 shrink-0">
         {[
           {
             label: "Leads actifs",
@@ -575,7 +584,7 @@ export default function TodoPage() {
 
       {/* Filters bar styled as Maison card */}
       <div
-        className="rounded-xl p-4 shadow-sm"
+        className="rounded-xl p-4 shadow-sm shrink-0"
         style={{
           background: "var(--maison-card)",
           border: "1px solid var(--maison-border)",
@@ -677,7 +686,7 @@ export default function TodoPage() {
       </div>
 
       {isLoading ? (
-        <div className="flex items-center justify-center py-20">
+        <div className="flex flex-1 items-center justify-center py-20">
           <Loader2
             className="h-5 w-5 animate-spin"
             style={{ color: "var(--maison-brass)" }}
@@ -690,7 +699,7 @@ export default function TodoPage() {
           </span>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-3">
+        <div className="grid gap-4 md:grid-cols-3 flex-1 min-h-0 overflow-y-auto md:overflow-hidden">
           {COLUMNS.map((col) => {
             const colLeads = getColumnLeads(col.key);
             const isOver = dragOverColumn === col.key;
@@ -700,7 +709,7 @@ export default function TodoPage() {
                 onDragOver={(e) => handleDragOver(e, col.key)}
                 onDragLeave={handleDragLeave}
                 onDrop={(e) => handleDrop(e, col.key)}
-                className={`flex flex-col min-h-[500px] rounded-xl border p-4 transition-all duration-150`}
+                className={`flex flex-col h-auto md:h-full rounded-xl border p-4 transition-all duration-150 overflow-hidden`}
                 style={{
                   background: "var(--maison-page)",
                   borderColor: isOver
@@ -709,7 +718,7 @@ export default function TodoPage() {
                   borderStyle: isOver ? "dashed" : "solid",
                 }}
               >
-                <div className="flex items-center gap-2 mb-4 px-1">
+                <div className="flex items-center gap-2 mb-4 px-1 shrink-0">
                   <span className={`h-2 w-2 rounded-full ${col.dot}`} />
                   <h3
                     className="font-bold text-xs"
@@ -728,7 +737,7 @@ export default function TodoPage() {
                     {colLeads.length}
                   </span>
                 </div>
-                <div className="flex-1 space-y-3 overflow-y-auto">
+                <div className="flex-1 space-y-3 overflow-y-auto pr-1">
                   {isOver && draggedLeadId && (
                     <div
                       className="h-16 rounded-xl border border-dashed flex items-center justify-center text-xs font-semibold animate-pulse"

@@ -37,9 +37,19 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const noticeMessage = getLoginNoticeMessage(params?.notice);
 
   return (
-    <main className="min-h-screen bg-stone-50 px-4 py-10 md:px-8">
+    <main
+      className="min-h-screen px-4 py-10 md:px-8 flex items-center justify-center"
+      style={{ background: "var(--maison-page)" }}
+    >
       <div className="mx-auto flex min-h-[calc(100vh-5rem)] w-full max-w-5xl items-center">
-        <section className="w-full rounded-lg border border-stone-200 bg-white p-6 shadow-sm md:p-10">
+        <section
+          className="w-full rounded-2xl border p-6 md:p-10 transition-all"
+          style={{
+            background: "var(--maison-card)",
+            borderColor: "var(--maison-border)",
+            boxShadow: "0 25px 60px rgba(20, 41, 60, 0.16)",
+          }}
+        >
           <Image
             alt="NAIA-os"
             className="mb-8 h-auto w-44 dark:hidden"
@@ -76,7 +86,11 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
             <div className="space-y-4">
               <form
                 action={signInWithGoogleAction}
-                className="rounded-lg border border-stone-200 p-5"
+                className="rounded-xl border p-5 transition"
+                style={{
+                  background: "var(--maison-page)",
+                  borderColor: "var(--maison-border)",
+                }}
               >
                 <input
                   name="redirectedFrom"
@@ -106,15 +120,22 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                     fill="#EA4335"
                   />
                 </svg>
-                <h2 className="mt-4 text-base font-semibold text-stone-950">
+                <h2
+                  className="mt-4 text-base font-bold tracking-tight"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
                   Continue with Google
                 </h2>
-                <p className="mt-2 text-sm leading-6 text-stone-600">
+                <p className="mt-2 text-xs leading-5 text-[#5c6b7a]">
                   One click signs you in with your Qarizmi account and connects
                   your own Calendar and Gmail for the NAIA agents.
                 </p>
                 <button
-                  className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-semibold text-white transition hover:bg-teal-800 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:bg-stone-300"
+                  className="mt-4 inline-flex h-11 w-full items-center justify-center gap-2 rounded-xl text-xs font-bold uppercase tracking-wider text-white transition hover:opacity-90 shadow-2xs disabled:cursor-not-allowed disabled:opacity-50"
+                  style={{
+                    background: "var(--maison-sidebar)",
+                    color: "#ffffff",
+                  }}
                   disabled={!configured}
                   type="submit"
                 >

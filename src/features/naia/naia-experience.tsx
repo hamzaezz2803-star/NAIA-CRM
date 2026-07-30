@@ -22,6 +22,7 @@ import {
   Volume2,
   WandSparkles,
   Square,
+  X,
   type LucideIcon,
 } from "lucide-react";
 
@@ -282,6 +283,7 @@ export function NaiaExperience({
           "Mode local: Groq n'a pas repondu, raisonnement embarque active.",
         );
       }
+      return payload.output;
     } catch {
       const fallbackOutput = getLocalAnswer(nextSection.id);
       setAssistantOutput(fallbackOutput);
@@ -289,6 +291,7 @@ export function NaiaExperience({
         speakText(fallbackOutput);
       }
       setVoiceNotice("Mode local: impossible de joindre l'API IA.");
+      return fallbackOutput;
     } finally {
       setIsGenerating(false);
     }
@@ -688,7 +691,7 @@ export function NaiaExperience({
           {activeSection === "cash-flow" ? (
             <CashPanel
               maxBalance={maxBalance}
-              onGenerate={(prompt) => void generate("cash-flow", prompt)}
+              onGenerate={(prompt) => generate("cash-flow", prompt)}
             />
           ) : null}
           {activeSection === "crm" ? (
@@ -1014,16 +1017,23 @@ function CashPanel({
   onGenerate,
 }: {
   maxBalance: number;
-  onGenerate: (prompt: string) => void;
+  onGenerate: (prompt: string) => Promise<string>;
 }) {
   const [cashHorizon, setCashHorizon] = useState<3 | 6 | 12>(6);
+  const [isCashAnalysisModalOpen, setIsCashAnalysisModalOpen] = useState(false);
+  const [isRelancesModalOpen, setIsRelancesModalOpen] = useState(false);
+  const [isCashAnalysisLoading, setIsCashAnalysisLoading] = useState(false);
+  const [isRelancesLoading, setIsRelancesLoading] = useState(false);
+  const [cashAnalysisResult, setCashAnalysisResult] = useState("");
+  const [relancesResult, setRelancesResult] = useState("");
   const [delayedClients, setDelayedClients] = useState<Record<string, boolean>>(
     {},
   );
   const visibleCashMonths = cashMonths.slice(0, cashHorizon);
   const currentMonth = cashMonths[0];
-  const lowestBalanceMonth = visibleCashMonths.reduce((lowest, month) =>
-    month.balance < lowest.balance ? month : lowest,
+  const lowestBalanceMonth = visibleCashMonths.reduce(
+    (lowest, month) => (month.balance < lowest.balance ? month : lowest),
+    visibleCashMonths[0],
   );
   const latePaymentCount = paymentPlans.filter(
     (plan) => plan.status === "late",
@@ -1069,8 +1079,36 @@ function CashPanel({
     },
   ];
 
+  const generateCashAnalysis = async () => {
+    setIsCashAnalysisModalOpen(true);
+    setIsCashAnalysisLoading(true);
+
+    try {
+      const result = await onGenerate(
+        `Analyse les prévisions de trésorerie des ${cashHorizon} prochains mois, les risques et les actions prioritaires. Appuie-toi uniquement sur les données opérationnelles fournies et cite les montants exacts.`,
+      );
+      setCashAnalysisResult(result);
+    } finally {
+      setIsCashAnalysisLoading(false);
+    }
+  };
+
+  const generateRelances = async () => {
+    setIsRelancesModalOpen(true);
+    setIsRelancesLoading(true);
+
+    try {
+      const result = await onGenerate(
+        "Priorise les relances cash et prépare les brouillons d'emails clients à partir des factures fournies. Cite les montants exacts et ne prétends ni enregistrer ni envoyer quoi que ce soit sans validation humaine.",
+      );
+      setRelancesResult(result);
+    } finally {
+      setIsRelancesLoading(false);
+    }
+  };
+
   return (
-    <div className="min-w-0 space-y-6">
+    <div className="space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-4 2xl:flex-row 2xl:items-end 2xl:justify-between">
         <div>
@@ -1078,42 +1116,43 @@ function CashPanel({
             className="text-[10px] font-bold uppercase tracking-[0.15em]"
             style={{ color: "var(--maison-brass)" }}
           >
-            FINANCE
+            FINANCE & TRÉSORERIE
           </p>
-          <div className="mt-1 flex flex-wrap items-baseline gap-3">
+          <div className="mt-1 flex items-baseline gap-3">
             <h1
               className="text-4xl font-serif tracking-tight"
               style={{ color: "var(--maison-text-primary)" }}
             >
-              Cash
+              Finance OS
             </h1>
             <p
               className="text-sm font-medium"
               style={{ color: "var(--maison-text-secondary)" }}
             >
-              prévision {cashHorizon} mois ·{" "}
-              <span className="font-bold text-rose-700">
-                {latePaymentCount} paiement
-                {latePaymentCount !== 1 ? "s" : ""} en retard
+              Trésorerie nette actuelle :{" "}
+              <span className="font-bold text-emerald-600">
+                {formatShortMad(currentMonth.balance)}
               </span>{" "}
-              · creux {lowestBalanceMonth.month} à{" "}
-              {formatShortMad(lowestBalanceMonth.balance)}
+              · {latePaymentCount} facture{latePaymentCount !== 1 ? "s" : ""} en
+              retard
             </p>
           </div>
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div
-            className="flex rounded-md border p-0.5"
+            className="flex items-center rounded-md border p-1"
             style={{
+              background: "var(--maison-card)",
               borderColor: "var(--maison-border)",
-              background: "var(--maison-page)",
             }}
           >
             {([3, 6, 12] as const).map((range) => (
               <button
                 key={range}
                 aria-pressed={cashHorizon === range}
-                className={`rounded-md px-3 py-1 text-xs font-semibold ${cashHorizon === range ? "shadow-sm" : ""}`}
+                className={`rounded px-3 py-1 text-xs font-semibold transition ${
+                  cashHorizon === range ? "shadow-xs" : ""
+                }`}
                 onClick={() => setCashHorizon(range)}
                 style={{
                   background:
@@ -1132,36 +1171,305 @@ function CashPanel({
             ))}
           </div>
           <button
-            className="flex items-center gap-2 rounded-md border px-4 py-2 text-sm font-semibold transition"
-            onClick={() =>
-              onGenerate(
-                `Analyse les prévisions de trésorerie des ${cashHorizon} prochains mois, les risques et les actions prioritaires.`,
-              )
-            }
+            className="flex items-center gap-2 rounded-xl border px-4 py-2 text-xs font-semibold uppercase tracking-wider transition hover:opacity-85 shadow-2xs"
+            onClick={() => void generateCashAnalysis()}
             style={{
               background: "var(--maison-card)",
               borderColor: "var(--maison-border)",
-              color: "var(--maison-text-secondary)",
+              color: "var(--maison-text-primary)",
             }}
+            type="button"
           >
             Analyser cash
           </button>
           <button
-            className="flex items-center gap-2 rounded-md px-4 py-2 text-sm font-semibold transition text-teal-950 hover:opacity-90 shadow-sm"
-            onClick={() =>
-              onGenerate(
-                "Priorise les relances cash et prépare les brouillons d'emails clients, sans rien envoyer sans validation.",
-              )
-            }
+            className="flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-semibold uppercase tracking-wider transition hover:opacity-90 shadow-2xs text-white"
+            onClick={() => void generateRelances()}
             style={{
-              background: "#5eead4",
+              background: "var(--maison-sidebar)",
             }}
+            type="button"
           >
-            <WandSparkles className="h-4 w-4" />
+            <WandSparkles className="h-4 w-4 text-[#e0c07a]" />
             Préparer relances
           </button>
         </div>
       </div>
+
+      {/* Modal Analyse Cash */}
+      {isCashAnalysisModalOpen && (
+        <div
+          aria-labelledby="cash-analysis-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-md transition-all"
+          role="dialog"
+          style={{ background: "rgba(20, 41, 60, 0.55)" }}
+          onClick={() => setIsCashAnalysisModalOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-2xl rounded-2xl border p-6 shadow-2xl space-y-5 max-h-[85vh] overflow-y-auto"
+            style={{
+              background: "#f6f3ec",
+              borderColor: "#e0d8c8",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b pb-3"
+              style={{ borderColor: "#e0d8c8" }}
+            >
+              <div>
+                <p
+                  className="text-[10px] font-bold uppercase tracking-wider"
+                  style={{ color: "#b08d4f" }}
+                >
+                  FINANCE & CASH FORECAST
+                </p>
+                <h2
+                  id="cash-analysis-title"
+                  className="text-xl font-bold tracking-tight"
+                  style={{
+                    fontFamily: "var(--font-playfair), Georgia, serif",
+                    color: "#14293c",
+                  }}
+                >
+                  Analyse Prévisionnelle de Trésorerie ({cashHorizon} Mois)
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCashAnalysisModalOpen(false)}
+                className="rounded-full border p-1 text-[#14293c] hover:opacity-70"
+                style={{ background: "#fcfbf7", borderColor: "#e0d8c8" }}
+                aria-label="Fermer l'analyse de trésorerie"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3">
+              <div
+                className="rounded-xl border p-3.5"
+                style={{ background: "#fcfbf7", borderColor: "#e0d8c8" }}
+              >
+                <p className="text-[9px] font-bold uppercase tracking-wider text-[#5c6b7a]">
+                  Solde Actuel
+                </p>
+                <p className="mt-1 text-lg font-bold text-emerald-700">
+                  {formatMad(currentMonth.balance)}
+                </p>
+              </div>
+              <div
+                className="rounded-xl border p-3.5"
+                style={{ background: "#fcfbf7", borderColor: "#e0d8c8" }}
+              >
+                <p className="text-[9px] font-bold uppercase tracking-wider text-[#5c6b7a]">
+                  Flux Net Cumulé
+                </p>
+                <p className="mt-1 text-lg font-bold text-[#14293c]">
+                  {visibleNet >= 0 ? "+" : ""}
+                  {formatShortMad(visibleNet)}
+                </p>
+              </div>
+              <div
+                className="rounded-xl border p-3.5"
+                style={{ background: "#fcfbf7", borderColor: "#e0d8c8" }}
+              >
+                <p className="text-[9px] font-bold uppercase tracking-wider text-[#5c6b7a]">
+                  Point Bas Estimé
+                </p>
+                <p className="mt-1 text-lg font-bold text-[#14293c]">
+                  {formatMad(lowestBalanceMonth.balance)} (
+                  {lowestBalanceMonth.month})
+                </p>
+              </div>
+            </div>
+
+            <div className="rounded-xl border border-[#e0d8c8] bg-[#fcfbf7] p-4 text-xs space-y-2 text-[#14293c]">
+              <p className="font-bold uppercase text-[10px] text-[#b08d4f]">
+                Analyse NAIA
+              </p>
+              {isCashAnalysisLoading ? (
+                <p className="flex items-center gap-2 py-2">
+                  <RefreshCw
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden="true"
+                  />
+                  NAIA analyse les prévisions…
+                </p>
+              ) : (
+                <p className="whitespace-pre-line leading-6">
+                  {cashAnalysisResult}
+                </p>
+              )}
+            </div>
+
+            <div
+              className="flex justify-end pt-3 border-t"
+              style={{ borderColor: "#e0d8c8" }}
+            >
+              <div className="flex flex-wrap justify-end gap-3">
+                <button
+                  type="button"
+                  onClick={() => void generateCashAnalysis()}
+                  className="rounded-xl border px-4 py-2.5 text-xs font-semibold uppercase tracking-wider"
+                  disabled={isCashAnalysisLoading}
+                  style={{
+                    background: "#fcfbf7",
+                    borderColor: "#e0d8c8",
+                    color: "#14293c",
+                  }}
+                >
+                  Régénérer
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsCashAnalysisModalOpen(false)}
+                  className="rounded-xl px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white shadow-2xs"
+                  style={{ background: "#14293c" }}
+                >
+                  FERMER LE DIAGNOSTIC
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Préparer Relances */}
+      {isRelancesModalOpen && (
+        <div
+          aria-labelledby="cash-relances-title"
+          aria-modal="true"
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-md transition-all"
+          role="dialog"
+          style={{ background: "rgba(20, 41, 60, 0.55)" }}
+          onClick={() => setIsRelancesModalOpen(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative w-full max-w-2xl rounded-2xl border p-6 shadow-2xl space-y-5 max-h-[85vh] overflow-y-auto"
+            style={{
+              background: "#f6f3ec",
+              borderColor: "#e0d8c8",
+            }}
+          >
+            <div
+              className="flex items-center justify-between border-b pb-3"
+              style={{ borderColor: "#e0d8c8" }}
+            >
+              <div>
+                <p
+                  className="text-[10px] font-bold uppercase tracking-wider"
+                  style={{ color: "#b08d4f" }}
+                >
+                  RECOUVREMENT & FACTURATION
+                </p>
+                <h2
+                  id="cash-relances-title"
+                  className="text-xl font-bold tracking-tight"
+                  style={{
+                    fontFamily: "var(--font-playfair), Georgia, serif",
+                    color: "#14293c",
+                  }}
+                >
+                  Brouillons de Relances Client ({clientRelances.length}{" "}
+                  Factures)
+                </h2>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsRelancesModalOpen(false)}
+                className="rounded-full border p-1 text-[#14293c] hover:opacity-70"
+                style={{ background: "#fcfbf7", borderColor: "#e0d8c8" }}
+                aria-label="Fermer les brouillons de relance"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {clientRelances.map((relance) => (
+                <div
+                  key={relance.client}
+                  className="rounded-xl border p-4 shadow-2xs space-y-2"
+                  style={{ background: "#fcfbf7", borderColor: "#e0d8c8" }}
+                >
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-sm font-bold text-[#14293c]">
+                        {relance.client}
+                      </h4>
+                      <p className="text-xs text-[#5c6b7a]">
+                        Échéance : {relance.dueDate} ·{" "}
+                        <span className="font-bold text-rose-700">
+                          {formatMad(relance.amount)}
+                        </span>
+                      </p>
+                    </div>
+                    <span className="rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-[10px] font-bold text-rose-800">
+                      À RELANCER
+                    </span>
+                  </div>
+                  <p className="text-xs bg-[#f6f3ec] p-3 rounded-lg border border-[#e0d8c8] text-[#14293c] italic">
+                    &quot;{relance.reason}&quot;
+                  </p>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-xl border border-[#e0d8c8] bg-[#fcfbf7] p-4 text-xs space-y-2 text-[#14293c]">
+              <p className="font-bold uppercase text-[10px] text-[#b08d4f]">
+                Réponse NAIA à valider
+              </p>
+              {isRelancesLoading ? (
+                <p className="flex items-center gap-2 py-2">
+                  <RefreshCw
+                    className="h-4 w-4 animate-spin"
+                    aria-hidden="true"
+                  />
+                  NAIA prépare les brouillons à valider…
+                </p>
+              ) : (
+                <p className="whitespace-pre-line leading-6">
+                  {relancesResult}
+                </p>
+              )}
+              <p className="border-t border-[#e0d8c8] pt-2 text-[10px] font-semibold uppercase tracking-wider text-[#5c6b7a]">
+                Aucun email n&apos;est enregistré ni envoyé depuis cette
+                fenêtre.
+              </p>
+            </div>
+
+            <div
+              className="flex justify-end gap-3 pt-3 border-t"
+              style={{ borderColor: "#e0d8c8" }}
+            >
+              <button
+                type="button"
+                onClick={() => void generateRelances()}
+                disabled={isRelancesLoading}
+                className="rounded-xl border px-4 py-2.5 text-xs font-semibold uppercase tracking-wider"
+                style={{
+                  background: "#fcfbf7",
+                  borderColor: "#e0d8c8",
+                  color: "#14293c",
+                }}
+              >
+                RÉGÉNÉRER
+              </button>
+              <button
+                type="button"
+                onClick={() => setIsRelancesModalOpen(false)}
+                className="rounded-xl px-5 py-2.5 text-xs font-bold uppercase tracking-wider text-white shadow-2xs"
+                style={{ background: "#14293c" }}
+              >
+                FERMER
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* KPIs */}
       <div className="grid gap-3 sm:grid-cols-2 2xl:grid-cols-4">

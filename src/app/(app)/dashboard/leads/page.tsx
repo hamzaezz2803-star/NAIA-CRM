@@ -4300,7 +4300,7 @@ export default function LeadsPage() {
 // ────────────────────────────────────────────────────────────
 
 const inputCls =
-  "h-10 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20";
+  "h-10 w-full rounded-xl border border-[#e0d8c8] bg-[#fcfbf7] px-3.5 text-xs font-medium text-[#14293c] outline-none transition-all placeholder:text-[#5c6b7a] focus:border-[#b08d4f] focus:ring-2 focus:ring-[rgba(176,141,79,0.2)] shadow-2xs";
 
 function FormField({
   label,
@@ -4313,7 +4313,11 @@ function FormField({
 }) {
   return (
     <div className="space-y-1.5">
-      <label htmlFor={id} className="text-sm font-medium text-stone-850">
+      <label
+        htmlFor={id}
+        className="text-xs font-semibold uppercase tracking-wider block"
+        style={{ color: "var(--maison-text-primary)" }}
+      >
         {label}
       </label>
       {children}
@@ -4333,20 +4337,43 @@ function Modal({
   return (
     <div
       onClick={onClose}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-stone-950/40 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 backdrop-blur-md transition-all"
+      style={{ background: "rgba(20, 41, 60, 0.55)" }}
     >
       <div
         onClick={(e) => e.stopPropagation()}
-        className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-xl border border-stone-200 bg-white shadow-2xl"
+        className="relative w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-2xl border shadow-2xl transition-all"
+        style={{
+          background: "#f6f3ec",
+          borderColor: "#e0d8c8",
+          boxShadow: "0 25px 60px rgba(20, 41, 60, 0.28)",
+        }}
       >
-        <div className="sticky top-0 z-10 flex items-center justify-between border-b border-stone-200 bg-white px-6 py-4">
-          <h2 className="text-base font-semibold text-stone-950 truncate">
+        <div
+          className="sticky top-0 z-10 flex items-center justify-between border-b px-6 py-4 backdrop-blur-md"
+          style={{
+            background: "#f6f3ec",
+            borderColor: "#e0d8c8",
+          }}
+        >
+          <h2
+            className="text-xl font-bold tracking-tight truncate"
+            style={{
+              fontFamily: "var(--font-playfair), Georgia, serif",
+              color: "#14293c",
+            }}
+          >
             {title}
           </h2>
           <button
             type="button"
             onClick={onClose}
-            className="flex h-8 w-8 items-center justify-center rounded-md text-stone-500 hover:bg-stone-100"
+            className="flex h-8 w-8 items-center justify-center rounded-full border transition hover:opacity-80 shadow-2xs"
+            style={{
+              background: "#fcfbf7",
+              borderColor: "#e0d8c8",
+              color: "#14293c",
+            }}
             aria-label="Fermer"
           >
             <X className="h-4 w-4" />

@@ -492,9 +492,9 @@ export function MeetingsDashboard({
       </div>
 
       {/* Main Dashboard Layout */}
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Left Column: Agenda/Calendar */}
-        <div className="lg:col-span-2 space-y-4">
+      <div className="space-y-6">
+        {/* Full-width Agenda/Calendar */}
+        <div className="space-y-4">
           <div
             className="rounded-lg border p-5 shadow-sm"
             style={{
