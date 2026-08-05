@@ -41,7 +41,7 @@
     "@types/react-dom": "^19",
     "@types/three": "^0.185.1",
     "eslint": "^9",
-    "eslint-config-next": "16.2.11",
+    "eslint-config-next": "16.2.12",
     "jsdom": "^30.0.1",
     "prettier": "^3.9.6",
     "tailwindcss": "^4",
