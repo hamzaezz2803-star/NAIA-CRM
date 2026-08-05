@@ -48,7 +48,7 @@ export function GoogleConnectButton({
     );
 
     if (!popup) {
-      window.location.href = "/api/integrations/google/auth";
+      router.push("/api/integrations/google/auth");
       return;
     }
 

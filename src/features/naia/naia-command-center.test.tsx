@@ -47,6 +47,15 @@ describe("NaiaCommandCenter", () => {
       },
     );
     vi.stubGlobal(
+      "matchMedia",
+      vi.fn().mockReturnValue({
+        addEventListener: vi.fn(),
+        matches: false,
+        media: "(prefers-reduced-motion: reduce)",
+        removeEventListener: vi.fn(),
+      }),
+    );
+    vi.stubGlobal(
       "requestAnimationFrame",
       vi.fn(() => 1),
     );
@@ -108,9 +117,14 @@ describe("NaiaCommandCenter", () => {
   it("keeps the cockpit clean when voice playback falls back to the browser", async () => {
     const { container } = render(<NaiaCommandCenter />);
 
+    await waitFor(() => {
+      expect(fetch).toHaveBeenCalledWith("/api/naia/voice/voices", {
+        cache: "no-store",
+      });
+    });
     expect(
-      await screen.findByRole("option", { name: "NAIA Paris" }),
-    ).toBeInTheDocument();
+      screen.queryByRole("option", { name: "NAIA Paris" }),
+    ).not.toBeInTheDocument();
 
     fireEvent.click(
       screen.getByRole("button", {
@@ -121,12 +135,23 @@ describe("NaiaCommandCenter", () => {
     await waitFor(() => {
       expect(mocks.playElevenLabsVoice).toHaveBeenCalledOnce();
     });
-    expect(mocks.primeVoicePlayback).toHaveBeenCalledOnce();
     expect(container.querySelector("audio")).not.toBeInTheDocument();
     expect(
       screen.getByText(
         "ElevenLabs indisponible. Lecture via la voix du navigateur.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("opens the real agent module from the galaxy", () => {
+    render(<NaiaCommandCenter />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Ouvrir Salma, CRM",
+      }),
+    );
+
+    expect(mocks.push).toHaveBeenCalledWith("/dashboard/leads");
   });
 });

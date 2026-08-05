@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   afterCallbacks: [] as Array<() => unknown>,
@@ -34,10 +34,41 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
 
 import {
   createLeadAction,
+  fetchCompanyDetailAction,
   updateLeadAction,
   updateLeadStatusAction,
   type CrmActionContext,
 } from "./actions";
+
+describe("fetchCompanyDetailAction dummy fallback", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.createServerSupabaseClient.mockResolvedValue(null);
+    vi.stubEnv("CRM_DUMMY_DATA", "enabled");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns the selected demo company with its contacts and leads", async () => {
+    const result = await fetchCompanyDetailAction("demo-company-atlas-process");
+
+    expect(result.company?.name).toBe("Atlas Process Industries");
+    expect(result.contacts.map(({ name }) => name)).toEqual([
+      "Yassine Berrada",
+    ]);
+    expect(result.leads.map(({ topic }) => topic)).toEqual([
+      "Atlas Process Industries - cockpit finance + CRM",
+    ]);
+  });
+
+  it("keeps unknown demo companies inaccessible", async () => {
+    await expect(
+      fetchCompanyDetailAction("demo-company-unknown"),
+    ).resolves.toEqual({ company: null, contacts: [], leads: [] });
+  });
+});
 
 type QueryState = {
   table: string;

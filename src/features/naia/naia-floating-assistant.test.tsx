@@ -2,6 +2,15 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NaiaFloatingAssistant } from "./naia-floating-assistant";
+import { NaiaPageContextProvider } from "./naia-page-context";
+
+function renderAssistant(pathname = "/dashboard/leads") {
+  return render(
+    <NaiaPageContextProvider pathname={pathname}>
+      <NaiaFloatingAssistant />
+    </NaiaPageContextProvider>,
+  );
+}
 
 describe("NaiaFloatingAssistant", () => {
   beforeEach(() => {
@@ -44,7 +53,7 @@ describe("NaiaFloatingAssistant", () => {
   });
 
   it("renders readable French copy instead of escaped Unicode sequences", async () => {
-    render(<NaiaFloatingAssistant />);
+    renderAssistant();
 
     const trigger = await screen.findByRole("button", {
       name: "Ouvrir NAIA",
@@ -109,7 +118,7 @@ describe("NaiaFloatingAssistant", () => {
       });
     });
 
-    render(<NaiaFloatingAssistant />);
+    renderAssistant();
 
     const trigger = await screen.findByRole("button", {
       name: "Ouvrir NAIA",
@@ -135,5 +144,31 @@ describe("NaiaFloatingAssistant", () => {
       screen.getByRole("button", { name: "Valider et créer le lead" }),
     ).toBeInTheDocument();
     expect(document.body.textContent).not.toContain("\\u");
+
+    const orchestrationRequest = vi
+      .mocked(fetch)
+      .mock.calls.find(([input]) => String(input) === "/api/naia/orchestrate");
+    expect(
+      JSON.parse(String(orchestrationRequest?.[1]?.body)).pageContext,
+    ).toMatchObject({
+      dataMode: "live",
+      moduleId: "crm",
+      pathname: "/dashboard/leads",
+      view: "pipeline",
+    });
+  });
+
+  it("opens from the global event and restores focus to the floating trigger", async () => {
+    renderAssistant("/meetings");
+    const trigger = await screen.findByRole("button", { name: "Ouvrir NAIA" });
+
+    window.dispatchEvent(new Event("naia:open-assistant"));
+    expect(
+      await screen.findByRole("dialog", { name: "Assistant NAIA" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Meetings · Agenda")).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(trigger).toHaveFocus());
   });
 });

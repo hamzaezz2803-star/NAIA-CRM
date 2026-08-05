@@ -47,6 +47,7 @@ import React, {
 
 import { Button } from "@/components/ui/button";
 import { NaiaFloatingAssistant } from "@/features/naia/naia-floating-assistant";
+import { NaiaPageContextProvider } from "@/features/naia/naia-page-context";
 import { cn } from "@/lib/cn";
 import type { AppSession } from "@/platform/auth/session";
 import type { PlatformModule, PlatformModuleId } from "@/platform/core/modules";
@@ -414,10 +415,12 @@ export function AppShell({
           )}
           style={{ background: "var(--maison-page)" }}
         >
-          {children}
+          <NaiaPageContextProvider pathname={pathname}>
+            {children}
+            <NaiaFloatingAssistant />
+          </NaiaPageContextProvider>
         </main>
       </div>
-      {isNaiaHomePage ? null : <NaiaFloatingAssistant />}
     </div>
   );
 }

@@ -19,7 +19,9 @@ import {
 } from "lucide-react";
 
 import { crmLeadStatuses, type CrmLeadDraft } from "@/features/crm/contracts";
+import { useNaiaPageContext } from "./naia-page-context";
 import type { NaiaActionDraft, NaiaOrchestrationResult } from "./orchestrator";
+import { formatNaiaPageContextLabel } from "./page-context";
 import {
   createVoiceSilenceDetector,
   playElevenLabsVoice,
@@ -41,7 +43,12 @@ type SignedNaiaAction = NaiaActionDraft & {
   approvalToken: string;
 };
 
+type PendingNaiaAction = SignedNaiaAction & {
+  sourceCommand: string;
+};
+
 type ConversationMessage = {
+  agentName?: string;
   content: string;
   role: "assistant" | "user";
 };
@@ -100,13 +107,13 @@ const T = {
   text: "#3A2E1E", // primary text
   textMid: "#4A3B26", // secondary text
   textSub: "#6E5F49", // sub text
-  textMuted: "#8A7A5F", // muted / placeholder
-  textFaint: "#A2937A", // faint / mono labels
+  textMuted: "#6E5F49", // muted / placeholder
+  textFaint: "#6E5F49", // faint / mono labels
   accent: "#DE5B2B", // terracotta accent
-  brass: "#A87A1E", // brass / amber
+  brass: "#7A5715", // brass / amber
   dark: "#2E2417", // dark button bg
   light: "#F4EFE3", // light button text
-  green: "#5C7A3B", // live status
+  green: "#47602D", // live status
   MONO: "ui-monospace,'SF Mono',Menlo,monospace",
 } as const;
 
@@ -138,7 +145,7 @@ const PANEL_CSS = `
   .naia-fa-input::placeholder{color:${T.textMuted};}
   .naia-fa-btn-parler{
     flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;
-    min-height:38px;border:1px solid ${T.border};background:${T.card};
+    min-height:44px;border:1px solid ${T.border};background:${T.card};
     color:${T.textMid};border-radius:8px;font-size:12.5px;font-weight:600;
     cursor:pointer;transition:background .15s,border-color .15s,color .15s;font-family:inherit;
   }
@@ -146,7 +153,7 @@ const PANEL_CSS = `
   .naia-fa-btn-parler:disabled{opacity:.55;cursor:not-allowed;}
   .naia-fa-btn-send{
     flex:1;display:inline-flex;align-items:center;justify-content:center;gap:7px;
-    min-height:38px;background:${T.dark};color:${T.light};
+    min-height:44px;background:${T.dark};color:${T.light};
     border:none;border-radius:8px;font-size:12.5px;font-weight:600;
     cursor:pointer;transition:background .15s;font-family:inherit;
   }
@@ -162,23 +169,31 @@ const PANEL_CSS = `
   .naia-fa-validate-btn{
     margin-top:10px;display:inline-flex;align-items:center;gap:6px;
     background:${T.dark};color:${T.light};border:none;border-radius:99px;
-    padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;
+    min-height:44px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer;
     font-family:inherit;transition:background .15s;
   }
   .naia-fa-validate-btn:hover{background:${T.accent};}
   .naia-fa-validate-btn:disabled{opacity:.55;cursor:not-allowed;}
   .naia-fa-close-btn{
     display:flex;align-items:center;justify-content:center;
-    width:30px;height:30px;border-radius:6px;border:1px solid ${T.borderLight};
+    width:44px;height:44px;border-radius:6px;border:1px solid ${T.borderLight};
     background:none;color:${T.textSub};cursor:pointer;transition:background .15s,color .15s;
   }
   .naia-fa-close-btn:hover{background:rgba(222,91,43,.08);color:${T.accent};border-color:${T.accent};}
+  .naia-fa-close-btn:focus-visible,.naia-fa-btn-parler:focus-visible,.naia-fa-btn-send:focus-visible,.naia-fa-validate-btn:focus-visible{
+    outline:2px solid ${T.accent};outline-offset:2px;
+  }
+  @media (prefers-reduced-motion: reduce){
+    .naia-fa-panel{animation:none}
+  }
 `;
 
 export function NaiaFloatingAssistant() {
   const [command, setCommand] = useState("");
   const [result, setResult] = useState<ApiResult | null>(null);
+  const [conversation, setConversation] = useState<ConversationMessage[]>([]);
   const conversationRef = useRef<ConversationMessage[]>([]);
+  const [pendingActions, setPendingActions] = useState<PendingNaiaAction[]>([]);
   const [isOpen, setIsOpen] = useState(false);
   const [isRunning, setIsRunning] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -200,14 +215,19 @@ export function NaiaFloatingAssistant() {
   } | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const bubbleRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const commandInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const wasOpenRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognitionLike | null>(null);
   const recordingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
   const silenceDetectorRef = useRef<{ stop: () => void } | null>(null);
   const speechAudioRef = useRef<VoicePlaybackHandle | null>(null);
-  // Ref to scroll result into view after voice command
   const resultRef = useRef<HTMLDivElement | null>(null);
+  const { context: pageContext } = useNaiaPageContext();
+  const contextLabel = formatNaiaPageContextLabel(pageContext);
 
   const canRecordAudio =
     typeof navigator !== "undefined" &&
@@ -275,9 +295,8 @@ export function NaiaFloatingAssistant() {
     };
   }, []);
 
-  // Auto-scroll result into view when it appears
   useEffect(() => {
-    if (result && resultRef.current) {
+    if ((result || conversation.length) && resultRef.current) {
       setTimeout(() => {
         resultRef.current?.scrollIntoView({
           behavior: "smooth",
@@ -285,10 +304,74 @@ export function NaiaFloatingAssistant() {
         });
       }, 100);
     }
-  }, [result]);
+  }, [conversation.length, result]);
+
+  useEffect(() => {
+    const openAssistant = () => setIsOpen(true);
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (!isOpen) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setIsOpen(false);
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), textarea:not([disabled]), input:not([disabled]), select:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable.at(-1) as HTMLElement;
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    window.addEventListener("naia:open-assistant", openAssistant);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("naia:open-assistant", openAssistant);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (isOpen) {
+      wasOpenRef.current = true;
+      const focusTimer = window.setTimeout(
+        () => commandInputRef.current?.focus(),
+        0,
+      );
+      return () => window.clearTimeout(focusTimer);
+    }
+
+    if (wasOpenRef.current) {
+      wasOpenRef.current = false;
+      bubbleRef.current?.focus();
+    }
+  }, [isOpen]);
 
   const panelStyle = useMemo<CSSProperties>(() => {
     if (!position) return {};
+
+    if (viewport.width < 640) {
+      return {
+        bottom: 12,
+        left: 12,
+        maxHeight: viewport.height - 24,
+        right: 12,
+        top: 12,
+        width: "auto",
+      };
+    }
 
     const panelWidth = Math.min(PANEL_WIDTH, viewport.width - 24);
     const panelHeight = Math.min(PANEL_HEIGHT, viewport.height - 32);
@@ -318,6 +401,14 @@ export function NaiaFloatingAssistant() {
     };
   }, [position, viewport.height, viewport.width]);
 
+  const appendConversation = (...messages: ConversationMessage[]) => {
+    setConversation((current) => {
+      const next = [...current, ...messages].slice(-16);
+      conversationRef.current = next;
+      return next;
+    });
+  };
+
   const runCommand = async (
     nextCommand = command,
     options: { speak?: boolean } = { speak: true },
@@ -336,6 +427,7 @@ export function NaiaFloatingAssistant() {
         body: JSON.stringify({
           command: cleanCommand,
           history: conversationRef.current.slice(-8),
+          pageContext,
         }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
@@ -347,11 +439,21 @@ export function NaiaFloatingAssistant() {
       }
 
       setResult(payload);
-      conversationRef.current = [
-        ...conversationRef.current,
+      appendConversation(
         { content: cleanCommand, role: "user" as const },
-        { content: payload.response, role: "assistant" as const },
-      ].slice(-8);
+        {
+          agentName: payload.agent.name,
+          content: payload.response,
+          role: "assistant" as const,
+        },
+      );
+      setPendingActions((current) => {
+        const byId = new Map(current.map((action) => [action.id, action]));
+        payload.actions.forEach((action) => {
+          byId.set(action.id, { ...action, sourceCommand: cleanCommand });
+        });
+        return Array.from(byId.values());
+      });
       if (options.speak) speakText(payload.response);
     } catch {
       setNotice("NAIA n'a pas pu terminer l'orchestration.");
@@ -361,7 +463,7 @@ export function NaiaFloatingAssistant() {
   };
 
   const executeAction = async (
-    action: SignedNaiaAction,
+    action: PendingNaiaAction,
     leadInput?: Partial<CrmLeadDraft>,
   ) => {
     primeVoicePlayback();
@@ -373,7 +475,7 @@ export function NaiaFloatingAssistant() {
         body: JSON.stringify({
           actionId: action.id,
           approvalToken: action.approvalToken,
-          command,
+          command: action.sourceCommand,
           execute: true,
           leadInput,
         }),
@@ -391,6 +493,9 @@ export function NaiaFloatingAssistant() {
       }
 
       const successMessage = payload.message ?? "Action appliqu\u00e9e.";
+      setPendingActions((current) =>
+        current.filter((candidate) => candidate.id !== action.id),
+      );
       setResult((current) =>
         current
           ? {
@@ -402,6 +507,11 @@ export function NaiaFloatingAssistant() {
             }
           : current,
       );
+      appendConversation({
+        agentName: "NAIA",
+        content: successMessage,
+        role: "assistant",
+      });
       setNotice(successMessage);
       speakText(successMessage);
     } catch (error) {
@@ -675,8 +785,30 @@ export function NaiaFloatingAssistant() {
       <style>{PANEL_CSS}</style>
 
       {isOpen ? (
+        <button
+          aria-label="Fermer l'assistant NAIA"
+          onClick={() => setIsOpen(false)}
+          style={{
+            background:
+              viewport.width < 640
+                ? "rgba(46,36,23,.26)"
+                : "rgba(46,36,23,.08)",
+            border: 0,
+            inset: 0,
+            position: "fixed",
+            zIndex: 65,
+          }}
+          type="button"
+        />
+      ) : null}
+
+      {isOpen ? (
         <section
+          aria-label="Assistant NAIA"
+          aria-modal="true"
           className="naia-fa-panel"
+          ref={panelRef}
+          role="dialog"
           style={{
             position: "fixed",
             zIndex: 70,
@@ -692,7 +824,6 @@ export function NaiaFloatingAssistant() {
             WebkitFontSmoothing: "antialiased",
             ...panelStyle,
           }}
-          aria-label="Assistant NAIA"
         >
           {/* ── Header ── */}
           <div
@@ -735,6 +866,47 @@ export function NaiaFloatingAssistant() {
           {/* Thin separator */}
           <div style={{ height: 1, background: T.border, marginBottom: 12 }} />
 
+          <div
+            style={{
+              alignItems: "center",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 6,
+              marginBottom: 12,
+            }}
+          >
+            <span
+              style={{
+                background: T.card,
+                border: `1px solid ${T.border}`,
+                borderRadius: 99,
+                color: T.textSub,
+                fontFamily: T.MONO,
+                fontSize: 9,
+                letterSpacing: ".08em",
+                padding: "4px 8px",
+                textTransform: "uppercase",
+              }}
+            >
+              {contextLabel}
+            </span>
+            {pageContext.dataMode === "simulated" ? (
+              <span
+                style={{
+                  border: `1px solid rgba(168,122,30,.35)`,
+                  borderRadius: 99,
+                  color: T.brass,
+                  fontFamily: T.MONO,
+                  fontSize: 8,
+                  letterSpacing: ".1em",
+                  padding: "3px 7px",
+                }}
+              >
+                DONNÉES SIMULÉES
+              </span>
+            ) : null}
+          </div>
+
           {/* ── Command form ── */}
           <form
             onSubmit={(event) => {
@@ -770,6 +942,7 @@ export function NaiaFloatingAssistant() {
                 }
               }}
               placeholder="Exécute une commande vocale ou texte…"
+              ref={commandInputRef}
               value={command}
             />
             <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
@@ -865,10 +1038,64 @@ export function NaiaFloatingAssistant() {
             </div>
           ) : null}
 
-          {/* ── Result: agent response + action cards ── */}
-          {result ? (
+          {conversation.length ? (
             <div
-              ref={resultRef}
+              aria-label="Conversation NAIA"
+              style={{
+                display: "grid",
+                gap: 8,
+                marginTop: 12,
+                maxHeight: viewport.width < 640 ? 260 : 220,
+                overflowY: "auto",
+                paddingRight: 2,
+              }}
+            >
+              {conversation.map((message, index) => (
+                <div
+                  key={`${message.role}-${index}`}
+                  style={{
+                    alignSelf:
+                      message.role === "user" ? "flex-end" : "flex-start",
+                    background: message.role === "user" ? T.dark : T.card,
+                    border:
+                      message.role === "user"
+                        ? "none"
+                        : `1px solid ${T.border}`,
+                    borderRadius: 8,
+                    color: message.role === "user" ? T.light : T.textMid,
+                    fontSize: 12,
+                    justifySelf: message.role === "user" ? "end" : "start",
+                    lineHeight: 1.55,
+                    maxWidth: "90%",
+                    padding: "8px 10px",
+                    whiteSpace: "pre-line",
+                  }}
+                >
+                  {message.agentName ? (
+                    <span
+                      style={{
+                        color: T.brass,
+                        display: "block",
+                        fontFamily: T.MONO,
+                        fontSize: 8.5,
+                        letterSpacing: ".12em",
+                        marginBottom: 3,
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {message.agentName}
+                    </span>
+                  ) : null}
+                  {message.content}
+                </div>
+              ))}
+              <div ref={resultRef} />
+            </div>
+          ) : null}
+
+          {/* ── Result: agent metadata + action cards ── */}
+          {result && pendingActions.length ? (
+            <div
               style={{
                 marginTop: 12,
                 borderRadius: 10,
@@ -885,10 +1112,7 @@ export function NaiaFloatingAssistant() {
                   alignItems: "center",
                   justifyContent: "space-between",
                   padding: "10px 12px 8px",
-                  borderBottom:
-                    result.response || result.actions.length
-                      ? `1px solid ${T.borderLight}`
-                      : "none",
+                  borderBottom: `1px solid ${T.borderLight}`,
                 }}
               >
                 <span
@@ -916,27 +1140,8 @@ export function NaiaFloatingAssistant() {
                 </span>
               </div>
 
-              {/* NAIA response */}
-              {result.response ? (
-                <p
-                  style={{
-                    padding: "10px 12px",
-                    fontSize: 12.5,
-                    lineHeight: 1.6,
-                    color: T.textMid,
-                    margin: 0,
-                    whiteSpace: "pre-line",
-                    borderBottom: result.actions.length
-                      ? `1px solid ${T.borderLight}`
-                      : "none",
-                  }}
-                >
-                  {result.response}
-                </p>
-              ) : null}
-
               {/* Action cards */}
-              {result.actions.length ? (
+              {pendingActions.length ? (
                 <div style={{ padding: "10px 12px", display: "grid", gap: 8 }}>
                   <div
                     style={{
@@ -950,7 +1155,7 @@ export function NaiaFloatingAssistant() {
                   >
                     Validation requise
                   </div>
-                  {result.actions.map((action) => (
+                  {pendingActions.map((action) => (
                     <ActionCard
                       action={action}
                       disabled={isApplyingAction}
@@ -983,6 +1188,7 @@ export function NaiaFloatingAssistant() {
       {/* ── Floating orb bubble ── */}
       <button
         aria-label={isOpen ? "Fermer NAIA" : "Ouvrir NAIA"}
+        ref={bubbleRef}
         style={{
           position: "fixed",
           zIndex: 80,

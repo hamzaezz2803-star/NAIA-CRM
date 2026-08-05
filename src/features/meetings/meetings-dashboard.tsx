@@ -24,6 +24,7 @@ import {
   syncLeadToGoogleCalendarAction,
 } from "@/features/crm/actions";
 import type { CrmLeadSummary } from "@/features/crm/contracts";
+import { usePublishNaiaPageContext } from "@/features/naia/naia-page-context";
 import type { GoogleCalendarEventSummary } from "@/platform/integrations/google-workspace";
 
 type MeetingsDashboardProps = {
@@ -52,6 +53,19 @@ export function MeetingsDashboard({
   const [isGeneratingBriefing, setIsGeneratingBriefing] = useState(false);
   const [briefingError, setBriefingError] = useState<string | null>(null);
   const [isSyncing, setIsSyncing] = useState<string | null>(null);
+
+  usePublishNaiaPageContext({
+    entity: briefingMeeting
+      ? {
+          id: briefingMeeting.id,
+          kind: "lead",
+          label: briefingMeeting.companyName ?? briefingMeeting.topic,
+        }
+      : undefined,
+    filters: { period: filterType },
+    view: activeTab,
+    viewLabel: activeTab === "calendar" ? "Agenda" : "Liste",
+  });
 
   // Filter meetings (leads in meeting-booked status)
   const meetings = useMemo(() => {

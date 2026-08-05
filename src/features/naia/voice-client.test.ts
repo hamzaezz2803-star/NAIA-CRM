@@ -129,6 +129,45 @@ describe("NAIA voice client", () => {
     expect(onBlocked).not.toHaveBeenCalled();
   });
 
+  it("announces an explicit ElevenLabs fallback voice", async () => {
+    vi.stubGlobal("Audio", FakeAudio);
+    stubObjectUrls();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve({
+          blob: () =>
+            Promise.resolve(new Blob(["audio-bytes"], { type: "audio/mpeg" })),
+          headers: {
+            get: (name: string) => {
+              if (name.toLowerCase() === "content-type") return "audio/mpeg";
+              if (name.toLowerCase() === "x-naia-voice-fallback") {
+                return "primary-voice-unavailable";
+              }
+              return null;
+            },
+          },
+          ok: true,
+          status: 200,
+        } as unknown as Response),
+      ),
+    );
+    const onBlocked = vi.fn();
+
+    playElevenLabsVoice({
+      onBlocked,
+      onEnded: vi.fn(),
+      onStarted: vi.fn(),
+      text: "Bonjour Ali",
+    });
+
+    await vi.waitFor(() =>
+      expect(onBlocked).toHaveBeenCalledWith(
+        expect.stringContaining("voix de secours"),
+      ),
+    );
+  });
+
   it("ignores stale pause() calls once a newer playback took over", async () => {
     vi.stubGlobal("Audio", FakeAudio);
     stubObjectUrls();

@@ -16,6 +16,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   CrmLeadStatus,
   CrmLeadSummary,
+  CrmCompanyDetail,
   CrmCompanySummary,
   CrmContactSummary,
   CrmCategory,
@@ -154,6 +155,32 @@ function fallbackCompanies() {
 
 function fallbackContacts() {
   return shouldUseDummyCrmData() ? dummyCrmContacts : [];
+}
+
+function fallbackCompanyDetail(companyId: string): {
+  company: CrmCompanyDetail | null;
+  contacts: CrmContactSummary[];
+  leads: CrmLeadSummary[];
+} {
+  if (!shouldUseDummyCrmData()) {
+    return { company: null, contacts: [], leads: [] };
+  }
+
+  const company = dummyCrmCompanies.find(({ id }) => id === companyId) ?? null;
+
+  if (!company) {
+    return { company: null, contacts: [], leads: [] };
+  }
+
+  return {
+    company,
+    contacts: dummyCrmContacts.filter(
+      ({ companyId: contactCompanyId }) => contactCompanyId === companyId,
+    ),
+    leads: getDummyCrmLeads().filter(
+      ({ companyId: leadCompanyId }) => leadCompanyId === companyId,
+    ),
+  };
 }
 
 function parseContactInfoFromNotes(notes?: string | null) {
@@ -328,7 +355,9 @@ async function syncLeadTask(
 // LEADS
 // ────────────────────────────────────────────────────────────
 
-export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
+export async function fetchLeadsAction(
+  options: { backfill?: boolean } = {},
+): Promise<CrmLeadSummary[]> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return fallbackLeads();
 
@@ -360,11 +389,12 @@ export async function fetchLeadsAction(): Promise<CrmLeadSummary[]> {
   const rows = data as any[];
   if (rows.length === 0) return fallbackLeads();
 
-  // Perform backfill
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  await backfillLeads(supabase, orgId, rows as DbLead[], user?.id ?? null);
+  if (options.backfill !== false) {
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+    await backfillLeads(supabase, orgId, rows as DbLead[], user?.id ?? null);
+  }
 
   return rows.map((row) => ({
     id: row.id,
@@ -1478,10 +1508,10 @@ export async function fetchCompanyDetailAction(companyId: string): Promise<{
   leads: import("./contracts").CrmLeadSummary[];
 }> {
   const supabase = await createServerSupabaseClient();
-  if (!supabase) return { company: null, contacts: [], leads: [] };
+  if (!supabase) return fallbackCompanyDetail(companyId);
 
   const orgId = await getOrgId();
-  if (!orgId) return { company: null, contacts: [], leads: [] };
+  if (!orgId) return fallbackCompanyDetail(companyId);
 
   const [companyRes, contactsRes, leadsRes] = await Promise.all([
     supabase

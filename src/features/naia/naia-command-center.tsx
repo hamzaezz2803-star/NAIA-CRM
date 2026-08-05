@@ -196,24 +196,13 @@ export function NaiaCommandCenter() {
         const payload = (await response.json()) as VoiceCatalog;
         if (!isMounted) return;
 
-        const storedVoiceId = window.localStorage.getItem("naia_voice_id");
-        const storedVoiceExists = payload.voices.some(
-          (voice) => voice.voiceId === storedVoiceId,
-        );
         const configuredVoiceExists = payload.voices.some(
           (voice) => voice.voiceId === payload.configuredVoiceId,
         );
-        const recommendedVoiceExists = payload.voices.some(
-          (voice) => voice.voiceId === payload.recommendedVoiceId,
-        );
         const nextVoiceId =
-          storedVoiceExists && storedVoiceId
-            ? storedVoiceId
-            : recommendedVoiceExists && payload.recommendedVoiceId
-              ? payload.recommendedVoiceId
-              : configuredVoiceExists && payload.configuredVoiceId
-                ? payload.configuredVoiceId
-                : (payload.voices[0]?.voiceId ?? "");
+          configuredVoiceExists && payload.configuredVoiceId
+            ? payload.configuredVoiceId
+            : (payload.activeVoice?.voiceId ?? "");
 
         setVoiceCatalog(payload);
         setSelectedVoiceId(nextVoiceId);
@@ -285,13 +274,17 @@ export function NaiaCommandCenter() {
 
   // Animated ring — runs only on the home screen (~30fps)
   useEffect(() => {
-    if (screen !== "home") {
+    const prefersReducedMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+    if (screen !== "home" || prefersReducedMotion) {
       if (ringRafRef.current !== undefined)
         cancelAnimationFrame(ringRafRef.current);
       return;
     }
     const loop = (t: number) => {
       ringRafRef.current = requestAnimationFrame(loop);
+      if (document.hidden) return;
       if (t - ringLastTRef.current < 33) return;
       ringLastTRef.current = t;
       setRingPhase(t / 1000);
@@ -758,10 +751,7 @@ export function NaiaCommandCenter() {
     speakText(result?.response ?? "NAIA est en ligne.");
   };
 
-  const changeVoice = (voiceId: string) => {
-    setSelectedVoiceId(voiceId);
-    window.localStorage.setItem("naia_voice_id", voiceId);
-  };
+  const changeVoice = (voiceId: string) => setSelectedVoiceId(voiceId);
 
   const selectedRailAgent = getNaiaAgent(selectedRailId);
 
@@ -789,18 +779,19 @@ export function NaiaCommandCenter() {
           transition: transform .32s cubic-bezier(0.16,1,0.3,1), border-color .2s ease, background-color .2s ease !important;
           will-change: transform, box-shadow !important;
         }
-        .naia-pill:hover {
-          transform: scale(1.12) translateY(-5px) !important;
+        .naia-pill:hover,.naia-pill:focus-visible {
+          transform: scale(1.04) translateY(-2px) !important;
           border-color: #DE5B2B !important;
           background: rgba(255,255,255,0.98) !important;
-          animation: naiaPillAura 2s ease-in-out infinite !important;
           z-index: 20 !important;
           position: relative !important;
+          outline:2px solid rgba(222,91,43,.25);
+          outline-offset:2px;
         }
         .naia-pill .naia-pill-name {
           transition: color .2s ease !important;
         }
-        .naia-pill:hover .naia-pill-name {
+        .naia-pill:hover .naia-pill-name,.naia-pill:focus-visible .naia-pill-name {
           color: #DE5B2B !important;
         }
         .naia-rail-row{transition:background .15s}
@@ -809,11 +800,23 @@ export function NaiaCommandCenter() {
         .naia-primary-btn:hover{background:#DE5B2B!important}
         .naia-outline-btn{transition:all .15s}
         .naia-outline-btn:hover{border-color:#DE5B2B!important;color:#DE5B2B!important}
+        .naia-main-voice-controls{display:none!important}
+        .naia-cockpit-legacy{display:none!important}
+        .naia-home-mobile-agents{display:none}
+        .naia-mobile-value-chain{display:none}
+        .naia-process-card{transition:transform .18s ease,border-color .18s ease,background .18s ease}
+        .naia-process-card:hover{transform:translateY(-2px);border-color:#DE5B2B!important;background:#FBF7EC!important}
+        .naia-ring-trigger:focus-visible{outline:2px solid #DE5B2B;outline-offset:-8px}
         ::selection{background:#DE5B2B;color:#F4EFE3}
         ::-webkit-scrollbar{width:8px;height:8px}
         ::-webkit-scrollbar-thumb{background:rgba(62,49,32,.16);border-radius:99px}
         ::-webkit-scrollbar-track{background:transparent}
         input::placeholder,textarea::placeholder{color:rgba(62,49,32,.38)}
+        @media (prefers-reduced-motion: reduce) {
+          .naia-pill,.naia-process-card{transition:none!important}
+          .naia-pill:hover,.naia-pill:focus-visible{animation:none!important;transform:none!important}
+          [class*="animate-"]{animation-duration:.01ms!important;animation-iteration-count:1!important}
+        }
         .naia-form-card {
           background: #F5F0E4 !important;
           border: 1px solid rgba(62,49,32,.16) !important;
@@ -832,7 +835,7 @@ export function NaiaCommandCenter() {
           font-family: ui-monospace, 'SF Mono', Menlo, monospace;
           font-size: 8.5px;
           letter-spacing: .13em;
-          color: #A87A1E;
+          color: #7A5715;
           border: 1px solid rgba(168,122,30,.45);
           padding: 2px 8px;
           border-radius: 99px;
@@ -884,8 +887,39 @@ export function NaiaCommandCenter() {
           display: none;
         }
         @media (max-width: 767px) {
+          .naia-home-shell {
+            height:auto!important;
+            min-height:100dvh!important;
+            overflow:auto!important;
+            padding:0 16px!important;
+          }
+          .naia-home-header {
+            padding-top:16px!important;
+          }
+          .naia-home-orbit {
+            display:none!important;
+          }
+          .naia-home-mobile-agents {
+            display:block!important;
+            flex:1;
+            padding:24px 0 12px;
+          }
+          .naia-mobile-value-chain {
+            display:grid!important;
+            gap:16px;
+            margin-top:34px;
+          }
+          .naia-home-footer {
+            grid-template-columns:1fr!important;
+            padding:16px 0 28px!important;
+          }
+          .naia-home-footer h1 {
+            font-size:42px!important;
+          }
           .naia-cockpit-shell {
-            height: 100dvh !important;
+            height: auto !important;
+            min-height: 100dvh !important;
+            overflow: auto !important;
           }
           .naia-cockpit-topbar {
             gap: 6px !important;
@@ -899,6 +933,7 @@ export function NaiaCommandCenter() {
           }
           .naia-cockpit-grid {
             grid-template-columns: minmax(0, 1fr) !important;
+            overflow:auto!important;
           }
           .naia-cockpit-left {
             display: none !important;
@@ -925,7 +960,7 @@ export function NaiaCommandCenter() {
             font-family: ui-monospace, 'SF Mono', Menlo, monospace;
             font-size: 9px;
             letter-spacing: .14em;
-            color: #8A7A5F;
+            color: #6E5F49;
             text-transform: uppercase;
           }
           .naia-mobile-agent-picker select {
@@ -966,9 +1001,16 @@ export function NaiaCommandCenter() {
           hoveredAgentId={hoveredAgentId}
           setHoveredAgentId={setHoveredAgentId}
           onEnterCockpit={() => setScreen("cockpit")}
+          onOpenAssistant={() =>
+            window.dispatchEvent(new Event("naia:open-assistant"))
+          }
           onAgentClick={(id) => {
-            setSelectedRailId(id as NaiaAgentId);
-            setScreen("cockpit");
+            const agent = getNaiaAgent(id as NaiaAgentId);
+            if (agent.id === "naia") {
+              window.dispatchEvent(new Event("naia:open-assistant"));
+              return;
+            }
+            router.push(agent.route);
           }}
           voiceCatalog={voiceCatalog}
           selectedVoiceId={selectedVoiceId}
@@ -1052,7 +1094,7 @@ function ActionCard({
                 <strong>Fuseau:</strong> {action.payload.timeZone}
               </span>
               {action.payload.timeWasInferred && (
-                <span style={{ color: "#A87A1E" }}>
+                <span style={{ color: "#7A5715" }}>
                   Heure inf\u00e9r\u00e9e, \u00e0 v\u00e9rifier
                 </span>
               )}
@@ -1587,6 +1629,7 @@ function NaiaHomeScreen({
   hoveredAgentId,
   setHoveredAgentId,
   onEnterCockpit,
+  onOpenAssistant,
   onAgentClick,
   voiceCatalog,
   selectedVoiceId,
@@ -1597,6 +1640,7 @@ function NaiaHomeScreen({
   hoveredAgentId: NaiaAgentId | null;
   setHoveredAgentId: (id: NaiaAgentId | null) => void;
   onEnterCockpit: () => void;
+  onOpenAssistant: () => void;
   onAgentClick: (id: string) => void;
   voiceCatalog: VoiceCatalog | null;
   selectedVoiceId: string;
@@ -1623,6 +1667,14 @@ function NaiaHomeScreen({
   const hoveredNode = hoveredAgentId
     ? nodes.find((nd) => nd.id === hoveredAgentId)
     : null;
+  const sectorLabels = NAIA_ORBIT_SECTORS.map((sector) => {
+    const midpoint = ((sector.start + sector.span / 2) * Math.PI) / 180;
+    return {
+      label: sector.label,
+      x: Math.cos(midpoint) * R * 0.42,
+      y: Math.sin(midpoint) * R * 0.42,
+    };
+  });
 
   // Background SVG: wedge sectors + dashed divider lines + spoke lines to agents
   const tints = [
@@ -1670,6 +1722,7 @@ function NaiaHomeScreen({
 
   return (
     <div
+      className="naia-home-shell"
       style={{
         height: "100vh",
         display: "flex",
@@ -1681,6 +1734,7 @@ function NaiaHomeScreen({
     >
       {/* ── Header ── */}
       <div
+        className="naia-home-header"
         style={{
           display: "flex",
           justifyContent: "space-between",
@@ -1720,7 +1774,7 @@ function NaiaHomeScreen({
               fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
               fontSize: 10,
               fontWeight: 600,
-              color: "#8A7A5F",
+              color: "#6E5F49",
               background: "rgba(62,49,32,.05)",
               border: "1px solid rgba(62,49,32,.12)",
               borderRadius: 99,
@@ -1737,7 +1791,7 @@ function NaiaHomeScreen({
             }}
             onMouseLeave={(e) => {
               e.currentTarget.style.background = "rgba(62,49,32,.05)";
-              e.currentTarget.style.color = "#8A7A5F";
+              e.currentTarget.style.color = "#6E5F49";
             }}
           >
             {"\u2190 Dashboard"}
@@ -1751,6 +1805,7 @@ function NaiaHomeScreen({
           }}
         >
           <div
+            className="naia-main-voice-controls"
             style={{
               display: "flex",
               flexDirection: "column",
@@ -1762,7 +1817,7 @@ function NaiaHomeScreen({
               style={{
                 fontSize: 10,
                 fontWeight: 600,
-                color: "#8A7A5F",
+                color: "#6E5F49",
                 textTransform: "uppercase",
                 letterSpacing: "0.05em",
               }}
@@ -1804,7 +1859,7 @@ function NaiaHomeScreen({
                 ))}
               </select>
             ) : (
-              <div style={{ fontSize: 11, color: "#8A7A5F" }}>
+              <div style={{ fontSize: 11, color: "#6E5F49" }}>
                 Chargement...
               </div>
             )}
@@ -1814,6 +1869,7 @@ function NaiaHomeScreen({
 
       {/* ── Hero zone ── */}
       <div
+        className="naia-home-orbit"
         ref={heroRef}
         style={{
           flex: 1,
@@ -1830,7 +1886,7 @@ function NaiaHomeScreen({
             height="100%"
             style={{ display: "block", overflow: "visible" }}
           >
-            <g transform={`translate(${hw / 2},${hh / 2})`}>
+            <g>
               {/* Rotating background group */}
               <g transform={`rotate(${(ringPhase * 1.5) % 360})`}>
                 {wedges}
@@ -1842,11 +1898,56 @@ function NaiaHomeScreen({
           </svg>
         </div>
 
-        {/* Clickable ring */}
         <div
-          onClick={onEnterCockpit}
-          title="Entrer dans le cockpit"
-          style={{ position: "absolute", inset: 0, cursor: "pointer" }}
+          aria-hidden="true"
+          style={{
+            left: "50%",
+            pointerEvents: "none",
+            position: "absolute",
+            top: "50%",
+          }}
+        >
+          {sectorLabels.map((sector) => (
+            <span
+              key={sector.label}
+              style={{
+                background: "rgba(244,239,227,.94)",
+                border: "1px solid rgba(62,49,32,.1)",
+                borderRadius: 99,
+                color: "#4A3B26",
+                fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
+                fontSize: 9,
+                fontWeight: 700,
+                left: sector.x,
+                letterSpacing: ".08em",
+                padding: "4px 7px",
+                position: "absolute",
+                textTransform: "uppercase",
+                top: sector.y,
+                transform: "translate(-50%,-50%)",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {sector.label}
+            </span>
+          ))}
+        </div>
+
+        {/* Clickable ring */}
+        <button
+          aria-label="Ouvrir l'assistant généraliste NAIA"
+          className="naia-ring-trigger"
+          onClick={onOpenAssistant}
+          title="Ouvrir l'assistant NAIA"
+          style={{
+            background: "transparent",
+            border: 0,
+            cursor: "pointer",
+            inset: 0,
+            padding: 0,
+            position: "absolute",
+          }}
+          type="button"
         >
           <div
             style={{
@@ -1868,7 +1969,7 @@ function NaiaHomeScreen({
               <NaiaRing W={ringD} H={ringD} phase={ringPhase} />
             </div>
           </div>
-        </div>
+        </button>
 
         {/* Agent hover info at ring center */}
         {hoveredNode && (
@@ -1895,7 +1996,7 @@ function NaiaHomeScreen({
                 fontSize: 9,
                 letterSpacing: ".16em",
                 textTransform: "uppercase",
-                color: "#8A7A5F",
+                color: "#6E5F49",
                 marginTop: 3,
               }}
             >
@@ -1907,7 +2008,7 @@ function NaiaHomeScreen({
                 fontSize: 8.5,
                 letterSpacing: ".18em",
                 marginTop: 8,
-                color: hoveredNode.status === "live" ? "#5C7A3B" : "#A87A1E",
+                color: hoveredNode.status === "live" ? "#47602D" : "#7A5715",
               }}
             >
               {hoveredNode.status === "live" ? "\u25cf LIVE" : "\u25cf GUARDED"}
@@ -1927,7 +2028,8 @@ function NaiaHomeScreen({
                 transform: "translate(-50%,-50%)",
               }}
             >
-              <div
+              <button
+                aria-label={`Ouvrir ${nd.name}, ${nd.role}`}
                 className="naia-pill"
                 onClick={(e) => {
                   e.stopPropagation();
@@ -1935,6 +2037,8 @@ function NaiaHomeScreen({
                 }}
                 onMouseEnter={() => setHoveredAgentId(nd.id as NaiaAgentId)}
                 onMouseLeave={() => setHoveredAgentId(null)}
+                onFocus={() => setHoveredAgentId(nd.id as NaiaAgentId)}
+                onBlur={() => setHoveredAgentId(null)}
                 style={{
                   cursor: "pointer",
                   textAlign: "center",
@@ -1942,7 +2046,11 @@ function NaiaHomeScreen({
                   borderRadius: 9,
                   border: "1px solid rgba(62,49,32,.10)",
                   background: "rgba(237,231,217,.94)",
+                  color: "inherit",
+                  font: "inherit",
+                  minHeight: 44,
                 }}
+                type="button"
               >
                 <div
                   style={{
@@ -1958,7 +2066,7 @@ function NaiaHomeScreen({
                       height: 5,
                       borderRadius: "50%",
                       flexShrink: 0,
-                      background: nd.status === "live" ? "#5C7A3B" : "#A87A1E",
+                      background: nd.status === "live" ? "#47602D" : "#7A5715",
                       display: "inline-block",
                     }}
                   />
@@ -1977,7 +2085,7 @@ function NaiaHomeScreen({
                 <div
                   style={{
                     fontSize: 10,
-                    color: "#8A7A5F",
+                    color: "#6E5F49",
                     marginTop: 2,
                     letterSpacing: ".02em",
                     whiteSpace: "nowrap",
@@ -1985,6 +2093,140 @@ function NaiaHomeScreen({
                 >
                   {nd.role}
                 </div>
+              </button>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="naia-home-mobile-agents">
+        <div
+          style={{
+            color: "#6E5F49",
+            fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
+            fontSize: 10,
+            letterSpacing: ".16em",
+            marginBottom: 12,
+            textTransform: "uppercase",
+          }}
+        >
+          Chaîne de valeur Qarizmi
+        </div>
+        <label
+          style={{
+            color: "#4A3B26",
+            display: "grid",
+            fontSize: 12,
+            fontWeight: 600,
+            gap: 7,
+          }}
+        >
+          Ouvrir un agent
+          <select
+            defaultValue=""
+            onChange={(event) => {
+              if (event.target.value) onAgentClick(event.target.value);
+            }}
+            style={{
+              background: "#F5F0E4",
+              border: "1px solid rgba(62,49,32,.2)",
+              borderRadius: 7,
+              color: "#3A2E1E",
+              font: "inherit",
+              minHeight: 44,
+              padding: "9px 11px",
+              width: "100%",
+            }}
+          >
+            <option disabled value="">
+              Choisir un module
+            </option>
+            {NAIA_ORBIT_SECTORS.flatMap((sector) =>
+              sector.agentIds.map((id) => {
+                const agent = getNaiaAgent(id);
+                return (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name} · {agent.role}
+                  </option>
+                );
+              }),
+            )}
+          </select>
+        </label>
+        <button
+          className="naia-primary-btn"
+          onClick={onOpenAssistant}
+          style={{
+            background: "#2E2417",
+            border: "none",
+            borderRadius: 99,
+            color: "#F4EFE3",
+            cursor: "pointer",
+            font: "inherit",
+            fontSize: 13,
+            fontWeight: 600,
+            marginTop: 14,
+            minHeight: 44,
+            padding: "10px 18px",
+            width: "100%",
+          }}
+          type="button"
+        >
+          Parler à NAIA
+        </button>
+        <div aria-hidden="true" className="naia-mobile-value-chain">
+          {NAIA_ORBIT_SECTORS.map((sector, sectorIndex) => (
+            <div
+              key={sector.label}
+              style={{
+                borderTop: `2px solid ${RING_PAL[sectorIndex]}`,
+                paddingTop: 9,
+              }}
+            >
+              <div
+                style={{
+                  alignItems: "center",
+                  display: "flex",
+                  justifyContent: "space-between",
+                }}
+              >
+                <span
+                  style={{
+                    color: "#4A3B26",
+                    fontFamily: "ui-monospace,'SF Mono',Menlo,monospace",
+                    fontSize: 9,
+                    fontWeight: 700,
+                    letterSpacing: ".12em",
+                  }}
+                >
+                  {sector.label}
+                </span>
+                <span
+                  style={{
+                    color: "#6E5F49",
+                    fontSize: 10,
+                  }}
+                >
+                  {sector.agentIds.length} agents
+                </span>
+              </div>
+              <div
+                style={{
+                  color: "#6E5F49",
+                  display: "flex",
+                  flexWrap: "wrap",
+                  fontSize: 11,
+                  gap: "4px 8px",
+                  lineHeight: 1.6,
+                  marginTop: 5,
+                }}
+              >
+                {sector.agentIds.map((id, index) => (
+                  <span key={id}>
+                    {getNaiaAgent(id).name}
+                    {index < sector.agentIds.length - 1 ? "  →" : ""}
+                  </span>
+                ))}
               </div>
             </div>
           ))}
@@ -1993,6 +2235,7 @@ function NaiaHomeScreen({
 
       {/* ── Footer ── */}
       <div
+        className="naia-home-footer"
         style={{
           display: "grid",
           gridTemplateColumns: "1fr auto 1fr",
@@ -2197,7 +2440,7 @@ function NaiaCockpitScreen({
                 fontFamily: MONO,
                 fontSize: 10,
                 fontWeight: 600,
-                color: "#8A7A5F",
+                color: "#6E5F49",
                 background: "rgba(62,49,32,.05)",
                 border: "1px solid rgba(62,49,32,.12)",
                 borderRadius: 99,
@@ -2214,7 +2457,7 @@ function NaiaCockpitScreen({
               }}
               onMouseLeave={(e) => {
                 e.currentTarget.style.background = "rgba(62,49,32,.05)";
-                e.currentTarget.style.color = "#8A7A5F";
+                e.currentTarget.style.color = "#6E5F49";
               }}
             >
               {"\u2190 Dashboard"}
@@ -2225,7 +2468,7 @@ function NaiaCockpitScreen({
                 fontFamily: MONO,
                 fontSize: 8.5,
                 letterSpacing: ".2em",
-                color: "#8A7A5F",
+                color: "#6E5F49",
                 border: "1px solid rgba(62,49,32,.2)",
                 borderRadius: 99,
                 padding: "3px 9px",
@@ -2237,7 +2480,10 @@ function NaiaCockpitScreen({
 
           {/* Row 2: Voice dropdown — only when catalog is ready */}
           {voiceCatalog?.voices.length ? (
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <div
+              className="naia-main-voice-controls"
+              style={{ display: "flex", alignItems: "center", gap: 6 }}
+            >
               <span
                 style={{
                   fontFamily: MONO,
@@ -2330,7 +2576,7 @@ function NaiaCockpitScreen({
               width: 6,
               height: 6,
               borderRadius: "50%",
-              background: "#A87A1E",
+              background: "#7A5715",
               display: "inline-block",
             }}
           />
@@ -2371,7 +2617,7 @@ function NaiaCockpitScreen({
         style={{
           flex: 1,
           display: "grid",
-          gridTemplateColumns: "248px minmax(0,1fr) 384px",
+          gridTemplateColumns: "248px minmax(0,1fr)",
           minHeight: 0,
           overflow: "hidden",
         }}
@@ -2404,11 +2650,19 @@ function NaiaCockpitScreen({
                 const agent = getNaiaAgent(id);
                 const isActive = selectedRailId === id;
                 return (
-                  <div
+                  <button
                     key={id}
                     className="naia-rail-row"
-                    onClick={() => setSelectedRailId(id)}
+                    onClick={() => {
+                      setSelectedRailId(id);
+                      if (id === "naia") {
+                        window.dispatchEvent(new Event("naia:open-assistant"));
+                        return;
+                      }
+                      router.push(agent.route);
+                    }}
                     style={{
+                      border: "none",
                       display: "flex",
                       alignItems: "center",
                       gap: 9,
@@ -2418,6 +2672,10 @@ function NaiaCockpitScreen({
                       background: isActive
                         ? "rgba(247,243,233,.95)"
                         : "transparent",
+                      color: "inherit",
+                      font: "inherit",
+                      textAlign: "left",
+                      width: "100%",
                     }}
                   >
                     <span
@@ -2427,7 +2685,7 @@ function NaiaCockpitScreen({
                         borderRadius: "50%",
                         flexShrink: 0,
                         background:
-                          agent.status === "live" ? "#5C7A3B" : "#A87A1E",
+                          agent.status === "live" ? "#47602D" : "#7A5715",
                         display: "inline-block",
                       }}
                     />
@@ -2445,7 +2703,7 @@ function NaiaCockpitScreen({
                         style={{
                           display: "block",
                           fontSize: 10.5,
-                          color: "#8A7A5F",
+                          color: "#6E5F49",
                           whiteSpace: "nowrap",
                           overflow: "hidden",
                           textOverflow: "ellipsis",
@@ -2459,12 +2717,12 @@ function NaiaCockpitScreen({
                         fontFamily: MONO,
                         fontSize: 8,
                         letterSpacing: ".12em",
-                        color: agent.status === "live" ? "#5C7A3B" : "#A87A1E",
+                        color: agent.status === "live" ? "#47602D" : "#7A5715",
                       }}
                     >
                       {agent.status.toUpperCase()}
                     </span>
-                  </div>
+                  </button>
                 );
               })}
             </div>
@@ -2478,7 +2736,7 @@ function NaiaCockpitScreen({
               borderTop: "1px solid rgba(62,49,32,.12)",
               fontSize: 10.5,
               lineHeight: 1.7,
-              color: "#8A7A5F",
+              color: "#6E5F49",
             }}
           >
             <span
@@ -2487,7 +2745,7 @@ function NaiaCockpitScreen({
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: "#5C7A3B",
+                background: "#47602D",
                 marginRight: 6,
                 verticalAlign: "middle",
               }}
@@ -2500,7 +2758,7 @@ function NaiaCockpitScreen({
                 width: 6,
                 height: 6,
                 borderRadius: "50%",
-                background: "#A87A1E",
+                background: "#7A5715",
                 marginRight: 6,
                 verticalAlign: "middle",
               }}
@@ -2510,6 +2768,7 @@ function NaiaCockpitScreen({
 
           {/* ElevenLabs voice selector */}
           <div
+            className="naia-main-voice-controls"
             style={{
               marginTop: 18,
               padding: "12px 8px 0",
@@ -2530,7 +2789,7 @@ function NaiaCockpitScreen({
                 >
                   Voix ElevenLabs
                 </div>
-                <div style={{ fontSize: 9.5, color: "#8A7A5F", marginTop: 2 }}>
+                <div style={{ fontSize: 9.5, color: "#6E5F49", marginTop: 2 }}>
                   {selectedVoice ? selectedVoice.name : "Chargement..."}
                 </div>
               </div>
@@ -2577,9 +2836,208 @@ function NaiaCockpitScreen({
           </div>
         </div>
 
-        {/* â”€â”€ Center workspace â”€â”€ */}
         <div
-          className="naia-cockpit-center"
+          style={{
+            background: "#EFE9D9",
+            minHeight: 0,
+            minWidth: 0,
+            overflowY: "auto",
+            padding: "28px clamp(18px,4vw,54px) 40px",
+          }}
+        >
+          <div
+            style={{
+              alignItems: "flex-end",
+              display: "flex",
+              flexWrap: "wrap",
+              gap: 16,
+              justifyContent: "space-between",
+              marginBottom: 30,
+            }}
+          >
+            <div>
+              <div
+                style={{
+                  color: "#A2937A",
+                  fontFamily: MONO,
+                  fontSize: 9,
+                  letterSpacing: ".2em",
+                  textTransform: "uppercase",
+                }}
+              >
+                Cockpit opérationnel
+              </div>
+              <h1
+                style={{
+                  color: "#3A2E1E",
+                  fontSize: "clamp(28px,4vw,48px)",
+                  fontWeight: 500,
+                  letterSpacing: "-.03em",
+                  lineHeight: 1,
+                  margin: "8px 0 0",
+                }}
+              >
+                Chaîne de valeur
+              </h1>
+            </div>
+            <button
+              className="naia-primary-btn"
+              onClick={() =>
+                window.dispatchEvent(new Event("naia:open-assistant"))
+              }
+              style={{
+                background: "#2E2417",
+                border: "none",
+                borderRadius: 99,
+                color: "#F4EFE3",
+                cursor: "pointer",
+                font: "inherit",
+                fontSize: 12,
+                fontWeight: 600,
+                minHeight: 42,
+                padding: "9px 18px",
+              }}
+              type="button"
+            >
+              Parler à NAIA
+            </button>
+          </div>
+
+          <label className="naia-mobile-agent-picker">
+            <span>Module</span>
+            <select
+              aria-label="Ouvrir un module NAIA"
+              defaultValue=""
+              onChange={(event) => {
+                if (!event.target.value) return;
+                const agent = getNaiaAgent(event.target.value as NaiaAgentId);
+                setSelectedRailId(agent.id);
+                if (agent.id === "naia") {
+                  window.dispatchEvent(new Event("naia:open-assistant"));
+                  return;
+                }
+                router.push(agent.route);
+              }}
+            >
+              <option disabled value="">
+                Choisir un agent
+              </option>
+              {naiaAgents.map((agent) => (
+                <option key={agent.id} value={agent.id}>
+                  {agent.name} · {agent.role}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <div style={{ display: "grid", gap: 28, marginTop: 20 }}>
+            {COCKPIT_POLES.map((pole) => (
+              <section key={pole.label}>
+                <div
+                  style={{
+                    alignItems: "center",
+                    color: "#6E5F49",
+                    display: "flex",
+                    fontFamily: MONO,
+                    fontSize: 9,
+                    gap: 10,
+                    letterSpacing: ".18em",
+                    marginBottom: 10,
+                    textTransform: "uppercase",
+                  }}
+                >
+                  <span>{pole.label}</span>
+                  <span
+                    style={{
+                      background: "rgba(62,49,32,.16)",
+                      flex: 1,
+                      height: 1,
+                    }}
+                  />
+                </div>
+                <div
+                  style={{
+                    display: "grid",
+                    gap: 10,
+                    gridTemplateColumns:
+                      "repeat(auto-fit,minmax(min(100%,210px),1fr))",
+                  }}
+                >
+                  {pole.ids.map((id) => {
+                    const agent = getNaiaAgent(id);
+                    return (
+                      <button
+                        className="naia-process-card"
+                        key={agent.id}
+                        onClick={() => {
+                          setSelectedRailId(agent.id);
+                          if (agent.id === "naia") {
+                            window.dispatchEvent(
+                              new Event("naia:open-assistant"),
+                            );
+                            return;
+                          }
+                          router.push(agent.route);
+                        }}
+                        style={{
+                          background: "#F5F0E4",
+                          border: "1px solid rgba(62,49,32,.14)",
+                          borderRadius: 8,
+                          color: "inherit",
+                          cursor: "pointer",
+                          display: "grid",
+                          gap: 8,
+                          minHeight: 112,
+                          padding: 14,
+                          textAlign: "left",
+                        }}
+                        type="button"
+                      >
+                        <span
+                          style={{
+                            alignItems: "center",
+                            display: "flex",
+                            gap: 8,
+                            justifyContent: "space-between",
+                          }}
+                        >
+                          <strong style={{ fontSize: 14 }}>{agent.name}</strong>
+                          <span
+                            style={{
+                              color:
+                                agent.status === "live" ? "#47602D" : "#7A5715",
+                              fontFamily: MONO,
+                              fontSize: 8,
+                              letterSpacing: ".12em",
+                            }}
+                          >
+                            {agent.status.toUpperCase()}
+                          </span>
+                        </span>
+                        <span style={{ color: "#6E5F49", fontSize: 11 }}>
+                          {agent.role}
+                        </span>
+                        <span
+                          style={{
+                            color: "#6E5F49",
+                            fontSize: 10.5,
+                            lineHeight: 1.45,
+                          }}
+                        >
+                          {agent.mission}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+            ))}
+          </div>
+        </div>
+
+        {/* Legacy cockpit interaction surface retained temporarily for state compatibility. */}
+        <div
+          className="naia-cockpit-center naia-cockpit-legacy"
           style={{
             display: "flex",
             flexDirection: "column",
@@ -2620,7 +3078,7 @@ function NaiaCockpitScreen({
                   fontSize: 9,
                   letterSpacing: ".16em",
                   textTransform: "uppercase",
-                  color: "#8A7A5F",
+                  color: "#6E5F49",
                 }}
               >
                 {selectedRailAgent.role}
@@ -2631,7 +3089,7 @@ function NaiaCockpitScreen({
                   fontSize: 8.5,
                   letterSpacing: ".16em",
                   color:
-                    selectedRailAgent.status === "live" ? "#5C7A3B" : "#A87A1E",
+                    selectedRailAgent.status === "live" ? "#47602D" : "#7A5715",
                 }}
               >
                 {selectedRailAgent.status.toUpperCase()}
@@ -2985,7 +3443,7 @@ function NaiaCockpitScreen({
 
         {/* â”€â”€ Right panel â€” validations + journal â”€â”€ */}
         <div
-          className={`naia-cockpit-right ${
+          className={`naia-cockpit-right naia-cockpit-legacy ${
             hasPending ? "has-pending" : "is-empty"
           }`}
           style={{
@@ -3065,7 +3523,7 @@ function NaiaCockpitScreen({
                     >
                       <div className="naia-form-header">
                         <span className="naia-form-badge">Action requise</span>
-                        <span style={{ fontSize: 10, color: "#8A7A5F" }}>
+                        <span style={{ fontSize: 10, color: "#6E5F49" }}>
                           CRM
                         </span>
                       </div>

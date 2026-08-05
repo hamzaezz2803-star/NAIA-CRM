@@ -207,32 +207,43 @@ export function orchestrateNaiaCommand({
   agentIdOverride,
   command,
   confidenceOverride,
+  contextAgentId,
   crmLeads = [],
+  crmReadLeads,
   responseOverride,
+  selectedLeadId,
 }: {
   agentIdOverride?: NaiaAgentId;
   command: string;
   confidenceOverride?: number;
+  contextAgentId?: NaiaAgentId;
   crmLeads?: CrmLeadSummary[];
+  crmReadLeads?: CrmLeadSummary[];
   responseOverride?: string;
+  selectedLeadId?: string;
 }): NaiaOrchestrationResult {
   const cleanCommand = command.trim();
   const localAgentId = classifyNaiaAgent(cleanCommand);
   const normalized = normalize(cleanCommand);
   const forceCrmForProspectMeeting =
     localAgentId === "crm" && isPotentialClientMeeting(normalized);
+  const contextualAgentId =
+    localAgentId === "naia" && !isNaiaOverviewQuestion(cleanCommand)
+      ? contextAgentId
+      : undefined;
   const agentId = forceCrmForProspectMeeting
     ? "crm"
-    : (agentIdOverride ?? localAgentId);
+    : (agentIdOverride ?? contextualAgentId ?? localAgentId);
   const agent = getNaiaAgent(agentId);
   const workspaceActions = buildWorkspaceActions(
     cleanCommand,
     localAgentId,
     crmLeads,
+    selectedLeadId,
   );
   const actions =
     agentId === "crm" || localAgentId === "crm"
-      ? buildCrmActions(cleanCommand, crmLeads)
+      ? buildCrmActions(cleanCommand, crmLeads, selectedLeadId)
       : agentId === "developer" || localAgentId === "developer"
         ? [buildDeveloperAction(cleanCommand)]
         : workspaceActions.length > 0
@@ -262,7 +273,7 @@ export function orchestrateNaiaCommand({
       (forceCrmForProspectMeeting ? undefined : responseOverride)
         ?.trim()
         .slice(0, 1200) ||
-      buildResponse(agentId, cleanCommand, actions, crmLeads),
+      buildResponse(agentId, cleanCommand, actions, crmReadLeads ?? crmLeads),
     responseType,
   };
 }
@@ -586,7 +597,11 @@ export function inferCrmStatus(command: string): CrmLeadStatus | null {
   return null;
 }
 
-function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
+function buildCrmActions(
+  command: string,
+  crmLeads: CrmLeadSummary[],
+  selectedLeadId?: string,
+) {
   const normalized = normalize(command);
   if (
     isCrmReadQuestion(normalized) ||
@@ -597,7 +612,7 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
   }
 
   const status = inferCrmStatus(command);
-  const matchedLead = findBestLeadMatch(command, crmLeads);
+  const matchedLead = resolveLeadMatch(command, crmLeads, selectedLeadId);
   const wantsLeadCreation = includesAny(normalized, [
     "cree un lead",
     "creer un lead",
@@ -611,7 +626,9 @@ function buildCrmActions(command: string, crmLeads: CrmLeadSummary[]) {
     "opportunite",
     "prospect",
   ]);
-  const wantsProspectMeeting = isPotentialClientMeeting(normalized);
+  const explicitLeadStatusUpdate = isExplicitLeadStatusUpdate(normalized);
+  const wantsProspectMeeting =
+    !explicitLeadStatusUpdate && isPotentialClientMeeting(normalized);
   const wantsPotentialClientOpportunity =
     isPotentialClientOpportunity(normalized);
 
@@ -810,11 +827,12 @@ function buildWorkspaceActions(
   command: string,
   localAgentId: NaiaAgentId,
   crmLeads: CrmLeadSummary[],
+  selectedLeadId?: string,
 ): NaiaActionDraft[] {
   const normalized = normalize(command);
 
   if (localAgentId === "proposals" && isPitchGenerationIntent(normalized)) {
-    const matchedLead = findBestLeadMatch(command, crmLeads);
+    const matchedLead = resolveLeadMatch(command, crmLeads, selectedLeadId);
     return matchedLead ? [buildPitchDraftAction(command, matchedLead)] : [];
   }
 
@@ -909,6 +927,23 @@ function buildPitchDraftAction(
 function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
   const normalizedCommand = normalize(command);
   const commandTokens = tokenSet(normalizedCommand);
+  const genericLeadTokens = new Set([
+    "commercial",
+    "contact",
+    "contacte",
+    "crm",
+    "lead",
+    "meeting",
+    "opportunite",
+    "pipeline",
+    "pitch",
+    "projet",
+    "proposal",
+    "proposition",
+    "relance",
+    "rendez",
+    "statut",
+  ]);
 
   let bestLead: CrmLeadSummary | null = null;
   let bestScore = 0;
@@ -930,7 +965,7 @@ function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
     let score = 0;
 
     for (const token of leadTokens) {
-      if (commandTokens.has(token)) {
+      if (!genericLeadTokens.has(token) && commandTokens.has(token)) {
         score += token.length > 4 ? 2 : 1;
       }
     }
@@ -955,6 +990,56 @@ function findBestLeadMatch(command: string, crmLeads: CrmLeadSummary[]) {
   }
 
   return bestScore >= 2 ? bestLead : null;
+}
+
+function resolveLeadMatch(
+  command: string,
+  crmLeads: CrmLeadSummary[],
+  selectedLeadId?: string,
+) {
+  const namedMatch = findBestLeadMatch(command, crmLeads);
+  if (namedMatch) return namedMatch;
+  if (!selectedLeadId || !canUseSelectedLeadContext(command)) return null;
+
+  return crmLeads.find((lead) => lead.id === selectedLeadId) ?? null;
+}
+
+function canUseSelectedLeadContext(command: string) {
+  const normalized = normalize(command).replace(/-/g, " ");
+  if (
+    includesAny(normalized, [
+      "ce lead",
+      "ce prospect",
+      "cette opportunite",
+      "celui ci",
+      "celle ci",
+      "du lead",
+      "le lead selectionne",
+      "pour lui",
+      "pour elle",
+      "sa relance",
+      "son pitch",
+      "ses informations",
+      "this lead",
+      "this prospect",
+    ])
+  ) {
+    return true;
+  }
+
+  const targetlessStatusUpdate =
+    /^(?:(?:naia|salma)\s+)?(?:passe|mets|met|change|modifie|deplace|update|move|set)(?:\s+(?:le|ce)\s+lead)?\s+(?:(?:au|a)\s+statut\s+|en\s+)?(?:a contacter|contacte|dead end|gagne|meeting booke|meeting fixe|proposal sent|proposition envoyee|relancer|to follow up|won)$/;
+  if (targetlessStatusUpdate.test(normalized)) return true;
+
+  const hasLeadActionIntent =
+    isPitchGenerationIntent(normalized) ||
+    includesAny(normalized, ["brouillon", "draft", "follow up", "relance"]);
+  const namesExplicitTarget =
+    /\b(?:chez|client|de|du|entreprise|pour|prospect|societe)\s+(?!ce\b|cette\b|le\b|la\b|lui\b|elle\b)[\p{Letter}\p{Number}]/u.test(
+      normalized,
+    );
+
+  return hasLeadActionIntent && !namesExplicitTarget;
 }
 
 function buildResponse(
@@ -1004,11 +1089,33 @@ function buildResponse(
     const crmQuestionResponse = buildCrmQuestionResponse(command, crmLeads);
     if (crmQuestionResponse) return crmQuestionResponse;
 
+    if (
+      actions.length === 0 &&
+      (inferCrmStatus(command) ||
+        isPitchGenerationIntent(normalize(command)) ||
+        includesAny(normalize(command), [
+          "brouillon",
+          "draft",
+          "follow up",
+          "relance",
+        ]))
+    ) {
+      return "Je n'ai pas trouvé avec certitude le lead visé. Ouvre sa fiche ou précise son entreprise ou son contact avant que je prépare une action.";
+    }
+
     if (crmLeads.length === 0) {
       return `${agent.name} prend le relais CRM. Je n'ai pas encore de leads charges dans cette session, donc je peux preparer un brouillon ou ouvrir le pipeline.`;
     }
 
     return `${agent.name} prend le relais CRM. Je peux lire le pipeline, preparer un pitch, une proposition ou une action de changement d'etape a valider.`;
+  }
+
+  if (
+    agentId === "proposals" &&
+    actions.length === 0 &&
+    isPitchGenerationIntent(normalize(command))
+  ) {
+    return "Je n'ai pas trouvé avec certitude le lead visé. Ouvre sa fiche ou précise son entreprise ou son contact avant que Maya prépare le pitch.";
   }
 
   if (agentId === "developer") {
@@ -1123,8 +1230,11 @@ function buildCrmQuestionResponse(command: string, crmLeads: CrmLeadSummary[]) {
     .filter((item) => item.count > 0)
     .map((item) => `${item.label}: ${item.count}`);
 
+  const leadLabel = crmLeads.length === 1 ? "lead" : "leads";
+  const activeLabel = openLeadCount === 1 ? "actif" : "actifs";
+
   return [
-    `Il y a ${crmLeads.length} leads dans le CRM, dont ${openLeadCount} actifs.`,
+    `Il y a ${crmLeads.length} ${leadLabel} dans le CRM, dont ${openLeadCount} ${activeLabel}.`,
     counts.length > 0 ? counts.join(" · ") : "Aucun lead chargé.",
   ].join("\n");
 }
@@ -1218,10 +1328,7 @@ function isCrmInformationQuestion(command: string, normalizedCommand: string) {
 
 function isExplicitCrmWriteRequest(normalizedCommand: string) {
   const comparableCommand = normalizedCommand.replace(/-/g, " ");
-  const startsWithWriteVerb =
-    /^(?:(?:naia|salma)\s+)?(?:passe|mets|met|change|modifie|deplace|update|move|set)\b/.test(
-      comparableCommand,
-    );
+  const startsWithWriteVerb = isExplicitLeadStatusUpdate(comparableCommand);
 
   return (
     startsWithWriteVerb ||
@@ -1266,6 +1373,13 @@ function isExplicitCrmWriteRequest(normalizedCommand: string) {
       "rappelle moi",
       "me rappeler",
     ])
+  );
+}
+
+function isExplicitLeadStatusUpdate(normalizedCommand: string) {
+  const comparableCommand = normalizedCommand.replace(/-/g, " ");
+  return /^(?:(?:naia|salma)\s+)?(?:passe|mets|met|change|modifie|deplace|update|move|set)\b/.test(
+    comparableCommand,
   );
 }
 

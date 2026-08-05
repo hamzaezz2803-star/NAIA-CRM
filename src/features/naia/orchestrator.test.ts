@@ -87,6 +87,17 @@ describe("NAIA orchestrator", () => {
     expect(result.response).not.toContain("Je garde l'orchestration");
   });
 
+  it("keeps explicit general questions above the active page module", () => {
+    const result = orchestrateNaiaCommand({
+      command: "que sais-tu faire ?",
+      contextAgentId: "crm",
+      crmLeads,
+    });
+
+    expect(result.agent.id).toBe("naia");
+    expect(result.response).toContain("assistante opérationnelle");
+  });
+
   it("keeps English capability questions above domain keywords", () => {
     const result = orchestrateNaiaCommand({
       command: "What can you do for my CRM, cash and project teams?",
@@ -220,6 +231,68 @@ describe("NAIA orchestrator", () => {
     });
   });
 
+  it("uses the selected lead for a referential pitch request", () => {
+    const result = orchestrateNaiaCommand({
+      command: "prépare son pitch",
+      contextAgentId: "proposals",
+      crmLeads: crmPipelineLeads,
+      selectedLeadId: "lead-beta",
+    });
+
+    expect(result.actions[0]).toMatchObject({
+      kind: "pitch.generateDraft",
+      payload: {
+        clientName: "Beta",
+        leadId: "lead-beta",
+      },
+    });
+  });
+
+  it("keeps an explicitly named lead above the selected page entity", () => {
+    const result = orchestrateNaiaCommand({
+      command: "Maya prépare le pitch pour HPS",
+      crmLeads: crmPipelineLeads,
+      selectedLeadId: "lead-beta",
+    });
+
+    expect(result.actions[0]).toMatchObject({
+      kind: "pitch.generateDraft",
+      payload: {
+        clientName: "HPS",
+        leadId: "lead-hps",
+      },
+    });
+  });
+
+  it("does not fall back to the selected lead when another unknown lead is named", () => {
+    const result = orchestrateNaiaCommand({
+      command: "mets HSP en meeting fixé",
+      crmLeads: crmPipelineLeads,
+      selectedLeadId: "lead-beta",
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("pas trouvé avec certitude");
+    expect(result.response).toContain("précise son entreprise");
+    expect(result.response).not.toContain("Beta");
+  });
+
+  it("uses the selected lead for a targetless status command", () => {
+    const result = orchestrateNaiaCommand({
+      command: "mets en meeting fixé",
+      crmLeads: crmPipelineLeads,
+      selectedLeadId: "lead-beta",
+    });
+
+    expect(result.actions[0]).toMatchObject({
+      kind: "crm.updateLeadStatus",
+      payload: {
+        leadId: "lead-beta",
+        status: "meeting-booked",
+      },
+    });
+  });
+
   it("creates a CRM lead action from a definite French lead command", () => {
     const result = orchestrateNaiaCommand({
       command:
@@ -298,6 +371,23 @@ describe("NAIA orchestrator", () => {
     expect(result.response).toContain("3 leads");
     expect(result.response).toContain("À contacter: 1");
     expect(result.response).toContain("Meeting fixé: 1");
+  });
+
+  it("answers CRM read questions from the filtered visible pipeline", () => {
+    const result = orchestrateNaiaCommand({
+      command: "combien de leads sont visibles dans la pipe ?",
+      crmLeads: crmPipelineLeads,
+      crmReadLeads: crmPipelineLeads.filter(
+        (lead) => lead.status === "meeting-booked",
+      ),
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain(
+      "Il y a 1 lead dans le CRM, dont 1 actif.",
+    );
+    expect(result.response).toContain("Meeting fixé: 1");
+    expect(result.response).not.toContain("À contacter: 1");
   });
 
   it("answers leads-to-contact questions without interpreting them as Contacté status updates", () => {

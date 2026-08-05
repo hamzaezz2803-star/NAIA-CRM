@@ -15,6 +15,7 @@ import {
   inferCrmStatus,
   type NaiaOrchestrationResult,
 } from "@/features/naia/orchestrator";
+import { parseNaiaPageContext } from "@/features/naia/page-context";
 import {
   canonicalizeConversationText,
   extractLeadIdentity,
@@ -45,6 +46,7 @@ type OrchestratePayload = {
   command?: string;
   execute?: boolean;
   history?: NaiaConversationMessage[];
+  pageContext?: unknown;
   leadInput?: Partial<
     CrmLeadDraft & {
       createGoogleDrive?: boolean;
@@ -73,13 +75,18 @@ export async function POST(request: Request) {
     });
   }
 
-  const crmLeads = await fetchLeadsAction();
   const actor = await resolveWebActor();
+  if (!actor) {
+    return Response.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  const crmLeads = await fetchLeadsAction({ backfill: false });
   const { mode, result } = await planNaiaAssistant({
     actor,
     command,
     crmLeads,
     history: parseHistory(payload.history),
+    pageContext: parseNaiaPageContext(payload.pageContext),
   });
   const hydratedResult = await hydrateCrmLeadDrafts({
     command,

@@ -279,7 +279,7 @@ export function playElevenLabsVoice({
     window.speechSynthesis.speak(utterance);
   };
 
-  const playAudioBlob = async (blob: Blob) => {
+  const playAudioBlob = async (blob: Blob, fallbackReason?: string) => {
     if (isCancelled) return;
 
     objectUrl = URL.createObjectURL(blob);
@@ -299,6 +299,11 @@ export function playElevenLabsVoice({
     try {
       await audio.play();
       start();
+      if (fallbackReason) {
+        onBlocked(
+          "La voix NAIA officielle est indisponible. ElevenLabs utilise la voix de secours configurée.",
+        );
+      }
     } catch {
       fallbackToBrowserVoice(
         `${getBrowserName()} a bloque la lecture ElevenLabs.`,
@@ -315,7 +320,10 @@ export function playElevenLabsVoice({
 
       const contentType = response.headers.get("content-type") ?? "";
       if (response.ok && contentType.startsWith("audio/")) {
-        await playAudioBlob(await response.blob());
+        await playAudioBlob(
+          await response.blob(),
+          response.headers.get("x-naia-voice-fallback") ?? undefined,
+        );
         return;
       }
 

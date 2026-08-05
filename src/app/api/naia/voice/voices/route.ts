@@ -7,104 +7,43 @@ type ElevenLabsVoice = {
   voice_id?: string;
 };
 
-// "Martin Dupont" — NAIA's default voice when ELEVENLABS_VOICE_ID is unset.
-const DEFAULT_ELEVENLABS_VOICE_ID = "a5n9pJUnAhX4fn7lx3uo";
-const DEFAULT_FREE_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
-
-const premadeVoices = [
-  {
-    voiceId: "a5n9pJUnAhX4fn7lx3uo",
-    name: "Martin Dupont (Default)",
-    category: "premade",
-    labels: {
-      accent: "french",
-      age: "middle aged",
-      gender: "male",
-      language: "fr",
-    },
-  },
-  {
-    voiceId: "JBFqnCBsd6RMkjVDRZzb",
-    name: "George (Recommended)",
-    category: "premade",
-    labels: {
-      accent: "british",
-      age: "middle aged",
-      gender: "male",
-      language: "en",
-    },
-  },
-  {
-    voiceId: "21m00Tcm4TlvDq8ikWAM",
-    name: "Rachel",
-    category: "premade",
-    labels: {
-      accent: "american",
-      age: "young",
-      gender: "female",
-      language: "en",
-    },
-  },
-  {
-    voiceId: "AZnzlk1XvdvUeBnXmlld",
-    name: "Domi",
-    category: "premade",
-    labels: {
-      accent: "american",
-      age: "young",
-      gender: "female",
-      language: "en",
-    },
-  },
-  {
-    voiceId: "EXAVITQu4vr4xnSDxMaL",
-    name: "Bella",
-    category: "premade",
-    labels: {
-      accent: "american",
-      age: "young",
-      gender: "female",
-      language: "en",
-    },
-  },
-  {
-    voiceId: "ErXwobaYiN019PkySvjV",
-    name: "Antoni",
-    category: "premade",
-    labels: {
-      accent: "american",
-      age: "young",
-      gender: "male",
-      language: "en",
-    },
-  },
-  {
-    voiceId: "CYw3moM5B4YCc7G7EyUh",
-    name: "Dave",
-    category: "premade",
-    labels: {
-      accent: "american",
-      age: "young",
-      gender: "male",
-      language: "en",
-    },
-  },
-];
+type VoiceOption = {
+  category: string;
+  description: string;
+  labels: {
+    accent: string;
+    age: string;
+    gender: string;
+    language: string;
+  };
+  name: string;
+  previewUrl: string;
+  voiceId: string;
+};
 
 export async function GET() {
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const configuredVoiceId =
-    process.env.ELEVENLABS_VOICE_ID?.trim() || DEFAULT_ELEVENLABS_VOICE_ID;
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const configuredVoiceId = sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID);
+  const fallbackVoiceId = sanitizeVoiceId(
+    process.env.ELEVENLABS_FALLBACK_VOICE_ID,
+  );
+  const fallbackConfigured =
+    fallbackVoiceId !== null && fallbackVoiceId !== configuredVoiceId;
+
+  if (!configuredVoiceId) {
+    return createCatalogResponse({
+      fallbackConfigured,
+      mode: "browser-fallback-missing-primary",
+    });
+  }
+
+  const configuredVoice = createConfiguredVoice(configuredVoiceId);
 
   if (!apiKey) {
-    return Response.json({
-      activeVoice:
-        premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
-        premadeVoices[0],
-      configuredVoiceId,
-      mode: "premade-fallback",
-      recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
-      voices: premadeVoices,
+    return createCatalogResponse({
+      fallbackConfigured,
+      mode: "configured-without-provider-catalog",
+      voice: configuredVoice,
     });
   }
 
@@ -117,72 +56,88 @@ export async function GET() {
     });
 
     if (!response.ok) {
-      return Response.json({
-        activeVoice:
-          premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
-          premadeVoices[0],
-        configuredVoiceId,
-        mode: "premade-fallback-on-error",
-        recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
-        voices: premadeVoices,
+      return createCatalogResponse({
+        fallbackConfigured,
+        mode: "configured-provider-error",
+        voice: configuredVoice,
       });
     }
 
     const payload = (await response.json()) as { voices?: ElevenLabsVoice[] };
-    const voices = (payload.voices ?? [])
-      .filter((voice) => voice.voice_id && voice.name)
-      .map((voice) => ({
-        category: voice.category ?? "custom",
-        description: voice.description ?? "",
-        labels: {
-          accent: voice.labels?.accent ?? "",
-          age: voice.labels?.age ?? "",
-          gender: voice.labels?.gender ?? "",
-          language: voice.labels?.language ?? "",
-        },
-        name: voice.name ?? "Voice",
-        previewUrl: voice.preview_url ?? "",
-        voiceId: voice.voice_id ?? "",
-      }));
-
-    if (voices.length === 0) {
-      return Response.json({
-        activeVoice:
-          premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
-          premadeVoices[0],
-        configuredVoiceId,
-        mode: "premade-fallback-empty",
-        recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
-        voices: premadeVoices,
-      });
-    }
-
-    const activeVoice = voices.find(
-      (voice) => voice.voiceId === configuredVoiceId,
+    const providerVoice = (payload.voices ?? []).find(
+      (voice) => voice.voice_id === configuredVoiceId && voice.name,
     );
-    const recommendedVoice =
-      voices.find((voice) => voice.voiceId === configuredVoiceId) ??
-      voices.find(
-        (voice) => voice.voiceId === DEFAULT_FREE_ELEVENLABS_VOICE_ID,
-      ) ??
-      voices.find((voice) => voice.category === "premade");
+    const activeVoice = providerVoice
+      ? mapProviderVoice(providerVoice)
+      : configuredVoice;
 
-    return Response.json({
-      activeVoice,
-      configuredVoiceId,
-      mode: "elevenlabs",
-      recommendedVoiceId: recommendedVoice?.voiceId ?? configuredVoiceId,
-      voices,
+    return createCatalogResponse({
+      fallbackConfigured,
+      mode: providerVoice ? "elevenlabs" : "configured-voice-not-listed",
+      voice: activeVoice,
     });
   } catch {
-    return Response.json({
-      activeVoice:
-        premadeVoices.find((v) => v.voiceId === configuredVoiceId) ??
-        premadeVoices[0],
-      configuredVoiceId,
-      mode: "premade-fallback-on-catch",
-      recommendedVoiceId: DEFAULT_FREE_ELEVENLABS_VOICE_ID,
-      voices: premadeVoices,
+    return createCatalogResponse({
+      fallbackConfigured,
+      mode: "configured-provider-unavailable",
+      voice: configuredVoice,
     });
   }
+}
+
+function createCatalogResponse({
+  fallbackConfigured,
+  mode,
+  voice,
+}: {
+  fallbackConfigured: boolean;
+  mode: string;
+  voice?: VoiceOption;
+}) {
+  return Response.json({
+    ...(voice ? { activeVoice: voice } : {}),
+    configuredVoiceId: voice?.voiceId ?? "",
+    fallbackConfigured,
+    mode,
+    recommendedVoiceId: voice?.voiceId ?? "",
+    voices: voice ? [voice] : [],
+  });
+}
+
+function createConfiguredVoice(voiceId: string): VoiceOption {
+  return {
+    category: "configured",
+    description: "Official NAIA voice configured server-side.",
+    labels: {
+      accent: "",
+      age: "",
+      gender: "",
+      language: "",
+    },
+    name: "NAIA",
+    previewUrl: "",
+    voiceId,
+  };
+}
+
+function mapProviderVoice(voice: ElevenLabsVoice): VoiceOption {
+  return {
+    category: voice.category ?? "custom",
+    description: voice.description ?? "",
+    labels: {
+      accent: voice.labels?.accent ?? "",
+      age: voice.labels?.age ?? "",
+      gender: voice.labels?.gender ?? "",
+      language: voice.labels?.language ?? "",
+    },
+    name: voice.name ?? "NAIA",
+    previewUrl: voice.preview_url ?? "",
+    voiceId: voice.voice_id ?? "",
+  };
+}
+
+function sanitizeVoiceId(voiceId: string | null | undefined) {
+  const cleanVoiceId = voiceId?.trim();
+  if (!cleanVoiceId) return null;
+  return /^[A-Za-z0-9_-]{8,80}$/.test(cleanVoiceId) ? cleanVoiceId : null;
 }

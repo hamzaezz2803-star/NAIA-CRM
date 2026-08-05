@@ -17,6 +17,7 @@ import {
   User,
   Building2,
   KeyRound,
+  Volume2,
 } from "lucide-react";
 import { type IntegrationHealth } from "@/platform/integrations/contracts";
 import { isDriveServiceConfigured } from "@/platform/integrations/google-drive-service";
@@ -47,6 +48,10 @@ function getSystemIntegrations(
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const groqKey = getGroqApiKey();
   const groqModels = getGroqModelConfiguration();
+  const elevenLabsKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const elevenLabsVoiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
+  const elevenLabsFallbackVoiceId =
+    process.env.ELEVENLABS_FALLBACK_VOICE_ID?.trim();
   const google = providerReadiness.find(
     (integration) => integration.provider === "google",
   );
@@ -79,6 +84,27 @@ function getSystemIntegrations(
       detail: groqKey
         ? `Primaire: ${groqModels.orchestrator} — fallback: ${groqModels.structuredFallback}`
         : "GROQ_API_KEY manquant dans .env.local",
+    },
+    {
+      id: "elevenlabs",
+      name: "Voix NAIA · ElevenLabs",
+      description:
+        "Voix officielle de NAIA. Le choix est piloté côté serveur et n'est pas modifiable depuis les interfaces principales.",
+      status:
+        elevenLabsKey && elevenLabsVoiceId
+          ? "connected"
+          : elevenLabsKey || elevenLabsVoiceId
+            ? "needs-review"
+            : "not-configured",
+      icon: <Volume2 className="h-5 w-5" />,
+      detail:
+        elevenLabsKey && elevenLabsVoiceId
+          ? `Voix officielle: ${maskIdentifier(elevenLabsVoiceId)} · fallback: ${
+              elevenLabsFallbackVoiceId
+                ? maskIdentifier(elevenLabsFallbackVoiceId)
+                : "navigateur uniquement"
+            }`
+          : "ELEVENLABS_API_KEY et ELEVENLABS_VOICE_ID sont tous les deux requis.",
     },
     {
       id: "google-workspace",
@@ -341,10 +367,10 @@ export default async function SettingsPage() {
             className="mt-1 text-xs md:text-sm leading-relaxed"
             style={{ color: "var(--maison-text-secondary)" }}
           >
-            Toutes les clés privées (GROQ_API_KEY, GOOGLE_CLIENT_SECRET,
-            SUPABASE_SERVICE_ROLE_KEY) restent côté serveur. Elles ne sont
-            jamais exposées dans les composants clients ou les variables
-            NEXT_PUBLIC_*.
+            Toutes les clés privées (GROQ_API_KEY, ELEVENLABS_API_KEY,
+            GOOGLE_CLIENT_SECRET, SUPABASE_SERVICE_ROLE_KEY) restent côté
+            serveur. Elles ne sont jamais exposées dans les composants clients
+            ou les variables NEXT_PUBLIC_*.
           </p>
         </div>
       </div>
@@ -482,6 +508,21 @@ export default async function SettingsPage() {
                   visibility: "Serveur uniquement",
                 },
                 {
+                  name: "ELEVENLABS_API_KEY",
+                  usage: "Synthèse vocale NAIA",
+                  visibility: "Serveur uniquement",
+                },
+                {
+                  name: "ELEVENLABS_VOICE_ID",
+                  usage: "Voix officielle NAIA",
+                  visibility: "Serveur uniquement",
+                },
+                {
+                  name: "ELEVENLABS_FALLBACK_VOICE_ID",
+                  usage: "Voix de secours explicite (optionnelle)",
+                  visibility: "Serveur uniquement",
+                },
+                {
                   name: "GOOGLE_CLIENT_ID",
                   usage: "OAuth Google Drive & Calendar",
                   visibility: "Serveur uniquement",
@@ -539,4 +580,9 @@ export default async function SettingsPage() {
       </section>
     </div>
   );
+}
+
+function maskIdentifier(value: string) {
+  if (value.length <= 8) return "configurée";
+  return `${value.slice(0, 4)}…${value.slice(-4)}`;
 }

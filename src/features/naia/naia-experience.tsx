@@ -588,6 +588,25 @@ export function NaiaExperience({
 
   return (
     <div className={focusMode ? "space-y-3" : "space-y-6"}>
+      {focusMode &&
+      (activeSection === "cash-flow" ||
+        activeSection === "projects" ||
+        activeSection === "hr") ? (
+        <div
+          className="flex min-h-10 items-center justify-between gap-3 border-b px-1 pb-2 text-sm"
+          style={{ borderColor: "var(--maison-border)" }}
+        >
+          <span
+            className="font-semibold"
+            style={{ color: "var(--maison-text-primary)" }}
+          >
+            {section.title}
+          </span>
+          <span className="rounded-full border border-amber-300 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold uppercase tracking-wide text-amber-900">
+            Données de travail simulées
+          </span>
+        </div>
+      ) : null}
       {focusMode ? null : (
         <section className="rounded-lg border border-stone-200 bg-white p-5 shadow-sm dark:border-stone-800 dark:bg-white">
           <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">

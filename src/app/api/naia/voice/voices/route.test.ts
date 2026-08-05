@@ -5,7 +5,8 @@ import { GET } from "./route";
 describe("NAIA voice catalog route", () => {
   beforeEach(() => {
     vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
-    vi.stubEnv("ELEVENLABS_VOICE_ID", "");
+    vi.stubEnv("ELEVENLABS_VOICE_ID", "officialVoice123");
+    vi.stubEnv("ELEVENLABS_FALLBACK_VOICE_ID", "rescueVoice456");
   });
 
   afterEach(() => {
@@ -13,35 +14,7 @@ describe("NAIA voice catalog route", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not recommend a library voice only because it matches the old preferred name", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValueOnce(
-        Response.json({
-          voices: [
-            {
-              category: "professional",
-              name: "Martin Dupont Intime",
-              voice_id: "restrictedLibraryVoice",
-            },
-            {
-              category: "premade",
-              name: "Safe Premade",
-              voice_id: "safePremadeVoice",
-            },
-          ],
-        }),
-      ),
-    );
-
-    const response = await GET();
-    const body = (await response.json()) as { recommendedVoiceId?: string };
-
-    expect(response.status).toBe(200);
-    expect(body.recommendedVoiceId).toBe("safePremadeVoice");
-  });
-
-  it("defaults the configured voice to Martin Dupont and recommends it when available", async () => {
+  it("exposes only the configured official voice as active and recommended", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValueOnce(
@@ -49,13 +22,20 @@ describe("NAIA voice catalog route", () => {
           voices: [
             {
               category: "premade",
-              name: "Safe Premade",
-              voice_id: "safePremadeVoice",
+              name: "Another Voice",
+              voice_id: "anotherVoice999",
             },
             {
               category: "professional",
-              name: "Martin Dupont",
-              voice_id: "a5n9pJUnAhX4fn7lx3uo",
+              labels: { accent: "french", language: "fr" },
+              name: "NAIA Official",
+              preview_url: "https://example.com/preview.mp3",
+              voice_id: "officialVoice123",
+            },
+            {
+              category: "premade",
+              name: "Rescue Voice",
+              voice_id: "rescueVoice456",
             },
           ],
         }),
@@ -64,12 +44,101 @@ describe("NAIA voice catalog route", () => {
 
     const response = await GET();
     const body = (await response.json()) as {
+      activeVoice?: { name?: string; voiceId?: string };
       configuredVoiceId?: string;
+      fallbackConfigured?: boolean;
+      mode?: string;
       recommendedVoiceId?: string;
+      voices?: { voiceId?: string }[];
     };
 
     expect(response.status).toBe(200);
-    expect(body.configuredVoiceId).toBe("a5n9pJUnAhX4fn7lx3uo");
-    expect(body.recommendedVoiceId).toBe("a5n9pJUnAhX4fn7lx3uo");
+    expect(body.mode).toBe("elevenlabs");
+    expect(body.configuredVoiceId).toBe("officialVoice123");
+    expect(body.recommendedVoiceId).toBe("officialVoice123");
+    expect(body.activeVoice).toMatchObject({
+      name: "NAIA Official",
+      voiceId: "officialVoice123",
+    });
+    expect(body.fallbackConfigured).toBe(true);
+    expect(body.voices).toEqual([
+      expect.objectContaining({ voiceId: "officialVoice123" }),
+    ]);
+  });
+
+  it("returns an empty catalog instead of a hard-coded voice when the primary is missing", async () => {
+    vi.stubEnv("ELEVENLABS_VOICE_ID", "");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await GET();
+    const body = (await response.json()) as {
+      activeVoice?: unknown;
+      configuredVoiceId?: string;
+      mode?: string;
+      recommendedVoiceId?: string;
+      voices?: unknown[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.mode).toBe("browser-fallback-missing-primary");
+    expect(body.configuredVoiceId).toBe("");
+    expect(body.recommendedVoiceId).toBe("");
+    expect(body.activeVoice).toBeUndefined();
+    expect(body.voices).toEqual([]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the official configured voice when the provider catalog is unavailable", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValueOnce(
+          Response.json({ detail: "unavailable" }, { status: 503 }),
+        ),
+    );
+
+    const response = await GET();
+    const body = (await response.json()) as {
+      activeVoice?: { name?: string; voiceId?: string };
+      configuredVoiceId?: string;
+      mode?: string;
+      recommendedVoiceId?: string;
+      voices?: { voiceId?: string }[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.mode).toBe("configured-provider-error");
+    expect(body.configuredVoiceId).toBe("officialVoice123");
+    expect(body.recommendedVoiceId).toBe("officialVoice123");
+    expect(body.activeVoice).toEqual(
+      expect.objectContaining({
+        name: "NAIA",
+        voiceId: "officialVoice123",
+      }),
+    );
+    expect(body.voices).toEqual([
+      expect.objectContaining({ voiceId: "officialVoice123" }),
+    ]);
+  });
+
+  it("does not expose the rescue voice as a selectable or recommended voice", async () => {
+    vi.stubEnv("ELEVENLABS_API_KEY", "");
+
+    const response = await GET();
+    const body = (await response.json()) as {
+      fallbackConfigured?: boolean;
+      recommendedVoiceId?: string;
+      voices?: { voiceId?: string }[];
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.fallbackConfigured).toBe(true);
+    expect(body.recommendedVoiceId).toBe("officialVoice123");
+    expect(body.voices).toEqual([
+      expect.objectContaining({ voiceId: "officialVoice123" }),
+    ]);
+    expect(JSON.stringify(body)).not.toContain("rescueVoice456");
   });
 });

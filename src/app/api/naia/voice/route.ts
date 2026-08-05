@@ -1,6 +1,5 @@
 type VoicePayload = {
   text?: string;
-  voiceId?: string;
 };
 
 type ElevenLabsError = {
@@ -13,9 +12,6 @@ type ElevenLabsError = {
 };
 
 const DEFAULT_ELEVENLABS_MODEL_ID = "eleven_multilingual_v2";
-// "Martin Dupont" — NAIA's default voice when ELEVENLABS_VOICE_ID is unset.
-const DEFAULT_ELEVENLABS_VOICE_ID = "a5n9pJUnAhX4fn7lx3uo";
-const DEFAULT_FREE_ELEVENLABS_VOICE_ID = "JBFqnCBsd6RMkjVDRZzb";
 const MAX_VOICE_TEXT_LENGTH = 1200;
 
 // Voices ElevenLabs already refused for plan/availability reasons in this
@@ -27,7 +23,6 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   return createVoiceResponse({
     rawText: url.searchParams.get("text"),
-    requestedVoiceId: url.searchParams.get("voiceId"),
   });
 }
 
@@ -45,41 +40,41 @@ export async function POST(request: Request) {
 
   return createVoiceResponse({
     rawText: payload.text,
-    requestedVoiceId: payload.voiceId,
   });
 }
 
 async function createVoiceResponse({
   rawText,
-  requestedVoiceId,
 }: {
   rawText: string | null | undefined;
-  requestedVoiceId?: string | null;
 }) {
   const text = rawText?.trim().slice(0, MAX_VOICE_TEXT_LENGTH);
-  const apiKey = process.env.ELEVENLABS_API_KEY;
-  const requestedCleanVoiceId = sanitizeVoiceId(requestedVoiceId);
-  const fallbackVoiceId =
-    sanitizeVoiceId(process.env.ELEVENLABS_FALLBACK_VOICE_ID) ??
-    DEFAULT_FREE_ELEVENLABS_VOICE_ID;
-  const configuredVoiceId =
-    sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID) ??
-    DEFAULT_ELEVENLABS_VOICE_ID;
-  const voiceId = requestedCleanVoiceId ?? configuredVoiceId;
-  const effectiveVoiceId =
-    knownRestrictedVoiceIds.has(voiceId) && fallbackVoiceId !== voiceId
-      ? fallbackVoiceId
-      : voiceId;
 
   if (!text) {
     return browserVoiceFallback("missing-text", { status: 400 });
   }
 
-  if (!apiKey) {
+  const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
+  const primaryVoiceId = sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID);
+
+  if (!apiKey || !primaryVoiceId) {
     return browserVoiceFallback("missing-elevenlabs-config", {
       status: 503,
     });
   }
+
+  const configuredFallbackVoiceId = sanitizeVoiceId(
+    process.env.ELEVENLABS_FALLBACK_VOICE_ID,
+  );
+  const fallbackVoiceId =
+    configuredFallbackVoiceId && configuredFallbackVoiceId !== primaryVoiceId
+      ? configuredFallbackVoiceId
+      : null;
+  const isUsingCachedFallback =
+    fallbackVoiceId !== null && knownRestrictedVoiceIds.has(primaryVoiceId);
+  const effectiveVoiceId = isUsingCachedFallback
+    ? fallbackVoiceId
+    : primaryVoiceId;
 
   try {
     const elevenResponse = await requestElevenLabsSpeech({
@@ -91,7 +86,8 @@ async function createVoiceResponse({
     if (!elevenResponse.ok) {
       const error = await readElevenLabsError(elevenResponse);
       if (
-        fallbackVoiceId !== effectiveVoiceId &&
+        fallbackVoiceId &&
+        effectiveVoiceId !== fallbackVoiceId &&
         shouldTryFallbackVoice(error, elevenResponse.status)
       ) {
         knownRestrictedVoiceIds.add(effectiveVoiceId);
@@ -119,6 +115,9 @@ async function createVoiceResponse({
     }
 
     return createAudioResponse({
+      fallbackReason: isUsingCachedFallback
+        ? "primary-voice-unavailable"
+        : undefined,
       response: elevenResponse,
       voiceId: effectiveVoiceId,
     });

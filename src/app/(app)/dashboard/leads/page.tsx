@@ -66,6 +66,7 @@ import type {
   CrmLeadNote,
 } from "@/features/crm/contracts";
 import { formatCrmDateTimeForInput } from "@/features/crm/date-time";
+import { usePublishNaiaPageContext } from "@/features/naia/naia-page-context";
 import toast from "react-hot-toast";
 
 function formatLeadDateForDisplay(dateStr?: string): string {
@@ -456,6 +457,30 @@ export default function LeadsPage() {
   // Modal states
   const [isAddOpen, setIsAddOpen] = useState(false);
   const [selectedLead, setSelectedLead] = useState<CrmLeadSummary | null>(null);
+
+  usePublishNaiaPageContext({
+    entity: selectedLead
+      ? {
+          id: selectedLead.id,
+          kind: "lead",
+          label: selectedLead.companyName ?? selectedLead.topic,
+        }
+      : undefined,
+    filters:
+      viewMode === "list"
+        ? {
+            company: filterCompany === "all" ? undefined : filterCompany,
+            status: filterStatus === "all" ? undefined : filterStatus,
+          }
+        : undefined,
+    view: viewMode,
+    viewLabel:
+      viewMode === "kanban"
+        ? "Pipeline"
+        : viewMode === "calendar"
+          ? "Calendrier"
+          : "Liste",
+  });
 
   // Edit form fields state
   const [editTopic, setEditTopic] = useState("");

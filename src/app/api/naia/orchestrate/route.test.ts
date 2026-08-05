@@ -119,6 +119,20 @@ describe("NAIA orchestrate route", () => {
     vi.clearAllMocks();
   });
 
+  it("requires an authenticated app session before loading CRM context", async () => {
+    mocks.getAppSession.mockRejectedValueOnce(new Error("Not authenticated"));
+
+    const response = await POST(
+      new Request("http://localhost/api/naia/orchestrate", {
+        body: JSON.stringify({ command: "combien de leads ?" }),
+        method: "POST",
+      }),
+    );
+
+    expect(response.status).toBe(401);
+    expect(mocks.fetchLeadsAction).not.toHaveBeenCalled();
+  });
+
   it("keeps spoken contact intent over a generic extracted lead status", async () => {
     const response = await POST(
       new Request("http://localhost/api/naia/orchestrate", {
@@ -136,6 +150,7 @@ describe("NAIA orchestrate route", () => {
     expect(createLeadAction.payload.status).toBe("contacted");
     expect(body.response).toContain("pré-rempli");
     expect(body.response).toContain("Valider et créer le lead");
+    expect(mocks.fetchLeadsAction).toHaveBeenCalledWith({ backfill: false });
   });
 
   it("does not turn internal presentation reminders into booked client meetings", async () => {

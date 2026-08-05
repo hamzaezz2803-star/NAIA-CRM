@@ -18,6 +18,7 @@ vi.mock("@/platform/naia/private-knowledge", () => ({
 }));
 
 import type { CrmLeadSummary } from "@/features/crm/contracts";
+import { mergeNaiaPageContext } from "@/features/naia/page-context";
 import type { GoogleWorkspaceContext } from "@/platform/integrations/google-workspace";
 
 import { planNaiaAssistant } from "./assistant";
@@ -244,6 +245,169 @@ describe("NAIA personal context answers", () => {
     expect(result.agent.id).toBe("crm");
     expect(result.response).toContain("HPS");
     expect(result.response).toContain("1 lead est au statut Meeting fixé");
+  });
+
+  it("uses the visible CRM filters for a contextual read question", async () => {
+    const leads = [
+      ...crmLeads,
+      {
+        ...crmLeads[0],
+        companyName: "Atlas Process",
+        id: "lead-atlas",
+        status: "lead-to-contact" as const,
+        topic: "Atlas Process - automatisation",
+      },
+    ];
+
+    const { result } = await planNaiaAssistant({
+      actor,
+      command: "combien de leads sont visibles ici ?",
+      crmLeads: leads,
+      pageContext: mergeNaiaPageContext("/dashboard/leads", {
+        filters: { status: "meeting-booked" },
+        view: "list",
+      }),
+    });
+
+    expect(result.response).toContain("1 lead");
+    expect(result.response).toContain("Meeting fixé: 1");
+    expect(result.response).not.toContain("À contacter: 1");
+  });
+
+  it("ignores visible CRM filters when the user explicitly asks for the whole CRM", async () => {
+    const leads = [
+      ...crmLeads,
+      {
+        ...crmLeads[0],
+        companyName: "Atlas Process",
+        id: "lead-atlas",
+        status: "lead-to-contact" as const,
+        topic: "Atlas Process - automatisation",
+      },
+    ];
+
+    const { result } = await planNaiaAssistant({
+      actor,
+      command: "combien de leads dans tout le CRM ?",
+      crmLeads: leads,
+      pageContext: mergeNaiaPageContext("/dashboard/leads", {
+        filters: { status: "meeting-booked" },
+        view: "list",
+      }),
+    });
+
+    expect(result.response).toContain("2 leads");
+    expect(result.response).toContain("Meeting fixé: 1");
+    expect(result.response).toContain("À contacter: 1");
+  });
+
+  it("applies the Meetings upcoming period to deterministic CRM answers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+
+    try {
+      const leads = [
+        {
+          ...crmLeads[0],
+          companyName: "Past Client",
+          id: "lead-past",
+          leadDate: "2026-07-09T09:00:00.000Z",
+          topic: "Past Client meeting",
+        },
+        {
+          ...crmLeads[0],
+          companyName: "Future Client",
+          id: "lead-future",
+          leadDate: "2026-07-11T09:00:00.000Z",
+          topic: "Future Client meeting",
+        },
+      ];
+
+      const { result } = await planNaiaAssistant({
+        actor,
+        command: "quels sont mes meetings CRM ?",
+        crmLeads: leads,
+        pageContext: mergeNaiaPageContext("/meetings", {
+          filters: { period: "upcoming" },
+          view: "list",
+        }),
+      });
+
+      expect(result.response).toContain("Future Client");
+      expect(result.response).not.toContain("Past Client");
+      expect(result.response).toContain("1 lead est au statut Meeting fixé");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("matches the Meetings history view, including completed meetings", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-10T12:00:00.000Z"));
+
+    try {
+      const leads = [
+        {
+          ...crmLeads[0],
+          companyName: "Past Booked",
+          id: "lead-past-booked",
+          leadDate: "2026-07-09T09:00:00.000Z",
+          topic: "Past booked meeting",
+        },
+        {
+          ...crmLeads[0],
+          companyName: "Proposal Client",
+          id: "lead-proposal",
+          leadDate: "2026-07-08T09:00:00.000Z",
+          status: "proposal-sent" as const,
+          topic: "Completed proposal meeting",
+        },
+        {
+          ...crmLeads[0],
+          companyName: "Won Client",
+          id: "lead-won",
+          leadDate: "2026-07-07T09:00:00.000Z",
+          status: "won" as const,
+          topic: "Completed won meeting",
+        },
+        {
+          ...crmLeads[0],
+          companyName: "Future Client",
+          id: "lead-future",
+          leadDate: "2026-07-11T09:00:00.000Z",
+          topic: "Future client meeting",
+        },
+        {
+          ...crmLeads[0],
+          companyName: "Contacted Client",
+          id: "lead-contacted",
+          leadDate: "2026-07-06T09:00:00.000Z",
+          status: "contacted" as const,
+          topic: "Contacted without completed meeting",
+        },
+      ];
+
+      const { result } = await planNaiaAssistant({
+        actor,
+        command: "combien de meetings sont visibles ici ?",
+        crmLeads: leads,
+        pageContext: mergeNaiaPageContext("/meetings", {
+          filters: { period: "past" },
+          view: "list",
+        }),
+      });
+
+      expect(result.response).toContain(
+        "3 réunions sont visibles dans l'historique Meetings",
+      );
+      expect(result.response).toContain("Past Booked");
+      expect(result.response).toContain("Proposal Client");
+      expect(result.response).toContain("Won Client");
+      expect(result.response).not.toContain("Future Client");
+      expect(result.response).not.toContain("Contacted Client");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it.each(["as-tu accès à mes mails ?", "peux-tu consulter mon gmail ?"])(

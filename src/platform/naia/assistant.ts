@@ -8,6 +8,7 @@ import {
   type NaiaAgentId,
 } from "@/features/naia/agents";
 import { buildNaiaOperatingContext } from "@/features/naia/operational-context";
+import type { NaiaPageContext } from "@/features/naia/page-context";
 import {
   isNaiaOverviewQuestion,
   orchestrateNaiaCommand,
@@ -80,6 +81,7 @@ export async function planNaiaAssistant({
   crmLeads,
   googleContext,
   history = [],
+  pageContext,
   privateKnowledge,
 }: {
   actor?: NaiaActorContext;
@@ -88,9 +90,22 @@ export async function planNaiaAssistant({
   crmLeads: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
   history?: NaiaConversationMessage[];
+  pageContext?: NaiaPageContext;
   privateKnowledge?: NaiaPrivateKnowledgeContext | null;
 }): Promise<{ mode: NaiaAssistantMode; result: NaiaOrchestrationResult }> {
-  const localResult = orchestrateNaiaCommand({ command, crmLeads });
+  const selectedLead = resolveSelectedLead(pageContext, crmLeads);
+  const crmReadLeads = filterCrmLeadsForPageContext(
+    command,
+    pageContext,
+    crmLeads,
+  );
+  const localResult = orchestrateNaiaCommand({
+    command,
+    contextAgentId: getContextAgentId(pageContext),
+    crmLeads,
+    crmReadLeads,
+    selectedLeadId: selectedLead?.id,
+  });
   if (
     !allowPersonalData &&
     localResult.agent.id === "crm" &&
@@ -125,8 +140,9 @@ export async function planNaiaAssistant({
     actor,
     allowPersonalData,
     command: personalCommand,
-    crmLeads,
+    crmLeads: crmReadLeads,
     googleContext,
+    meetingPagePeriod: getContextualMeetingPeriod(command, pageContext),
     privateKnowledge: resolvedPrivateKnowledge,
     resultCommand: command,
   });
@@ -170,6 +186,30 @@ export async function planNaiaAssistant({
           })),
           command,
           conversationHistory: allowPersonalData ? history.slice(-8) : [],
+          currentPage:
+            allowPersonalData && pageContext
+              ? {
+                  dataMode: pageContext.dataMode,
+                  filters: pageContext.filters,
+                  moduleId: pageContext.moduleId,
+                  pathname: pageContext.pathname,
+                  selectedEntity: selectedLead
+                    ? {
+                        companyName: selectedLead.companyName,
+                        contactName: selectedLead.contactName,
+                        id: selectedLead.id,
+                        status: selectedLead.status,
+                        topic: selectedLead.topic,
+                      }
+                    : pageContext.entity
+                      ? {
+                          id: pageContext.entity.id,
+                          kind: pageContext.entity.kind,
+                        }
+                      : undefined,
+                  view: pageContext.view,
+                }
+              : undefined,
           contextSources: {
             crm: allowPersonalData
               ? "live organization data"
@@ -183,7 +223,7 @@ export async function planNaiaAssistant({
             operations:
               "simulated working data; always disclose this when used",
           },
-          crmSnapshot: (allowPersonalData ? crmLeads : [])
+          crmSnapshot: (allowPersonalData ? crmReadLeads : [])
             .slice(0, 30)
             .map((lead) => ({
               companyName: lead.companyName,
@@ -215,8 +255,11 @@ export async function planNaiaAssistant({
     agentIdOverride: completion.data.agentId,
     command,
     confidenceOverride: completion.data.confidence,
+    contextAgentId: getContextAgentId(pageContext),
     crmLeads,
+    crmReadLeads,
     responseOverride: completion.data.response,
+    selectedLeadId: selectedLead?.id,
   });
 
   return {
@@ -225,12 +268,145 @@ export async function planNaiaAssistant({
   };
 }
 
+function resolveSelectedLead(
+  pageContext: NaiaPageContext | undefined,
+  crmLeads: CrmLeadSummary[],
+) {
+  if (pageContext?.entity?.kind !== "lead") return undefined;
+  return crmLeads.find((lead) => lead.id === pageContext.entity?.id);
+}
+
+function filterCrmLeadsForPageContext(
+  command: string,
+  pageContext: NaiaPageContext | undefined,
+  crmLeads: CrmLeadSummary[],
+) {
+  if (!pageContext?.filters || wantsGlobalCrmScope(command)) {
+    return crmLeads;
+  }
+
+  if (pageContext.moduleId === "meetings") {
+    const now = Date.now();
+    const period = getContextualMeetingPeriod(command, pageContext);
+    const status = pageContext.filters.status;
+
+    return crmLeads.filter((lead) => {
+      if (status && lead.status !== status) return false;
+      if (
+        !status &&
+        period === "past" &&
+        !["meeting-booked", "proposal-sent", "won", "dead-end"].includes(
+          lead.status,
+        )
+      ) {
+        return false;
+      }
+      if (!status && period !== "past" && lead.status !== "meeting-booked") {
+        return false;
+      }
+
+      const meetingTime = lead.leadDate
+        ? new Date(lead.leadDate).getTime()
+        : null;
+      if (period === "past") {
+        if (lead.status !== "meeting-booked") {
+          return meetingTime !== null && Number.isFinite(meetingTime);
+        }
+        return (
+          meetingTime !== null &&
+          Number.isFinite(meetingTime) &&
+          meetingTime < now
+        );
+      }
+      if (period === "upcoming") {
+        return (
+          meetingTime === null ||
+          !Number.isFinite(meetingTime) ||
+          meetingTime >= now
+        );
+      }
+      return true;
+    });
+  }
+
+  if (pageContext.moduleId !== "crm") {
+    return crmLeads;
+  }
+
+  const status = pageContext.filters.status?.trim();
+  const company = pageContext.filters.company?.trim().toLocaleLowerCase("fr");
+
+  return crmLeads.filter((lead) => {
+    if (status && lead.status !== status) return false;
+    if (
+      company &&
+      lead.companyName?.trim().toLocaleLowerCase("fr") !== company
+    ) {
+      return false;
+    }
+    return true;
+  });
+}
+
+function getContextualMeetingPeriod(
+  command: string,
+  pageContext: NaiaPageContext | undefined,
+): "past" | "upcoming" | undefined {
+  if (pageContext?.moduleId !== "meetings" || wantsGlobalCrmScope(command)) {
+    return undefined;
+  }
+
+  const period = pageContext.filters?.period;
+  return period === "past" || period === "upcoming" ? period : undefined;
+}
+
+function wantsGlobalCrmScope(command: string) {
+  const normalized = normalizePersonalQuery(command);
+  return [
+    "all leads",
+    "au total",
+    "dans le crm",
+    "dans tout le crm",
+    "entire crm",
+    "globalement",
+    "pipeline complet",
+    "tous les leads",
+    "toutes les opportunites",
+    "tout le pipeline",
+    "whole pipeline",
+  ].some((phrase) => normalized.includes(phrase));
+}
+
+function getContextAgentId(
+  pageContext: NaiaPageContext | undefined,
+): NaiaAgentId | undefined {
+  if (!pageContext) return undefined;
+
+  const agentsByModule: Partial<
+    Record<NaiaPageContext["moduleId"], NaiaAgentId>
+  > = {
+    automations: "automations",
+    crm: "crm",
+    finance: "finance",
+    hr: "hr",
+    integrations: "integrations",
+    leads: "leads",
+    meetings: "meetings",
+    projects: "projects",
+    proposals: "proposals",
+    settings: "settings",
+  };
+
+  return agentsByModule[pageContext.moduleId];
+}
+
 async function answerPersonalQuery({
   actor,
   allowPersonalData,
   command,
   crmLeads,
   googleContext,
+  meetingPagePeriod,
   privateKnowledge,
   resultCommand,
 }: {
@@ -239,15 +415,19 @@ async function answerPersonalQuery({
   command: string;
   crmLeads: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
+  meetingPagePeriod?: "past" | "upcoming";
   privateKnowledge?: NaiaPrivateKnowledgeContext;
   resultCommand: string;
 }): Promise<NaiaOrchestrationResult | null> {
+  const readsMeetingsFromCurrentPage =
+    Boolean(meetingPagePeriod) && isContextualMeetingReadQuery(command);
   const personalQuery =
     isIdentityQuery(command) ||
     isGoogleAccessQuery(command) ||
     isGmailReadQuery(command) ||
     isCalendarReadQuery(command) ||
-    isCrmMeetingReadQuery(command);
+    isCrmMeetingReadQuery(command) ||
+    readsMeetingsFromCurrentPage;
 
   if (!allowPersonalData && personalQuery) {
     return createDirectAnswer({
@@ -281,12 +461,12 @@ async function answerPersonalQuery({
     });
   }
 
-  if (isCrmMeetingReadQuery(command)) {
+  if (isCrmMeetingReadQuery(command) || readsMeetingsFromCurrentPage) {
     return createDirectAnswer({
       agentId: "crm",
       command: resultCommand,
       crmLeads,
-      response: formatCrmMeetingsAnswer(crmLeads),
+      response: formatCrmMeetingsAnswer(crmLeads, meetingPagePeriod),
     });
   }
 
@@ -375,6 +555,32 @@ async function answerPersonalQuery({
   }
 
   return null;
+}
+
+function isContextualMeetingReadQuery(command: string) {
+  const normalized = normalizePersonalQuery(command);
+  const asksForMeetings = [
+    "meeting",
+    "meetings",
+    "rdv",
+    "rendez vous",
+    "reunion",
+    "reunions",
+  ].some((phrase) => normalized.includes(phrase));
+  const asksToRead = [
+    "combien",
+    "quels",
+    "quelles",
+    "liste",
+    "montre",
+    "affiche",
+    "visible",
+    "which",
+    "list",
+    "show",
+  ].some((phrase) => normalized.includes(phrase));
+
+  return asksForMeetings && asksToRead;
 }
 
 function resolvePersonalFollowUp(
@@ -510,20 +716,30 @@ function formatGoogleAccessAnswer(
   return `Oui, ton compte Google${account} est connecté. Accès disponible: ${requestedCapabilities.join(" et ") || "Google Workspace"}.`;
 }
 
-function formatCrmMeetingsAnswer(crmLeads: CrmLeadSummary[]) {
+function formatCrmMeetingsAnswer(
+  crmLeads: CrmLeadSummary[],
+  meetingPagePeriod?: "past" | "upcoming",
+) {
+  if (meetingPagePeriod === "past") {
+    if (crmLeads.length === 0) {
+      return "Aucune réunion n'est visible dans l'historique Meetings.";
+    }
+
+    const lines = crmLeads.slice(0, 12).map(formatCrmMeetingLine);
+    return [
+      crmLeads.length === 1
+        ? "1 réunion est visible dans l'historique Meetings:"
+        : `${crmLeads.length} réunions sont visibles dans l'historique Meetings:`,
+      ...lines,
+    ].join("\n");
+  }
+
   const meetings = crmLeads.filter((lead) => lead.status === "meeting-booked");
   if (meetings.length === 0) {
     return "Il n'y a aucun lead au statut Meeting fixé dans le CRM.";
   }
 
-  const lines = meetings.slice(0, 12).map((lead) => {
-    const company = lead.companyName || lead.topic;
-    const contact = lead.contactName ? ` — ${lead.contactName}` : "";
-    const date = lead.leadDate
-      ? ` (${formatCrmMeetingDate(lead.leadDate)})`
-      : "";
-    return `• ${company}${contact}${date}`;
-  });
+  const lines = meetings.slice(0, 12).map(formatCrmMeetingLine);
 
   return [
     meetings.length === 1
@@ -531,6 +747,13 @@ function formatCrmMeetingsAnswer(crmLeads: CrmLeadSummary[]) {
       : `${meetings.length} leads sont au statut Meeting fixé dans le CRM:`,
     ...lines,
   ].join("\n");
+}
+
+function formatCrmMeetingLine(lead: CrmLeadSummary) {
+  const company = lead.companyName || lead.topic;
+  const contact = lead.contactName ? ` — ${lead.contactName}` : "";
+  const date = lead.leadDate ? ` (${formatCrmMeetingDate(lead.leadDate)})` : "";
+  return `• ${company}${contact}${date}`;
 }
 
 function formatGmailAnswer(messages: GmailMessageSummary[], urgent: boolean) {
@@ -739,6 +962,8 @@ function buildSystemPrompt() {
     "privateKnowledge, lorsqu'il est présent, provient du dernier deck générique du Drive privé Qarizmi. Utilise uniquement les extraits fournis et n'invente aucun parcours, credential, chiffre ou offre absent de cette source.",
     "Le contexte privé est réservé aux cofondateurs en conversation privée. Ne le répète jamais comme une information publique et ne prétends pas avoir lu d'autres documents.",
     "Pour une question générale, choisis naia et réponds comme un assistant compétent.",
+    "currentPage est un contexte serveur vérifié. Priorité: instruction explicite, entité sélectionnée, module et vue, historique, contexte général.",
+    "Une entité explicitement nommée dans la commande remplace toujours l'entité sélectionnée dans currentPage.",
     "Réponds toujours au fond de la question. Ne réponds jamais seulement qu'un agent prend le relais, peut lire un module ou peut préparer une action.",
     "Pour une information insuffisante, pose une seule question de clarification utile.",
     "Ne prétends jamais avoir exécuté une écriture, envoyé un message, créé un événement ou modifié le CRM.",

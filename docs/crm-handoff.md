@@ -248,6 +248,22 @@ NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
 client sends only the original command, action id, and approval token. Do not
 reintroduce client-supplied action payload execution.
 
+NAIA page context is published by the active CRM or Meetings client view, then
+rebuilt and allow-listed server-side before orchestration. CRM list filters only
+scope contextual questions such as "combien de leads sont visibles ici"; an
+explicit whole-CRM request must read the complete organization pipeline. Kanban
+and Calendar do not publish list-only company/status filters. Meetings publishes
+its `upcoming` or `past` period so deterministic CRM meeting answers match the
+visible tab. A selected lead may be used for referential commands such as "ce
+lead" or "son pitch", but a different unmatched company/contact name must
+produce a clarification instead of silently targeting the selected lead.
+
+The official NAIA voice is configured only through the server-side
+`ELEVENLABS_VOICE_ID`. The browser cannot override it. The optional
+`ELEVENLABS_FALLBACK_VOICE_ID` is a distinct rescue voice; browser speech
+synthesis remains the final explicit fallback when provider audio is
+unavailable.
+
 ## GitHub Issue Body
 
 Use this if the issue cannot be created automatically:
