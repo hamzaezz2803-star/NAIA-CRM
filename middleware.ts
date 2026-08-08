@@ -36,7 +36,11 @@ export async function middleware(request: NextRequest) {
     !env.NEXT_PUBLIC_SUPABASE_URL ||
     !supabasePublicKey
   ) {
-    return redirectToLogin(request, "config");
+    return rejectProtectedRequest(request, {
+      error: "config",
+      message: "Authentication is not configured.",
+      status: 503,
+    });
   }
 
   let response = NextResponse.next({
@@ -85,7 +89,10 @@ export async function middleware(request: NextRequest) {
       );
       return response;
     }
-    return redirectToLogin(request);
+    return rejectProtectedRequest(request, {
+      message: "Not authenticated.",
+      status: 401,
+    });
   }
 
   console.log("[middleware] Active user session found:", user.email);
@@ -93,7 +100,11 @@ export async function middleware(request: NextRequest) {
   if (!isAuthorizedUser(user)) {
     console.warn("[middleware] User not authorized:", user.email);
     await supabase.auth.signOut();
-    return redirectToLogin(request, "unauthorized");
+    return rejectProtectedRequest(request, {
+      error: "unauthorized",
+      message: "Not authorized.",
+      status: 403,
+    });
   }
 
   console.log("[middleware] Access granted for:", user.email);
@@ -108,6 +119,29 @@ function isPublicPath(pathname: string) {
   return PUBLIC_PATH_PREFIXES.some(
     (prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`),
   );
+}
+
+function isApiPath(pathname: string) {
+  return pathname === "/api" || pathname.startsWith("/api/");
+}
+
+function rejectProtectedRequest(
+  request: NextRequest,
+  {
+    error,
+    message,
+    status,
+  }: {
+    error?: string;
+    message: string;
+    status: 401 | 403 | 503;
+  },
+) {
+  if (isApiPath(request.nextUrl.pathname)) {
+    return NextResponse.json({ error: message }, { status });
+  }
+
+  return redirectToLogin(request, error);
 }
 
 function redirectToLogin(request: NextRequest, error?: string) {
