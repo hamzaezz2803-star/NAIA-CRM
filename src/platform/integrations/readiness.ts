@@ -147,8 +147,9 @@ async function getConnectionRows(): Promise<IntegrationConnectionRow[]> {
 
   if (!membership?.organization_id) return [];
 
-  // Per-user readiness: the settings/integrations pages report the state of
-  // the current user's own connections, not a shared org connection.
+  // Personal providers are always reported for the acting user. Slack does
+  // not create rows here: its readiness comes from server-only environment
+  // variables because the bridge is installed once for the organization.
   const { data, error } = await supabase
     .from("integration_connections")
     .select(

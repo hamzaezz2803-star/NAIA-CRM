@@ -1,16 +1,14 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({
-  push: vi.fn(),
-  refresh: vi.fn(),
-}));
+const mocks = vi.hoisted(() => {
+  const push = vi.fn();
+  const refresh = vi.fn();
+  return { push, refresh, router: { push, refresh } };
+});
 
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: mocks.push,
-    refresh: mocks.refresh,
-  }),
+  useRouter: () => mocks.router,
 }));
 
 import { GoogleConnectButton } from "./google-connect-button";
@@ -18,10 +16,13 @@ import { GoogleConnectButton } from "./google-connect-button";
 describe("GoogleConnectButton", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("opens Google authorization in a popup", () => {
@@ -48,6 +49,24 @@ describe("GoogleConnectButton", () => {
     expect(mocks.push).toHaveBeenCalledWith("/api/integrations/google/auth");
   });
 
+  it("recovers when the user closes the OAuth popup", async () => {
+    const popup = { close: vi.fn(), closed: false };
+    vi.spyOn(window, "open").mockReturnValue(popup as unknown as Window);
+
+    render(<GoogleConnectButton />);
+    fireEvent.click(screen.getByRole("button", { name: "Login with Gmail" }));
+    popup.closed = true;
+
+    expect(
+      await screen.findByText("Connexion Google annulée.", undefined, {
+        timeout: 1_200,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Login with Gmail" }),
+    ).toBeEnabled();
+  });
+
   it("accepts only same-origin success messages", () => {
     render(<GoogleConnectButton />);
 
@@ -68,5 +87,59 @@ describe("GoogleConnectButton", () => {
       }),
     );
     expect(mocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("shows and clears the connected account after a successful disconnect", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ok: true }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <GoogleConnectButton
+        connectedAccount="ali@qarizmi.com"
+        initialConnected
+      />,
+    );
+
+    expect(screen.getByText(/ali@qarizmi.com/)).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Déconnecter Google" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Google déconnecté.")).toBeVisible();
+    });
+    expect(fetchMock).toHaveBeenCalledWith("/api/integrations/disconnect", {
+      body: JSON.stringify({ provider: "google" }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("surfaces a server-side disconnect error without hiding the connection", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ error: "Database unavailable" }), {
+          headers: { "Content-Type": "application/json" },
+          status: 500,
+        }),
+      ),
+    );
+
+    render(
+      <GoogleConnectButton
+        connectedAccount="ali@qarizmi.com"
+        initialConnected
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Déconnecter Google" }));
+
+    expect(await screen.findByText("Database unavailable")).toBeVisible();
+    expect(screen.getByText(/ali@qarizmi.com/)).toBeVisible();
+    expect(mocks.refresh).not.toHaveBeenCalled();
   });
 });

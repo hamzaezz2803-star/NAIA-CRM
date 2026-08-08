@@ -191,9 +191,13 @@ function IntegrationCard({ integration }: { integration: IntegrationHealth }) {
       </div>
 
       {integration.provider === "google" &&
-      integration.status !== "connected" &&
       integration.status !== "not-configured" ? (
-        <GoogleConnectButton className="mt-5" />
+        <div className="mt-5">
+          <GoogleConnectButton
+            connectedAccount={integration.externalAccountLabel}
+            initialConnected={integration.status === "connected"}
+          />
+        </div>
       ) : null}
     </article>
   );

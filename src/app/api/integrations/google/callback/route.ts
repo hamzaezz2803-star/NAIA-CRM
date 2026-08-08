@@ -1,10 +1,17 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+
 import { getAppBaseUrl } from "@/platform/auth/config";
+import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 import { GOOGLE_USER_SCOPES } from "@/platform/integrations/google-workspace-scopes";
 
-// Must match the cookie name set by the sibling auth route.
 const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
+
+type GoogleTokenResponse = {
+  access_token?: string;
+  expires_in?: number;
+  refresh_token?: string;
+  scope?: string;
+};
 
 export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
@@ -18,7 +25,6 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  // CSRF check: the state must match the value minted when the flow started.
   const state = requestUrl.searchParams.get("state");
   const expectedState = request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE)?.value;
   if (!state || !expectedState || state !== expectedState) {
@@ -36,7 +42,6 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Get current session and user details
   const supabase = await createServerSupabaseClient();
   if (!supabase) {
     return new NextResponse("Not authenticated", { status: 401 });
@@ -50,58 +55,56 @@ export async function GET(request: NextRequest) {
     return new NextResponse("Not authenticated", { status: 401 });
   }
 
-  // Get current user's organization
-  const { data: membership, error: memError } = await supabase
+  const { data: membership, error: membershipError } = await supabase
     .from("organization_memberships")
     .select("organization_id")
     .eq("profile_id", user.id)
     .limit(1)
-    .single();
+    .maybeSingle();
 
-  if (memError || !membership) {
+  if (membershipError || !membership?.organization_id) {
     return new NextResponse("No organization found for current user", {
       status: 403,
     });
   }
 
-  const orgId = membership.organization_id;
-
   try {
     const appBaseUrl = getAppBaseUrl();
     const redirectUri = `${appBaseUrl}/api/integrations/google/callback`;
-
-    // Exchange auth code for tokens
-    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
+    const tokenResponse = await fetch("https://oauth2.googleapis.com/token", {
+      body: new URLSearchParams({
+        client_id: clientId,
+        client_secret: clientSecret,
+        code,
+        grant_type: "authorization_code",
+        redirect_uri: redirectUri,
+      }),
       headers: {
         "Content-Type": "application/x-www-form-urlencoded",
       },
-      body: new URLSearchParams({
-        code,
-        client_id: clientId,
-        client_secret: clientSecret,
-        redirect_uri: redirectUri,
-        grant_type: "authorization_code",
-      }),
+      method: "POST",
     });
 
-    if (!tokenRes.ok) {
-      const tokenErrText = await tokenRes.text();
-      return new NextResponse(`Failed to exchange code: ${tokenErrText}`, {
+    if (!tokenResponse.ok) {
+      const tokenError = await tokenResponse.text();
+      return new NextResponse(`Failed to exchange code: ${tokenError}`, {
         status: 400,
       });
     }
 
-    const tokens = await tokenRes.json();
+    const tokens = (await tokenResponse.json()) as GoogleTokenResponse;
+    if (!tokens.access_token || !tokens.expires_in) {
+      return new NextResponse("Google returned an incomplete token response", {
+        status: 400,
+      });
+    }
 
-    // Google only returns a refresh token on explicit consent. Keep the one
-    // stored on this user's connection when the exchange did not mint one.
-    let refreshToken: string | undefined = tokens.refresh_token;
+    let refreshToken = tokens.refresh_token;
     if (!refreshToken) {
       const { data: existing } = await supabase
         .from("integration_connections")
         .select("encrypted_token_reference")
-        .eq("organization_id", orgId)
+        .eq("organization_id", membership.organization_id)
         .eq("provider", "google")
         .eq("connected_by_profile_id", user.id)
         .maybeSingle();
@@ -115,48 +118,40 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    // Expiry time in epoch timestamp
-    const expiryDate = Date.now() + tokens.expires_in * 1000;
     const tokenData = {
       access_token: tokens.access_token,
+      expiry_date: Date.now() + tokens.expires_in * 1000,
       refresh_token: refreshToken,
-      expiry_date: expiryDate,
     };
 
-    // Get user info from Google to display account label (email)
-    const userRes = await fetch(
+    const userResponse = await fetch(
       "https://www.googleapis.com/oauth2/v2/userinfo",
       {
-        headers: {
-          Authorization: `Bearer ${tokens.access_token}`,
-        },
+        headers: { Authorization: `Bearer ${tokens.access_token}` },
       },
     );
 
     let externalAccountLabel = "Google Workspace Connection";
-    if (userRes.ok) {
-      const googleUser = await userRes.json();
-      if (googleUser.email) {
-        externalAccountLabel = googleUser.email;
-      }
+    if (userResponse.ok) {
+      const googleUser = (await userResponse.json()) as { email?: string };
+      if (googleUser.email) externalAccountLabel = googleUser.email;
     }
 
-    // Insert or update the caller's own connection (per-user, not per-org)
-    const { error: dbError } = await supabase
+    const { error: databaseError } = await supabase
       .from("integration_connections")
       .upsert(
         {
-          organization_id: orgId,
-          provider: "google",
-          status: "connected",
+          connected_at: new Date().toISOString(),
+          connected_by_profile_id: user.id,
+          encrypted_token_reference: JSON.stringify(tokenData),
           external_account_label: externalAccountLabel,
+          organization_id: membership.organization_id,
+          provider: "google",
           scopes:
             typeof tokens.scope === "string"
               ? tokens.scope.split(" ")
               : [...GOOGLE_USER_SCOPES],
-          encrypted_token_reference: JSON.stringify(tokenData),
-          connected_by_profile_id: user.id,
-          connected_at: new Date().toISOString(),
+          status: "connected",
           updated_at: new Date().toISOString(),
         },
         {
@@ -164,35 +159,31 @@ export async function GET(request: NextRequest) {
         },
       );
 
-    if (dbError) {
+    if (databaseError) {
       return new NextResponse(
-        `Database error saving connection: ${dbError.message}`,
+        `Database error saving connection: ${databaseError.message}`,
         { status: 500 },
       );
     }
 
-    // Success response - popup will close and message parent page
     const successResponse = new NextResponse(
       `<!DOCTYPE html>
       <html>
-        <head>
-          <title>Google Authentication Success</title>
-        </head>
+        <head><title>Google Authentication Success</title></head>
         <body>
           <p>Authentication successful. You can close this window now.</p>
           <script>
             if (window.opener) {
-              window.opener.postMessage({ type: 'GOOGLE_AUTH_SUCCESS' }, ${JSON.stringify(appBaseUrl)});
+              window.opener.postMessage(
+                { type: 'GOOGLE_AUTH_SUCCESS', email: ${JSON.stringify(externalAccountLabel)} },
+                ${JSON.stringify(appBaseUrl)}
+              );
             }
             window.close();
           </script>
         </body>
       </html>`,
-      {
-        headers: {
-          "Content-Type": "text/html",
-        },
-      },
+      { headers: { "Content-Type": "text/html" } },
     );
     successResponse.cookies.set(GOOGLE_OAUTH_STATE_COOKIE, "", {
       maxAge: 0,
@@ -200,9 +191,9 @@ export async function GET(request: NextRequest) {
     });
 
     return successResponse;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : "Unknown error";
-    return new NextResponse(`OAuth Callback exception: ${msg}`, {
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Unknown error";
+    return new NextResponse(`OAuth Callback exception: ${message}`, {
       status: 500,
     });
   }
