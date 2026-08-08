@@ -1,4 +1,10 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { NaiaFloatingAssistant } from "./naia-floating-assistant";
@@ -162,13 +168,26 @@ describe("NaiaFloatingAssistant", () => {
     renderAssistant("/meetings");
     const trigger = await screen.findByRole("button", { name: "Ouvrir NAIA" });
 
-    window.dispatchEvent(new Event("naia:open-assistant"));
+    act(() => {
+      window.dispatchEvent(new Event("naia:open-assistant"));
+    });
     expect(
       await screen.findByRole("dialog", { name: "Assistant NAIA" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Meetings · Agenda")).toBeInTheDocument();
 
+    await waitFor(() =>
+      expect(
+        screen.getByPlaceholderText("Exécute une commande vocale ou texte…"),
+      ).toHaveFocus(),
+    );
+
     fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Assistant NAIA" }),
+      ).not.toBeInTheDocument(),
+    );
     await waitFor(() => expect(trigger).toHaveFocus());
   });
 });
