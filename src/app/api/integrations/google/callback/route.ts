@@ -3,10 +3,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
 import { getAppBaseUrl } from "@/platform/auth/config";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-import {
-  GOOGLE_MEETING_NOTE_SCOPE,
-  GOOGLE_USER_SCOPES,
-} from "@/platform/integrations/google-workspace-scopes";
+import { GOOGLE_MEETING_NOTE_SCOPE } from "@/platform/integrations/google-workspace-scopes";
 
 const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
 const GOOGLE_OAUTH_USER_INTENT = "user";
@@ -124,26 +121,18 @@ export async function GET(request: NextRequest) {
       .eq("connected_by_profile_id", user.id)
       .maybeSingle();
 
-    let refreshToken = tokens.refresh_token;
-    if (!refreshToken) {
-      try {
-        refreshToken = JSON.parse(
-          existing?.encrypted_token_reference ?? "{}",
-        ).refresh_token;
-      } catch {
-        refreshToken = undefined;
-      }
-    }
-
     const returnedScopes = parseScopes(tokens.scope);
     const existingScopes = Array.isArray(existing?.scopes)
       ? (existing.scopes as string[])
       : [];
     const candidateScopes = returnedScopes.length
       ? returnedScopes
-      : existingScopes.length
-        ? existingScopes
-        : [...GOOGLE_USER_SCOPES];
+      : await resolveScopesFromTokenInfo(tokens.access_token);
+    if (!candidateScopes?.length) {
+      return new NextResponse("Google token scopes could not be verified", {
+        status: 400,
+      });
+    }
     const hasUnexpectedDriveScope = candidateScopes.some(
       (scope) =>
         scope.startsWith("https://www.googleapis.com/auth/drive") &&
@@ -167,13 +156,23 @@ export async function GET(request: NextRequest) {
         status: 403,
       });
     }
-    const persistedScopes = [
-      ...new Set(
-        candidateScopes.filter(
-          (scope) => scope !== GOOGLE_MEETING_NOTE_SCOPE || canPersistMeetGrant,
-        ),
-      ),
-    ];
+    const existingCredentialMayBeBroad = existingScopes.some(
+      (scope) =>
+        scope.startsWith("https://www.googleapis.com/auth/drive") &&
+        scope !== GOOGLE_MEETING_NOTE_SCOPE,
+    );
+    let refreshToken = tokens.refresh_token;
+    if (!refreshToken && !existingCredentialMayBeBroad) {
+      try {
+        refreshToken = JSON.parse(
+          existing?.encrypted_token_reference ?? "{}",
+        ).refresh_token;
+      } catch {
+        refreshToken = undefined;
+      }
+    }
+
+    const persistedScopes = [...new Set(candidateScopes)];
 
     const tokenData = {
       access_token: tokens.access_token,
@@ -281,4 +280,19 @@ function parseScopes(value?: string) {
         .filter(Boolean),
     ),
   ];
+}
+
+async function resolveScopesFromTokenInfo(accessToken: string) {
+  try {
+    const response = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+    );
+    if (!response.ok) return undefined;
+
+    const payload = (await response.json()) as { scope?: string };
+    const scopes = parseScopes(payload.scope);
+    return scopes.length ? scopes : undefined;
+  } catch {
+    return undefined;
+  }
 }

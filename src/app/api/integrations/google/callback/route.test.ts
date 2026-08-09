@@ -98,29 +98,60 @@ function createClient({
 }
 
 function stubSuccessfulGoogleExchange({
+  omitRefreshToken = false,
   omitScope = false,
   scope = "openid email https://www.googleapis.com/auth/calendar",
-}: { omitScope?: boolean; scope?: string } = {}) {
+  tokenInfoOk = true,
+  tokenInfoScope = scope,
+}: {
+  omitRefreshToken?: boolean;
+  omitScope?: boolean;
+  scope?: string;
+  tokenInfoOk?: boolean;
+  tokenInfoScope?: string;
+} = {}) {
   const tokenPayload: Record<string, unknown> = {
     access_token: "access-token",
     expires_in: 3600,
-    refresh_token: "refresh-token",
   };
+  if (!omitRefreshToken) tokenPayload.refresh_token = "refresh-token";
   if (!omitScope) tokenPayload.scope = scope;
-  const fetchMock = vi
-    .fn()
-    .mockResolvedValueOnce(
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://oauth2.googleapis.com/token") {
+      return Promise.resolve(
+        new Response(JSON.stringify(tokenPayload), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+    if (url.startsWith("https://www.googleapis.com/oauth2/v3/tokeninfo")) {
+      return Promise.resolve(
+        tokenInfoOk
+          ? new Response(JSON.stringify({ scope: tokenInfoScope }), {
+              headers: { "Content-Type": "application/json" },
+              status: 200,
+            })
+          : new Response(null, { status: 503 }),
+      );
+    }
+    if (url === "https://www.googleapis.com/oauth2/v2/userinfo") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ email: "ali@qarizmi.com" }), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+
+    return Promise.resolve(
       new Response(JSON.stringify(tokenPayload), {
         headers: { "Content-Type": "application/json" },
-        status: 200,
-      }),
-    )
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ email: "ali@qarizmi.com" }), {
-        headers: { "Content-Type": "application/json" },
-        status: 200,
+        status: 404,
       }),
     );
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -206,25 +237,66 @@ describe("GET /api/integrations/google/callback", () => {
     expect(await response.text()).toContain("database unavailable");
   });
 
-  it("never invents a Drive grant when Google omits the returned scope", async () => {
+  it("attests current scopes with tokeninfo when the token response omits them", async () => {
     const client = createClient();
     mocks.createServerSupabaseClient.mockResolvedValue(client);
-    stubSuccessfulGoogleExchange({ omitScope: true });
+    const fetchMock = stubSuccessfulGoogleExchange({
+      omitScope: true,
+      tokenInfoScope: [
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+      ].join(" "),
+    });
 
     const response = await GET(createRequest());
 
     expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=access-token",
+    );
     expect(client.spies.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         scopes: [
-          "https://www.googleapis.com/auth/calendar.events",
-          "https://www.googleapis.com/auth/calendar.freebusy",
+          "openid",
+          "email",
           "https://www.googleapis.com/auth/gmail.readonly",
-          "https://www.googleapis.com/auth/gmail.send",
         ],
       }),
       { onConflict: "organization_id,provider,connected_by_profile_id" },
     );
+  });
+
+  it("fails closed when omitted scopes cannot be attested with tokeninfo", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    const fetchMock = stubSuccessfulGoogleExchange({
+      omitScope: true,
+      tokenInfoOk: false,
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("scopes could not be verified");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a broad Drive scope discovered through tokeninfo", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      omitScope: true,
+      tokenInfoScope: "https://www.googleapis.com/auth/drive.readonly",
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("unauthorized Drive scope");
+    expect(client.spies.upsert).not.toHaveBeenCalled();
   });
 
   it("revalidates founder access before exchanging a meeting-notes code", async () => {
@@ -331,5 +403,36 @@ describe("GET /api/integrations/google/callback", () => {
       }),
       { onConflict: "organization_id,provider,connected_by_profile_id" },
     );
+  });
+
+  it("does not reuse a stored refresh token attested with a broad Drive scope", async () => {
+    const client = createClient({
+      existingConnection: {
+        encrypted_token_reference: JSON.stringify({
+          refresh_token: "broad-existing-refresh-token",
+        }),
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.readonly",
+        ],
+      },
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      omitRefreshToken: true,
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledOnce();
+    const [payload] = client.spies.upsert.mock.calls[0] as [
+      { encrypted_token_reference: string },
+    ];
+    expect(JSON.parse(payload.encrypted_token_reference)).toEqual({
+      access_token: "access-token",
+      expiry_date: expect.any(Number),
+    });
   });
 });

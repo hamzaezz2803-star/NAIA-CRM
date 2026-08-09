@@ -8,7 +8,7 @@ afterEach(() => {
 });
 
 describe("Google connection scope persistence", () => {
-  it("strips every Drive scope from an ordinary employee login", async () => {
+  it("rejects an overbroad current token instead of sanitizing its metadata", async () => {
     const client = createClient({ role: "member" });
     stubTokenInfo([
       "https://www.googleapis.com/auth/gmail.readonly",
@@ -26,14 +26,12 @@ describe("Google connection scope persistence", () => {
           id: "profile-1",
         } as User,
       }),
-    ).resolves.toEqual({ saved: true });
+    ).resolves.toEqual({
+      error: "Google returned an unauthorized Drive scope.",
+      saved: false,
+    });
 
-    expect(client.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-      }),
-      { onConflict: "organization_id,provider,connected_by_profile_id" },
-    );
+    expect(client.upsert).not.toHaveBeenCalled();
   });
 
   it("retains a narrow Meet grant already approved through the founder flow", async () => {
@@ -46,11 +44,13 @@ describe("Google connection scope persistence", () => {
       "https://www.googleapis.com/auth/drive.meet.readonly",
     ]);
 
-    await saveGoogleConnectionFromLogin({
-      accessToken: "access-token",
-      supabase: client.supabase as never,
-      user: { email: "ali@qarizmi.com", id: "profile-1" } as User,
-    });
+    await expect(
+      saveGoogleConnectionFromLogin({
+        accessToken: "access-token",
+        supabase: client.supabase as never,
+        user: { email: "ali@qarizmi.com", id: "profile-1" } as User,
+      }),
+    ).resolves.toEqual({ saved: true });
 
     expect(client.upsert).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -73,19 +73,69 @@ describe("Google connection scope persistence", () => {
       "https://www.googleapis.com/auth/drive.meet.readonly",
     ]);
 
-    await saveGoogleConnectionFromLogin({
-      accessToken: "access-token",
-      refreshToken: "refresh-token",
-      supabase: client.supabase as never,
-      user: { email: "ali@qarizmi.com", id: "profile-1" } as User,
+    await expect(
+      saveGoogleConnectionFromLogin({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        supabase: client.supabase as never,
+        user: { email: "ali@qarizmi.com", id: "profile-1" } as User,
+      }),
+    ).resolves.toEqual({
+      error: "Google returned an unauthorized Drive scope.",
+      saved: false,
     });
 
-    expect(client.upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
-      }),
-      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    expect(client.upsert).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when Google tokeninfo cannot attest the current scopes", async () => {
+    const client = createClient({ role: "owner" });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(new Response(null, { status: 503 })),
     );
+
+    await expect(
+      saveGoogleConnectionFromLogin({
+        accessToken: "access-token",
+        refreshToken: "refresh-token",
+        supabase: client.supabase as never,
+        user: { email: "ali@qarizmi.com", id: "profile-1" } as User,
+      }),
+    ).resolves.toEqual({
+      error: "Google token scopes could not be verified.",
+      saved: false,
+    });
+
+    expect(client.upsert).not.toHaveBeenCalled();
+  });
+
+  it("never reuses a refresh token whose stored attestation includes broad Drive", async () => {
+    const client = createClient({
+      existingScopes: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.readonly",
+      ],
+      role: "owner",
+    });
+    stubTokenInfo(["https://www.googleapis.com/auth/gmail.readonly"]);
+
+    await expect(
+      saveGoogleConnectionFromLogin({
+        accessToken: "safe-access-token",
+        supabase: client.supabase as never,
+        user: { email: "ali@qarizmi.com", id: "profile-1" } as User,
+      }),
+    ).resolves.toEqual({ saved: true });
+
+    expect(client.upsert).toHaveBeenCalledOnce();
+    const [payload] = client.upsert.mock.calls[0] as [
+      { encrypted_token_reference: string },
+    ];
+    expect(JSON.parse(payload.encrypted_token_reference)).toEqual({
+      access_token: "safe-access-token",
+      expiry_date: expect.any(Number),
+    });
   });
 });
 
