@@ -1,5 +1,31 @@
 import type { CrmLeadSummary } from "@/features/crm/contracts";
 
+export const mayaTemplateFamilies = ["pitch", "commercial-proposal"] as const;
+
+export type MayaTemplateFamily = (typeof mayaTemplateFamilies)[number];
+
+export const mayaTemplateAvailabilities = [
+  "ready",
+  "manual-review",
+  "unavailable",
+] as const;
+
+export type MayaTemplateAvailability =
+  (typeof mayaTemplateAvailabilities)[number];
+
+export type MayaTemplateSource = {
+  availability: MayaTemplateAvailability;
+  driveFileId?: string;
+  family: MayaTemplateFamily;
+  fileName?: string;
+  modifiedAt?: string;
+  sha256?: string;
+  sizeBytes?: number;
+  sourceLabel: string;
+  warning?: string;
+  webViewLink?: string;
+};
+
 export const mayaDeckKinds = [
   "generic",
   "example",
@@ -110,13 +136,6 @@ export type MayaDeckPlan = {
   presentationSlideNumbers: number[];
   residueWarnings: string[];
   useCaseBullets?: string[];
-};
-
-export type MayaGenerationManifest = {
-  createdAt: string;
-  draftFileName: string;
-  plan: MayaDeckPlan;
-  sourceGenericDeck: string;
 };
 
 export type MayaLearningEvent = {

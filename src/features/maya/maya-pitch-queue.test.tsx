@@ -9,81 +9,101 @@ vi.mock("./actions", () => ({
 }));
 
 describe("MayaPitchQueue", () => {
-  it("renders editable context questions before draft generation", () => {
-    render(
-      <MayaPitchQueue
-        result={{
-          authorized: true,
-          genericDeckFileName: "Qarizmi_Generic.pptx",
-          items: [
-            {
-              clientName: "HPS",
-              contactName: "Abdeslam El-Alawi",
-              contextDefaults: {
-                contactName: "Abdeslam El-Alawi",
-                meetingObjective:
-                  "Préparer un pitch de diagnostic IA pour le prochain meeting.",
-              },
-              leadId: "lead-1",
-              leadStatus: "meeting-booked",
-              missingQuestions: ["Quel est le site web exact du client ?"],
-              status: "needs-context",
-            },
-          ],
-          sourceFolder: "Google Drive folder source-folder",
-          sourceWarnings: [],
-        }}
-      />,
-    );
+  it("shows the approved family, source, date and explicit confirmation", () => {
+    render(<MayaPitchQueue result={makeResult()} />);
 
+    expect(screen.getByText("Pitch client")).toBeInTheDocument();
+    expect(screen.getByText("Proposition commerciale")).toBeInTheDocument();
     expect(
-      screen.getByLabelText("Site web exact du client"),
+      screen.getByText(
+        "Qarizmi_Introduction_Service as a software_Teaser.pptx",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("Site web exact du client")).toBeRequired();
+    expect(screen.getByText(/3 août 2026/)).toBeInTheDocument();
+    expect(screen.getByText("a".repeat(64))).toBeInTheDocument();
+    expect(screen.getByLabelText(/Je confirme la copie fidèle/)).toBeRequired();
     expect(
-      screen.getByLabelText("Contexte additionnel pour Maya"),
-    ).toBeInTheDocument();
+      screen.getByRole("button", { name: "Copier dans 01_Pitch" }),
+    ).toBeEnabled();
+    expect(screen.getByText(/aucun provider IA/)).toBeInTheDocument();
+  });
+
+  it("disables generation when the CRM Drive destination is unsafe", () => {
+    const result = makeResult();
+    if (!result.authorized) throw new Error("test fixture must be authorized");
+    result.items[0] = {
+      ...result.items[0]!,
+      destinationError:
+        "Le dossier CRM contient plusieurs sous-dossiers 01_Pitch; la destination est ambiguë.",
+      destinationFolderUrl: undefined,
+      status: "blocked",
+    };
+
+    render(<MayaPitchQueue result={result} />);
+
+    expect(screen.getByText("Copie bloquée")).toBeInTheDocument();
     expect(
-      screen.getByRole("button", {
-        name: /Compléter et générer le draft PPTX/,
-      }),
-    ).toBeInTheDocument();
+      screen.getByRole("button", { name: "Copier dans 01_Pitch" }),
+    ).toBeDisabled();
   });
 
   it("shows a direct Drive link when a draft already exists", () => {
-    const result: MayaPitchQueueResult = {
-      authorized: true,
-      genericDeckFileName: "Qarizmi_Generic.pptx",
-      items: [
-        {
-          clientName: "HPS",
-          contactName: "Abdeslam El-Alawi",
-          contextDefaults: {
-            contactName: "Abdeslam El-Alawi",
-            websiteUrl: "https://hps-worldwide.com",
-          },
-          draftFileName:
-            "20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
-          draftFilePath: "gdrive:draft-file-id",
-          leadId: "lead-1",
-          leadStatus: "meeting-booked",
-          missingQuestions: [],
-          status: "draft-ready",
-        },
-      ],
-      sourceFolder: "Google Drive folder source-folder",
-      sourceWarnings: [],
+    const result = makeResult();
+    if (!result.authorized) throw new Error("test fixture must be authorized");
+    result.items[0] = {
+      ...result.items[0]!,
+      draftFileName:
+        "20260809_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
+      draftFilePath: "gdrive:draft-file-id",
+      status: "draft-ready",
     };
 
     render(<MayaPitchQueue result={result} />);
 
     expect(
-      screen.getByRole("link", {
-        name: /Ouvrir le draft dans Drive/,
-      }),
+      screen.getByRole("link", { name: /Ouvrir le draft dans Drive/ }),
     ).toHaveAttribute(
       "href",
       "https://drive.google.com/file/d/draft-file-id/view",
     );
   });
 });
+
+function makeResult(): MayaPitchQueueResult {
+  return {
+    authorized: true,
+    items: [
+      {
+        clientName: "HPS",
+        contactName: "Abdeslam El-Alawi",
+        destinationFolderUrl:
+          "https://drive.google.com/drive/folders/pitch-folder-id",
+        leadId: "lead-1",
+        leadStatus: "meeting-booked",
+        status: "ready",
+      },
+    ],
+    sourceWarnings: [],
+    templates: [
+      {
+        availability: "ready",
+        driveFileId: "approved-teaser-id",
+        family: "pitch",
+        fileName: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
+        modifiedAt: "2026-08-03T22:14:53.763Z",
+        sha256: "a".repeat(64),
+        sizeBytes: 4_933_715,
+        sourceLabel: "Google Drive · approved-teaser-id",
+        webViewLink:
+          "https://docs.google.com/presentation/d/approved-teaser-id/edit",
+      },
+      {
+        availability: "manual-review",
+        family: "commercial-proposal",
+        sourceLabel: "Validation manuelle",
+        warning:
+          "La famille proposition commerciale n'effectue aucune copie automatique en V1.",
+      },
+    ],
+  };
+}

@@ -110,10 +110,11 @@ The WhatsApp surface is private and fail-closed. `WHATSAPP_BUSINESS_ACCOUNT_ID` 
 
 ## Google Drive Folder Structure
 
-One folder per client company (not per lead), created by the organization
-service account inside the cofounders shared-drive `clients` folder
-(`MAYA_DRIVE_OUTPUT_FOLDER_ID`). If a folder with the client's name already
-exists there, it is reused instead of duplicated.
+One folder per client company (not per lead) lives inside the cofounders
+shared-drive `clients` folder (`MAYA_DRIVE_OUTPUT_FOLDER_ID`). The CRM stores
+the authoritative URL on the company and/or lead. Docs Generator must use that
+stored URL, verify the folder's parent and require one existing `01_Pitch`; it
+must never search, create, repair, or deduplicate folders by client name.
 
 ```text
 Company Name
@@ -234,15 +235,39 @@ through Maya / Docs Generator. When a lead moves to `proposal-sent`, Maya
 prepares the proposal next action. The CRM action itself remains
 organization-scoped through the existing CRM server actions.
 
-Maya pitch generation is implemented in `src/features/maya` and should stay
-outside CRM ownership. CRM provides the lead, company/contact fields, notes,
-status, and meeting context; Maya owns the private pitch library, PPTX deck
-planning, OpenAI-enhanced draft generation, and Nabil final-version learning
-loop. Do not copy pitch source decks into a stagiaire-visible folder, broaden
-Drive sharing for debugging, or reuse `MAYA_OPENAI_API_KEY` outside Maya's
-cofounder-gated draft generation action. If a lead is missing
-website/objective/contact details, Maya should surface smart follow-up questions
-instead of guessing silently.
+Maya pitch generation is implemented in `src/features/maya` and stays outside
+CRM ownership. CRM provides the organization-scoped lead, company/contact and
+the authoritative client Drive URL. The `pitch` family clones the audited
+native PPTX pinned by exact filename, `MAYA_PITCH_TEMPLATE_FILE_ID`, and the
+mandatory `MAYA_PITCH_TEMPLATE_SHA256` byte-for-byte, changes only the output
+filename, scans all textual OOXML parts for client residue, and writes one PPTX
+after explicit founder confirmation. Production must remain blocked until the
+digest of the independently reviewed binary is configured. A transactional
+Supabase claim globally keyed by destination `01_Pitch` and filename allows one
+active upload and reconciles retries by reading and hashing the existing Drive
+file. The claim persists a pre-generated Drive file ID: a retry after an
+indeterminate create response reuses that ID instead of creating a duplicate.
+Its lease is renewed transactionally immediately before the external write, so
+a reclaimed stale worker cannot upload; reconciliation requires the expected
+name and parent and fails closed on duplicate names. It never deletes or
+deduplicates Drive content. It does not
+call OpenAI or Groq and does not upload `maya-generation-manifest.json`. The
+audited Teaser contains no client or industry placeholder; its sector labels
+are generic credential headings and must not be presented as substitutions.
+The `commercial-proposal` family remains manual because commercial scope, pricing,
+dates and legal terms require human review. Do not copy pitch source decks into
+a stagiaire-visible folder, broaden Drive sharing for debugging, or bypass the
+stored CRM URL when resolving a destination.
+
+To activate pitch copying, independently review and download the native Teaser
+without editing it, calculate its digest locally with
+`shasum -a 256 <approved-teaser.pptx>`, then set the lowercase result as the
+server-only `MAYA_PITCH_TEMPLATE_SHA256`. The read-only Drive capture verified
+on 2026-08-09 is
+`7e499cb1dcfb92167cf223f6e1ef91a5bb3167c62c3524998b7354f32a5f03ab`.
+Never derive or update that value from an automatic generation request. Changing
+the Drive file requires a fresh human review and a deliberate digest rotation;
+leaving the variable blank keeps both the queue and the write action blocked.
 
 NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
 client sends only the original command, action id, and approval token. Do not
