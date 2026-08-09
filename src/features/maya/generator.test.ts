@@ -1,20 +1,15 @@
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { generateMayaPitchDraft } from "./generator";
-import {
-  findLatestGenericDeck,
-  indexMayaDeck,
-  listMayaDeckFiles,
-} from "./pptx";
-import { buildMayaDeckPlan } from "./planning";
+import { findLatestGenericDeck, listMayaDeckFiles } from "./pptx";
 import { createLocalMayaPitchStorageAdapter } from "./storage";
 import { createMayaPitchDeckFixture } from "./test-fixtures";
 
-describe("Maya pitch draft generator", () => {
+describe("Maya faithful pitch clone", () => {
   let sourceRoot: string;
   let tempRoot: string;
 
@@ -29,89 +24,52 @@ describe("Maya pitch draft generator", () => {
     await rm(sourceRoot, { force: true, recursive: true });
   });
 
-  it("generates an editable PPTX draft and manifest", async () => {
+  it("copies the source PPTX byte-for-byte and changes only the file name", async () => {
     const decks = await listMayaDeckFiles(sourceRoot);
-    const genericFile = findLatestGenericDeck(decks)!;
-    const genericDeck = await indexMayaDeck(genericFile.filePath);
-    const plan = buildMayaDeckPlan({
-      brief: {
-        clientName: "HPS",
-        clientType: "single-company",
-        crmContext: "Paiements, switch monétique, LLM local avec Mistral.",
-        missingQuestions: [],
-        status: "ready",
-        websiteUrl: "https://www.hps-worldwide.com/",
-      },
-      genericDeck,
-      learningEvents: [],
-    });
+    const source = findLatestGenericDeck(decks)!;
 
     const result = await generateMayaPitchDraft({
-      date: new Date("2026-07-08T00:00:00.000Z"),
-      genericDeckFilePath: genericFile.filePath,
-      plan,
+      clientName: "HPS",
+      date: new Date("2026-08-09T00:00:00.000Z"),
+      family: "pitch",
+      sourceDeckFilePath: source.filePath,
       storage: createLocalMayaPitchStorageAdapter(tempRoot),
     });
 
     expect(result.draft.fileName).toBe(
-      "20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
+      "20260809_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
     );
-    expect((await stat(result.draft.filePath)).size).toBeGreaterThan(1_000);
-    expect(result.manifestPath).toBe(
-      path.join(tempRoot, "HPS", "Pitch", "maya-generation-manifest.json"),
+    expect(result.draft.filePath).toBe(
+      path.join(tempRoot, "HPS", "01_Pitch", result.draft.fileName),
     );
-
-    const manifest = JSON.parse(
-      await readFile(result.manifestPath, "utf8"),
-    ) as {
-      draftFileName: string;
-      plan: { diagnosticOutline: string[] };
-    };
-
-    expect(manifest.draftFileName).toBe(result.draft.fileName);
-    expect(manifest.plan.diagnosticOutline.length).toBeGreaterThan(0);
-
-    const draftDeck = await indexMayaDeck(result.draft.filePath);
-    expect(draftDeck.slides.length).toBeLessThan(genericDeck.slides.length);
-    expect(draftDeck.slides.map((slide) => slide.text).join(" ")).toContain(
-      "Preliminary Diagnostic - HPS",
+    expect(await readFile(result.draft.filePath)).toEqual(
+      await readFile(source.filePath),
     );
-    expect(draftDeck.slides.map((slide) => slide.text).join(" ")).toContain(
-      "Layer RAG",
-    );
+    expect(result.sourceSha256).toBe(result.targetSha256);
   });
 
-  it("uses model-proposed use cases when the deck plan provides them", async () => {
+  it("blocks a source deck with client residue before writing a draft", async () => {
     const decks = await listMayaDeckFiles(sourceRoot);
-    const genericFile = findLatestGenericDeck(decks)!;
-    const genericDeck = await indexMayaDeck(genericFile.filePath);
-    const plan = buildMayaDeckPlan({
-      brief: {
+    const source = decks.find((deck) => deck.fileName.includes("AKWA"))!;
+
+    await expect(
+      generateMayaPitchDraft({
         clientName: "HPS",
-        clientType: "single-company",
-        crmContext: "Paiements, switch monétique, LLM local avec Mistral.",
-        missingQuestions: [],
-        status: "ready",
-      },
-      genericDeck,
-      learningEvents: [],
-    });
+        family: "pitch",
+        sourceDeckFilePath: source.filePath,
+        storage: createLocalMayaPitchStorageAdapter(tempRoot),
+      }),
+    ).rejects.toThrow("résidus client interdits");
+  });
 
-    const result = await generateMayaPitchDraft({
-      date: new Date("2026-07-08T00:00:00.000Z"),
-      genericDeckFilePath: genericFile.filePath,
-      plan: {
-        ...plan,
-        useCaseBullets: [
-          "OpenAI use case spécifique: agent conformité paiements HPS.",
-        ],
-      },
-      storage: createLocalMayaPitchStorageAdapter(tempRoot),
-    });
-
-    const draftDeck = await indexMayaDeck(result.draft.filePath);
-    expect(draftDeck.slides.map((slide) => slide.text).join(" ")).toContain(
-      "agent conformité paiements HPS",
-    );
+  it("keeps commercial proposals behind manual review", async () => {
+    await expect(
+      generateMayaPitchDraft({
+        clientName: "HPS",
+        family: "commercial-proposal",
+        sourceDeckFilePath: "/not/read.pptx",
+        storage: createLocalMayaPitchStorageAdapter(tempRoot),
+      }),
+    ).rejects.toThrow("validation manuelle");
   });
 });

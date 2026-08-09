@@ -10,9 +10,9 @@ export function canUseMayaPitchGeneratorEmail(email?: string | null) {
 }
 
 /**
- * Pitch generation spends OpenAI tokens and writes into the client Drive, so
- * only organization owners may trigger it — always through an explicit human
- * action, never automatically on a lead status change.
+ * Pitch cloning writes into the client Drive, so only organization owners may
+ * trigger it — always through an explicit human action, never automatically on
+ * a lead status change. The faithful-clone V1 does not call an AI provider.
  */
 export function canTriggerMayaPitchGenerationRole(role?: string | null) {
   return role === "owner";

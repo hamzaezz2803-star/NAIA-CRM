@@ -427,6 +427,7 @@ async function executeAction({
     try {
       const response = await generateMayaPitchDraftForLeadAction(
         action.payload.leadId,
+        { confirmed: true, family: "pitch" },
       );
 
       return Response.json({
@@ -439,7 +440,7 @@ async function executeAction({
           ? {
               draftFileName: response.draftFileName,
               draftFilePath: response.draftFilePath,
-              manifestPath: response.manifestPath,
+              sourceFileName: response.sourceFileName,
             }
           : undefined,
         success: response.success,

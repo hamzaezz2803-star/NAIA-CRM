@@ -36,6 +36,7 @@ export type DriveFileSummary = {
   mimeType?: string;
   modifiedTime?: string;
   name: string;
+  parents?: string[];
   size?: string;
   webViewLink?: string;
 };
@@ -143,7 +144,7 @@ export async function listDriveFolderFiles(
   );
   url.searchParams.set(
     "fields",
-    "files(id,name,mimeType,modifiedTime,size,webViewLink)",
+    "files(id,name,mimeType,modifiedTime,size,webViewLink,parents)",
   );
   url.searchParams.set("pageSize", String(Math.min(maxResults, 1000)));
   url.searchParams.set("orderBy", "name");
@@ -153,6 +154,32 @@ export async function listDriveFolderFiles(
   };
 
   return (payload.files ?? []).filter((file) => Boolean(file.id));
+}
+
+/** Reads one Drive file or folder without creating or repairing anything. */
+export async function getDriveFileMetadata(
+  fileId: string,
+): Promise<DriveFileSummary> {
+  const url = new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}`);
+  url.searchParams.set(
+    "fields",
+    "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+  );
+  url.searchParams.set("supportsAllDrives", "true");
+
+  const response = await fetch(url, {
+    headers: await driveAuthHeaders(),
+  });
+  if (!response.ok) {
+    throw new Error(await driveError(response));
+  }
+
+  const metadata = (await response.json()) as DriveFileSummary;
+  if (!metadata.id || !metadata.name) {
+    throw new Error("Google Drive did not return complete file metadata.");
+  }
+
+  return metadata;
 }
 
 /**

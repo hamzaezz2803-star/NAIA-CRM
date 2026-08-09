@@ -54,7 +54,7 @@ export function createLocalMayaPitchStorageAdapter(
       const pitchFolder = path.join(
         rootPath,
         sanitizeMayaClientName(clientName),
-        "Pitch",
+        "01_Pitch",
       );
       await mkdir(pitchFolder, { recursive: true });
       const filePath = path.join(pitchFolder, fileName);
