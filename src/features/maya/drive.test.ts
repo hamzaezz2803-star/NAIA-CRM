@@ -6,22 +6,30 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 const driveServiceMocks = vi.hoisted(() => ({
   downloadDriveFile: vi.fn(),
+  generateDriveFileId: vi.fn(),
   getDriveFileMetadata: vi.fn(),
+  getDriveFileMetadataIfExists: vi.fn(),
   isDriveServiceConfigured: vi.fn(() => true),
   listDriveFolderFiles: vi.fn(),
+  listDriveFolderFilesByName: vi.fn(),
   uploadDriveFile: vi.fn(),
 }));
 
 vi.mock("@/platform/integrations/google-drive-service", () => ({
   downloadDriveFile: driveServiceMocks.downloadDriveFile,
+  generateDriveFileId: driveServiceMocks.generateDriveFileId,
   getDriveFileMetadata: driveServiceMocks.getDriveFileMetadata,
+  getDriveFileMetadataIfExists: driveServiceMocks.getDriveFileMetadataIfExists,
   isDriveServiceConfigured: driveServiceMocks.isDriveServiceConfigured,
   listDriveFolderFiles: driveServiceMocks.listDriveFolderFiles,
+  listDriveFolderFilesByName: driveServiceMocks.listDriveFolderFilesByName,
   uploadDriveFile: driveServiceMocks.uploadDriveFile,
 }));
 
 import {
   downloadMayaDriveDeckToTemp,
+  findMayaDriveDraftByExactName,
+  findMayaDriveDraftById,
   findMayaDriveArtifacts,
   getMayaDriveConfigFromEnv,
   getMayaDriveTemplateFile,
@@ -31,7 +39,9 @@ import {
   listMayaDriveDeckFiles,
   parseMayaDriveFolderId,
   uploadMayaDriveDraft,
+  verifyMayaDrivePptxHash,
 } from "./drive";
+import { hashMayaPptx } from "./template";
 
 const PPTX_MIME_TYPE =
   "application/vnd.openxmlformats-officedocument.presentationml.presentation";
@@ -72,12 +82,14 @@ describe("Maya Drive configuration and approved templates", () => {
 
   it("loads the pinned, audited Teaser PPTX as the pitch template", async () => {
     vi.stubEnv("MAYA_PITCH_TEMPLATE_FILE_ID", "approved-teaser-id");
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_SHA256", "a".repeat(64));
     driveServiceMocks.getDriveFileMetadata.mockResolvedValue({
       id: "approved-teaser-id",
       mimeType: PPTX_MIME_TYPE,
       modifiedTime: "2026-08-03T22:14:53.763Z",
       name: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
       size: "4933715",
+      trashed: false,
       webViewLink:
         "https://docs.google.com/presentation/d/approved-teaser-id/edit",
     });
@@ -86,6 +98,7 @@ describe("Maya Drive configuration and approved templates", () => {
       getMayaDriveTemplateFile({ family: "pitch" }),
     ).resolves.toMatchObject({
       driveFileId: "approved-teaser-id",
+      expectedSha256: "a".repeat(64),
       fileName: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
       sizeBytes: 4_933_715,
     });
@@ -93,6 +106,7 @@ describe("Maya Drive configuration and approved templates", () => {
 
   it("rejects a native Google Slides source because export is not byte-faithful", async () => {
     vi.stubEnv("MAYA_PITCH_TEMPLATE_FILE_ID", "slides-id");
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_SHA256", "a".repeat(64));
     driveServiceMocks.getDriveFileMetadata.mockResolvedValue({
       id: "slides-id",
       mimeType: "application/vnd.google-apps.presentation",
@@ -102,6 +116,47 @@ describe("Maya Drive configuration and approved templates", () => {
 
     await expect(getMayaDriveTemplateFile({ family: "pitch" })).rejects.toThrow(
       ".pptx natif",
+    );
+  });
+
+  it("fails closed before reading Drive when the audited SHA-256 is absent", async () => {
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_FILE_ID", "approved-teaser-id");
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_SHA256", "");
+
+    await expect(getMayaDriveTemplateFile({ family: "pitch" })).rejects.toThrow(
+      "MAYA_PITCH_TEMPLATE_SHA256",
+    );
+    expect(driveServiceMocks.getDriveFileMetadata).not.toHaveBeenCalled();
+  });
+
+  it("rejects a renamed file even when its Drive id is pinned", async () => {
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_FILE_ID", "approved-teaser-id");
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_SHA256", "a".repeat(64));
+    driveServiceMocks.getDriveFileMetadata.mockResolvedValue({
+      id: "approved-teaser-id",
+      mimeType: PPTX_MIME_TYPE,
+      modifiedTime: "2026-08-03T22:14:53.763Z",
+      name: "Qarizmi_Introduction_Service as a software_Client.pptx",
+    });
+
+    await expect(getMayaDriveTemplateFile({ family: "pitch" })).rejects.toThrow(
+      "porter exactement le nom",
+    );
+  });
+
+  it("rejects the approved template when its pinned file is trashed", async () => {
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_FILE_ID", "approved-teaser-id");
+    vi.stubEnv("MAYA_PITCH_TEMPLATE_SHA256", "a".repeat(64));
+    driveServiceMocks.getDriveFileMetadata.mockResolvedValue({
+      id: "approved-teaser-id",
+      mimeType: PPTX_MIME_TYPE,
+      modifiedTime: "2026-08-03T22:14:53.763Z",
+      name: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
+      trashed: true,
+    });
+
+    await expect(getMayaDriveTemplateFile({ family: "pitch" })).rejects.toThrow(
+      "corbeille Drive",
     );
   });
 
@@ -129,12 +184,14 @@ describe("Maya Drive configuration and approved templates", () => {
   });
 
   it("downloads the selected file into an isolated temporary folder", async () => {
+    const content = Buffer.from([80, 75]);
     driveServiceMocks.downloadDriveFile.mockResolvedValue(
-      new Uint8Array([80, 75]).buffer,
+      Uint8Array.from(content).buffer,
     );
 
     const downloaded = await downloadMayaDriveDeckToTemp({
       driveFileId: "approved-teaser-id",
+      expectedSha256: hashMayaPptx(content),
       fileName: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
       filePath: "gdrive:approved-teaser-id",
       kind: "example",
@@ -148,6 +205,26 @@ describe("Maya Drive configuration and approved templates", () => {
       "approved-teaser-id",
       { mimeType: PPTX_MIME_TYPE },
     );
+  });
+
+  it("blocks a changed Drive revision before writing it to temp", async () => {
+    const content = Buffer.from([80, 75]);
+    driveServiceMocks.downloadDriveFile.mockResolvedValue(
+      Uint8Array.from(content).buffer,
+    );
+
+    await expect(
+      downloadMayaDriveDeckToTemp({
+        driveFileId: "approved-teaser-id",
+        expectedSha256: "0".repeat(64),
+        fileName: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
+        filePath: "gdrive:approved-teaser-id",
+        kind: "example",
+        mimeType: PPTX_MIME_TYPE,
+        modifiedAt: new Date("2026-08-03T22:14:53.763Z"),
+        sizeBytes: 4_933_715,
+      }),
+    ).rejects.toThrow("SHA-256 audité");
   });
 });
 
@@ -244,17 +321,20 @@ describe("Maya fail-closed Drive destination", () => {
     try {
       await expect(
         uploadMayaDriveDraft({
+          driveFileId: "reserved-draft-id",
           draftFileName: "HPS_vDraft.pptx",
           draftFilePath: draftPath,
           pitchFolderId: "pitch-folder-id",
         }),
       ).resolves.toEqual({
+        driveFileId: "draft-id",
         draftFileName: "HPS_vDraft.pptx",
         draftFilePath: "https://drive.google.com/file/d/draft-id/view",
       });
       expect(driveServiceMocks.uploadDriveFile).toHaveBeenCalledTimes(1);
       expect(driveServiceMocks.uploadDriveFile).toHaveBeenCalledWith({
         content: expect.any(Buffer),
+        fileId: "reserved-draft-id",
         mimeType: PPTX_MIME_TYPE,
         name: "HPS_vDraft.pptx",
         parentFolderId: "pitch-folder-id",
@@ -262,6 +342,102 @@ describe("Maya fail-closed Drive destination", () => {
     } finally {
       await rm(tempRoot, { force: true, recursive: true });
     }
+  });
+
+  it("hash-verifies an existing native PPTX before idempotent reuse", async () => {
+    const content = Buffer.from([1, 2, 3]);
+    driveServiceMocks.downloadDriveFile.mockResolvedValue(
+      Uint8Array.from(content).buffer,
+    );
+
+    await expect(
+      verifyMayaDrivePptxHash({
+        driveFileId: "existing-draft-id",
+        expectedSha256: hashMayaPptx(content),
+        mimeType: PPTX_MIME_TYPE,
+        trashed: false,
+      }),
+    ).resolves.toBe(hashMayaPptx(content));
+  });
+
+  it("re-reads the MIME type before trusting an already-uploaded claim", async () => {
+    const content = Buffer.from([1, 2, 3]);
+    driveServiceMocks.getDriveFileMetadata.mockResolvedValue({
+      id: "claimed-draft-id",
+      mimeType: PPTX_MIME_TYPE,
+      name: "HPS_vDraft.pptx",
+      trashed: false,
+    });
+    driveServiceMocks.downloadDriveFile.mockResolvedValue(
+      Uint8Array.from(content).buffer,
+    );
+
+    await expect(
+      verifyMayaDrivePptxHash({
+        driveFileId: "claimed-draft-id",
+        expectedSha256: hashMayaPptx(content),
+      }),
+    ).resolves.toBe(hashMayaPptx(content));
+    expect(driveServiceMocks.getDriveFileMetadata).toHaveBeenCalledWith(
+      "claimed-draft-id",
+    );
+  });
+
+  it("fails closed when duplicate exact filenames already exist", async () => {
+    driveServiceMocks.listDriveFolderFilesByName.mockResolvedValue([
+      { id: "duplicate-1", name: "HPS_vDraft.pptx" },
+      { id: "duplicate-2", name: "HPS_vDraft.pptx" },
+    ]);
+
+    await expect(
+      findMayaDriveDraftByExactName({
+        draftFileName: "HPS_vDraft.pptx",
+        pitchFolderId: "pitch-folder-id",
+      }),
+    ).rejects.toThrow("Plusieurs fichiers Drive");
+  });
+
+  it("reconciles a reserved id only in the expected folder and name", async () => {
+    const content = Buffer.from([1, 2, 3]);
+    driveServiceMocks.getDriveFileMetadataIfExists.mockResolvedValue({
+      id: "reserved-draft-id",
+      mimeType: PPTX_MIME_TYPE,
+      name: "HPS_vDraft.pptx",
+      parents: ["pitch-folder-id"],
+      trashed: false,
+    });
+    driveServiceMocks.downloadDriveFile.mockResolvedValue(
+      Uint8Array.from(content).buffer,
+    );
+
+    await expect(
+      findMayaDriveDraftById({
+        driveFileId: "reserved-draft-id",
+        expectedFileName: "HPS_vDraft.pptx",
+        expectedParentFolderId: "pitch-folder-id",
+        expectedSha256: hashMayaPptx(content),
+      }),
+    ).resolves.toMatchObject({ id: "reserved-draft-id" });
+  });
+
+  it("rejects a reserved-id draft that was moved to Drive trash", async () => {
+    driveServiceMocks.getDriveFileMetadataIfExists.mockResolvedValue({
+      id: "reserved-draft-id",
+      mimeType: PPTX_MIME_TYPE,
+      name: "HPS_vDraft.pptx",
+      parents: ["pitch-folder-id"],
+      trashed: true,
+    });
+
+    await expect(
+      findMayaDriveDraftById({
+        driveFileId: "reserved-draft-id",
+        expectedFileName: "HPS_vDraft.pptx",
+        expectedParentFolderId: "pitch-folder-id",
+        expectedSha256: "a".repeat(64),
+      }),
+    ).rejects.toThrow("dans la corbeille");
+    expect(driveServiceMocks.downloadDriveFile).not.toHaveBeenCalled();
   });
 });
 

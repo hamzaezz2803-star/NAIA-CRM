@@ -238,16 +238,36 @@ organization-scoped through the existing CRM server actions.
 Maya pitch generation is implemented in `src/features/maya` and stays outside
 CRM ownership. CRM provides the organization-scoped lead, company/contact and
 the authoritative client Drive URL. The `pitch` family clones the audited
-native PPTX pinned by `MAYA_PITCH_TEMPLATE_FILE_ID` byte-for-byte, changes only
-the output filename, scans all textual OOXML parts for client residue, and
-writes one PPTX after explicit founder confirmation. It does not call OpenAI or
-Groq and does not upload `maya-generation-manifest.json`. The
+native PPTX pinned by exact filename, `MAYA_PITCH_TEMPLATE_FILE_ID`, and the
+mandatory `MAYA_PITCH_TEMPLATE_SHA256` byte-for-byte, changes only the output
+filename, scans all textual OOXML parts for client residue, and writes one PPTX
+after explicit founder confirmation. Production must remain blocked until the
+digest of the independently reviewed binary is configured. A transactional
+Supabase claim globally keyed by destination `01_Pitch` and filename allows one
+active upload and reconciles retries by reading and hashing the existing Drive
+file. The claim persists a pre-generated Drive file ID: a retry after an
+indeterminate create response reuses that ID instead of creating a duplicate.
+Its lease is renewed transactionally immediately before the external write, so
+a reclaimed stale worker cannot upload; reconciliation requires the expected
+name and parent and fails closed on duplicate names. It never deletes or
+deduplicates Drive content. It does not
+call OpenAI or Groq and does not upload `maya-generation-manifest.json`. The
 audited Teaser contains no client or industry placeholder; its sector labels
 are generic credential headings and must not be presented as substitutions.
 The `commercial-proposal` family remains manual because commercial scope, pricing,
 dates and legal terms require human review. Do not copy pitch source decks into
 a stagiaire-visible folder, broaden Drive sharing for debugging, or bypass the
 stored CRM URL when resolving a destination.
+
+To activate pitch copying, independently review and download the native Teaser
+without editing it, calculate its digest locally with
+`shasum -a 256 <approved-teaser.pptx>`, then set the lowercase result as the
+server-only `MAYA_PITCH_TEMPLATE_SHA256`. The read-only Drive capture verified
+on 2026-08-09 is
+`7e499cb1dcfb92167cf223f6e1ef91a5bb3167c62c3524998b7354f32a5f03ab`.
+Never derive or update that value from an automatic generation request. Changing
+the Drive file requires a fresh human review and a deliberate digest rotation;
+leaving the variable blank keeps both the queue and the write action blocked.
 
 NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
 client sends only the original command, action id, and approval token. Do not

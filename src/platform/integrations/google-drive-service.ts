@@ -38,6 +38,7 @@ export type DriveFileSummary = {
   name: string;
   parents?: string[];
   size?: string;
+  trashed?: boolean;
   webViewLink?: string;
 };
 
@@ -137,39 +138,117 @@ export async function listDriveFolderFiles(
   folderId: string,
   { maxResults = 100 }: { maxResults?: number } = {},
 ): Promise<DriveFileSummary[]> {
-  const url = new URL(DRIVE_FILES_URL);
-  url.searchParams.set(
+  const baseUrl = new URL(DRIVE_FILES_URL);
+  baseUrl.searchParams.set(
     "q",
     `'${escapeDriveQueryValue(folderId)}' in parents and trashed = false`,
   );
-  url.searchParams.set(
+  baseUrl.searchParams.set(
     "fields",
-    "files(id,name,mimeType,modifiedTime,size,webViewLink,parents)",
+    "nextPageToken,files(id,name,mimeType,modifiedTime,size,trashed,webViewLink,parents)",
   );
-  url.searchParams.set("pageSize", String(Math.min(maxResults, 1000)));
-  url.searchParams.set("orderBy", "name");
+  baseUrl.searchParams.set("orderBy", "name");
 
-  const payload = (await driveRequest(url)) as {
-    files?: DriveFileSummary[];
-  };
+  return listDriveFilePages(baseUrl, maxResults);
+}
 
-  return (payload.files ?? []).filter((file) => Boolean(file.id));
+/** Exact-name lookup used by write paths so duplicate names fail closed. */
+export async function listDriveFolderFilesByName(
+  folderId: string,
+  name: string,
+  { maxResults = 2 }: { maxResults?: number } = {},
+): Promise<DriveFileSummary[]> {
+  const baseUrl = new URL(DRIVE_FILES_URL);
+  baseUrl.searchParams.set(
+    "q",
+    [
+      `'${escapeDriveQueryValue(folderId)}' in parents`,
+      `name = '${escapeDriveQueryValue(name)}'`,
+      "trashed = false",
+    ].join(" and "),
+  );
+  baseUrl.searchParams.set(
+    "fields",
+    "nextPageToken,files(id,name,mimeType,modifiedTime,size,trashed,webViewLink,parents)",
+  );
+  baseUrl.searchParams.set("orderBy", "createdTime");
+
+  return listDriveFilePages(baseUrl, maxResults);
+}
+
+async function listDriveFilePages(baseUrl: URL, maxResults: number) {
+  const limit = Math.max(1, maxResults);
+  const files: DriveFileSummary[] = [];
+  let pageToken: string | undefined;
+
+  do {
+    const url = new URL(baseUrl);
+    url.searchParams.set(
+      "pageSize",
+      String(Math.min(limit - files.length, 1000)),
+    );
+    if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+    const payload = (await driveRequest(url)) as {
+      files?: DriveFileSummary[];
+      nextPageToken?: string;
+    };
+    files.push(...(payload.files ?? []).filter((file) => Boolean(file.id)));
+    pageToken = payload.nextPageToken;
+  } while (pageToken && files.length < limit);
+
+  return files.slice(0, limit);
+}
+
+/**
+ * Reserves an ID before a binary upload. Reusing it makes an indeterminate
+ * files.create safe: Drive returns 409 instead of creating a duplicate.
+ * https://developers.google.com/workspace/drive/api/guides/manage-uploads#use_a_pre-generated_id_to_upload_files
+ */
+export async function generateDriveFileId() {
+  const url = new URL(`${DRIVE_FILES_URL}/generateIds`);
+  url.searchParams.set("count", "1");
+  url.searchParams.set("space", "drive");
+  url.searchParams.set("type", "files");
+
+  const response = await fetch(url, { headers: await driveAuthHeaders() });
+  if (!response.ok) {
+    throw new Error(await driveError(response));
+  }
+  const payload = (await response.json()) as { ids?: string[] };
+  const fileId = payload.ids?.[0]?.trim();
+  if (!fileId) {
+    throw new Error("Google Drive did not return a pre-generated file id.");
+  }
+  return fileId;
 }
 
 /** Reads one Drive file or folder without creating or repairing anything. */
 export async function getDriveFileMetadata(
   fileId: string,
 ): Promise<DriveFileSummary> {
+  const metadata = await getDriveFileMetadataIfExists(fileId);
+  if (!metadata) {
+    throw new Error(`Google Drive file ${fileId} was not found.`);
+  }
+  return metadata;
+}
+
+/** Returns null only for a confirmed Drive 404; every other failure is fatal. */
+export async function getDriveFileMetadataIfExists(
+  fileId: string,
+): Promise<DriveFileSummary | null> {
   const url = new URL(`${DRIVE_FILES_URL}/${encodeURIComponent(fileId)}`);
   url.searchParams.set(
     "fields",
-    "id,name,mimeType,modifiedTime,size,webViewLink,parents",
+    "id,name,mimeType,modifiedTime,size,trashed,webViewLink,parents",
   );
   url.searchParams.set("supportsAllDrives", "true");
 
   const response = await fetch(url, {
     headers: await driveAuthHeaders(),
   });
+  if (response.status === 404) return null;
   if (!response.ok) {
     throw new Error(await driveError(response));
   }
@@ -257,16 +336,19 @@ async function driveDownloadError(response: Response) {
 /** Uploads a file into a shared-drive folder. Used by Maya to store generated decks. */
 export async function uploadDriveFile({
   content,
+  fileId,
   mimeType,
   name,
   parentFolderId,
 }: {
   content: ArrayBuffer | Buffer;
+  fileId?: string;
   mimeType: string;
   name: string;
   parentFolderId: string;
 }): Promise<DriveFileSummary> {
   const metadata = {
+    ...(fileId ? { id: fileId } : {}),
     mimeType,
     name,
     parents: [parentFolderId],
@@ -296,7 +378,11 @@ export async function uploadDriveFile({
     throw new Error(await driveError(response));
   }
 
-  return (await response.json()) as DriveFileSummary;
+  const uploaded = (await response.json()) as DriveFileSummary;
+  if (!uploaded.id || (fileId && uploaded.id !== fileId)) {
+    throw new Error("Google Drive returned an unexpected uploaded file id.");
+  }
+  return uploaded;
 }
 
 /** Replaces a Drive file's binary content while preserving its id and parent. */

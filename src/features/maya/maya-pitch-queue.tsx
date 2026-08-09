@@ -143,6 +143,14 @@ function MayaTemplateCard({ template }: { template: MayaTemplateSource }) {
           <dt className="font-semibold">Source</dt>
           <dd>{template.sourceLabel}</dd>
         </div>
+        {template.sha256 ? (
+          <div className="flex min-w-0 gap-2">
+            <dt className="shrink-0 font-semibold">SHA-256 audité</dt>
+            <dd className="truncate font-mono" title={template.sha256}>
+              {template.sha256}
+            </dd>
+          </div>
+        ) : null}
       </dl>
       {template.webViewLink ? (
         <a

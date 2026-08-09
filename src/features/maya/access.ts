@@ -39,6 +39,7 @@ export async function requireMayaPitchGeneratorAccess() {
   return {
     organizationId: membership.organization_id as string,
     role: membership.role as string,
+    supabase,
     user,
   };
 }

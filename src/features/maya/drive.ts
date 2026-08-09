@@ -3,9 +3,12 @@ import os from "node:os";
 import path from "node:path";
 
 import {
+  generateDriveFileId,
   getDriveFileMetadata,
+  getDriveFileMetadataIfExists,
   isDriveServiceConfigured,
   listDriveFolderFiles,
+  listDriveFolderFilesByName,
   downloadDriveFile,
   uploadDriveFile,
   type DriveFileSummary,
@@ -18,7 +21,10 @@ import type {
 } from "./contracts";
 import { isNabilFinalPitchFileName } from "./storage";
 import {
+  assertMayaPptxMatchesExpectedHash,
   classifyMayaTemplateFamily,
+  MAYA_APPROVED_PITCH_TEMPLATE_FILE_NAME,
+  normalizeMayaExpectedSha256,
   selectLatestMayaTemplateCandidate,
 } from "./template";
 
@@ -39,11 +45,13 @@ export type MayaDriveConfig = {
 
 export type MayaDriveDeckFile = MayaDeckFile & {
   driveFileId: string;
+  expectedSha256?: string;
   mimeType?: string;
   webViewLink?: string;
 };
 
 export type MayaDriveUploadResult = {
+  driveFileId: string;
   draftFileName: string;
   draftFilePath: string;
 };
@@ -110,6 +118,14 @@ export function getMayaApprovedTemplateFileId(
   );
 }
 
+export function getMayaApprovedTemplateSha256(
+  family: MayaTemplateFamily,
+  env: NodeJS.ProcessEnv = process.env,
+) {
+  if (family !== "pitch") return null;
+  return normalizeMayaExpectedSha256(env.MAYA_PITCH_TEMPLATE_SHA256);
+}
+
 export async function getMayaDriveTemplateFile({
   env = process.env,
   family,
@@ -126,6 +142,13 @@ export async function getMayaDriveTemplateFile({
     );
   }
 
+  const expectedSha256 = getMayaApprovedTemplateSha256(family, env);
+  if (family === "pitch" && !expectedSha256) {
+    throw new Error(
+      "MAYA_PITCH_TEMPLATE_SHA256 must contain the audited 64-character SHA-256 before Maya can copy a pitch.",
+    );
+  }
+
   const metadata = await getDriveFileMetadata(approvedDriveFileId);
   if (metadata.id !== approvedDriveFileId) {
     throw new Error("Google Drive returned metadata for an unexpected file.");
@@ -133,6 +156,19 @@ export async function getMayaDriveTemplateFile({
   if (metadata.mimeType !== PPTX_MIME_TYPE) {
     throw new Error(
       "Le modèle approuvé doit être un fichier .pptx natif pour garantir une copie byte-for-byte.",
+    );
+  }
+  if (metadata.trashed) {
+    throw new Error(
+      "Le modèle pitch approuvé est dans la corbeille Drive; aucune copie n'est autorisée.",
+    );
+  }
+  if (
+    family === "pitch" &&
+    metadata.name !== MAYA_APPROVED_PITCH_TEMPLATE_FILE_NAME
+  ) {
+    throw new Error(
+      `Le modèle pitch approuvé doit porter exactement le nom ${MAYA_APPROVED_PITCH_TEMPLATE_FILE_NAME}.`,
     );
   }
   if (
@@ -159,6 +195,7 @@ export async function getMayaDriveTemplateFile({
   return {
     ...selected,
     driveFileId: approvedDriveFileId,
+    expectedSha256: expectedSha256 ?? undefined,
   } satisfies MayaDriveDeckFile;
 }
 
@@ -178,15 +215,15 @@ export async function listMayaDriveDeckFiles({
 }
 
 export async function downloadMayaDriveDeckToTemp(file: MayaDriveDeckFile) {
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "maya-drive-deck-"));
-  const filePath = path.join(tempRoot, file.fileName);
-
-  await writeFile(
-    filePath,
-    Buffer.from(
-      await downloadDriveFile(file.driveFileId, { mimeType: file.mimeType }),
-    ),
+  const content = Buffer.from(
+    await downloadDriveFile(file.driveFileId, { mimeType: file.mimeType }),
   );
+  if (file.expectedSha256) {
+    assertMayaPptxMatchesExpectedHash(content, file.expectedSha256);
+  }
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "maya-drive-deck-"));
+  const filePath = path.join(tempRoot, "drive-source.pptx");
+  await writeFile(filePath, content);
 
   return {
     ...file,
@@ -194,28 +231,152 @@ export async function downloadMayaDriveDeckToTemp(file: MayaDriveDeckFile) {
   } satisfies MayaDriveDeckFile;
 }
 
+export async function generateMayaDriveFileId() {
+  return generateDriveFileId();
+}
+
+export async function findMayaDriveDraftByExactName({
+  draftFileName,
+  pitchFolderId,
+}: {
+  draftFileName: string;
+  pitchFolderId: string;
+}) {
+  const matches = await listDriveFolderFilesByName(
+    pitchFolderId,
+    draftFileName,
+    { maxResults: 2 },
+  );
+  if (matches.length > 1) {
+    throw new Error(
+      "Plusieurs fichiers Drive portent le nom exact du draft; la reprise est ambiguë et aucun upload n'est autorisé.",
+    );
+  }
+  return matches[0] ?? null;
+}
+
 export async function uploadMayaDriveDraft({
+  driveFileId,
   draftFileName,
   draftFilePath,
   pitchFolderId,
 }: {
+  driveFileId: string;
   draftFileName: string;
   draftFilePath: string;
   pitchFolderId: string;
 }): Promise<MayaDriveUploadResult> {
   const draft = await uploadDriveFile({
     content: await readFile(draftFilePath),
+    fileId: driveFileId,
     mimeType: PPTX_MIME_TYPE,
     name: draftFileName,
     parentFolderId: pitchFolderId,
   });
 
   return {
+    driveFileId: draft.id,
     draftFileName,
     draftFilePath:
       draft.webViewLink ??
       `https://drive.google.com/file/d/${draft.id ?? ""}/view`,
   };
+}
+
+export async function verifyMayaDrivePptxHash({
+  driveFileId,
+  expectedFileName,
+  expectedParentFolderId,
+  expectedSha256,
+  fileName,
+  mimeType,
+  parents,
+  trashed,
+}: {
+  driveFileId: string;
+  expectedFileName?: string;
+  expectedParentFolderId?: string;
+  expectedSha256: string;
+  fileName?: string;
+  mimeType?: string;
+  parents?: string[];
+  trashed?: boolean;
+}) {
+  let resolvedMimeType = mimeType;
+  let resolvedFileName = fileName;
+  let resolvedParents = parents;
+  let resolvedTrashed = trashed;
+  if (
+    !resolvedMimeType ||
+    (expectedFileName && !resolvedFileName) ||
+    (expectedParentFolderId && !resolvedParents) ||
+    resolvedTrashed === undefined
+  ) {
+    const metadata = await getDriveFileMetadata(driveFileId);
+    if (metadata.id !== driveFileId) {
+      throw new Error(
+        "Google Drive returned metadata for an unexpected id during retry reconciliation.",
+      );
+    }
+    resolvedMimeType = metadata.mimeType;
+    resolvedFileName = metadata.name;
+    resolvedParents = metadata.parents;
+    resolvedTrashed = metadata.trashed;
+  }
+  if (resolvedMimeType !== PPTX_MIME_TYPE) {
+    throw new Error(
+      "Le draft Drive existant n'est pas un PPTX natif; la reprise idempotente est bloquée.",
+    );
+  }
+  if (resolvedTrashed) {
+    throw new Error(
+      "Le draft Drive réconcilié est dans la corbeille; aucun succès idempotent n'est déclaré.",
+    );
+  }
+  if (expectedFileName && resolvedFileName !== expectedFileName) {
+    throw new Error(
+      "Le draft Drive réconcilié a été renommé; aucun succès idempotent n'est déclaré.",
+    );
+  }
+  if (
+    expectedParentFolderId &&
+    !resolvedParents?.includes(expectedParentFolderId)
+  ) {
+    throw new Error(
+      "Le draft Drive réconcilié n'est plus dans le dossier 01_Pitch autorisé.",
+    );
+  }
+
+  const content = Buffer.from(
+    await downloadDriveFile(driveFileId, { mimeType: PPTX_MIME_TYPE }),
+  );
+  return assertMayaPptxMatchesExpectedHash(content, expectedSha256);
+}
+
+export async function findMayaDriveDraftById({
+  driveFileId,
+  expectedFileName,
+  expectedParentFolderId,
+  expectedSha256,
+}: {
+  driveFileId: string;
+  expectedFileName: string;
+  expectedParentFolderId: string;
+  expectedSha256: string;
+}) {
+  const metadata = await getDriveFileMetadataIfExists(driveFileId);
+  if (!metadata) return null;
+  await verifyMayaDrivePptxHash({
+    driveFileId,
+    expectedFileName,
+    expectedParentFolderId,
+    expectedSha256,
+    fileName: metadata.name,
+    mimeType: metadata.mimeType,
+    parents: metadata.parents,
+    trashed: metadata.trashed,
+  });
+  return metadata;
 }
 
 export async function inspectMayaDriveDestination({

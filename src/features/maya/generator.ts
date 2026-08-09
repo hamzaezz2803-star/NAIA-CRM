@@ -6,7 +6,11 @@ import {
   type MayaPitchStorageAdapter,
   type MayaStoredDraft,
 } from "./storage";
-import { assertMayaPptxSafeForClone, hashMayaPptx } from "./template";
+import {
+  assertMayaPptxMatchesExpectedHash,
+  assertMayaPptxSafeForClone,
+  hashMayaPptx,
+} from "./template";
 
 export type MayaPitchDraftResult = {
   draft: MayaStoredDraft;
@@ -23,6 +27,7 @@ export type MayaPitchDraftResult = {
 export async function generateMayaPitchDraft({
   clientName,
   date = new Date(),
+  expectedSourceSha256,
   family,
   forbiddenTokens,
   sourceDeckFilePath,
@@ -30,6 +35,7 @@ export async function generateMayaPitchDraft({
 }: {
   clientName: string;
   date?: Date;
+  expectedSourceSha256: string;
   family: MayaTemplateFamily;
   forbiddenTokens?: readonly string[];
   sourceDeckFilePath: string;
@@ -42,6 +48,10 @@ export async function generateMayaPitchDraft({
   }
 
   const sourceContent = await readFile(sourceDeckFilePath);
+  const sourceSha256 = assertMayaPptxMatchesExpectedHash(
+    sourceContent,
+    expectedSourceSha256,
+  );
   assertMayaPptxSafeForClone(sourceContent, { forbiddenTokens });
 
   const draftFileName = buildMayaDraftFileName({ clientName, date });
@@ -61,7 +71,7 @@ export async function generateMayaPitchDraft({
   return {
     draft,
     family,
-    sourceSha256: hashMayaPptx(sourceContent),
+    sourceSha256,
     targetSha256: hashMayaPptx(writtenContent),
   };
 }

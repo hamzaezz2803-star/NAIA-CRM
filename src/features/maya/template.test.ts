@@ -3,10 +3,13 @@ import { strToU8, zipSync } from "fflate";
 
 import type { MayaDeckKind } from "./contracts";
 import {
+  assertMayaPptxMatchesExpectedHash,
   assertMayaPptxSafeForClone,
   classifyMayaTemplateFamily,
   scanMayaPptxResidues,
   selectLatestMayaTemplateCandidate,
+  hashMayaPptx,
+  normalizeMayaExpectedSha256,
   type MayaTemplateCandidate,
 } from "./template";
 
@@ -115,6 +118,24 @@ describe("Maya OOXML residue scanning", () => {
     expect(() => assertMayaPptxSafeForClone(Buffer.from("not a pptx"))).toThrow(
       "PPTX OOXML valide",
     );
+  });
+});
+
+describe("Maya immutable template identity", () => {
+  it("normalizes and verifies an audited SHA-256", () => {
+    const pptx = makePptx({
+      "ppt/slides/slide1.xml": "<a:t>Présentation Qarizmi</a:t>",
+    });
+    const sha256 = hashMayaPptx(pptx);
+
+    expect(normalizeMayaExpectedSha256(` ${sha256.toUpperCase()} `)).toBe(
+      sha256,
+    );
+    expect(assertMayaPptxMatchesExpectedHash(pptx, sha256)).toBe(sha256);
+    expect(() =>
+      assertMayaPptxMatchesExpectedHash(pptx, "0".repeat(64)),
+    ).toThrow("SHA-256 audité");
+    expect(normalizeMayaExpectedSha256("not-a-hash")).toBeNull();
   });
 });
 

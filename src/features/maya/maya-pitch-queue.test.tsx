@@ -20,6 +20,7 @@ describe("MayaPitchQueue", () => {
       ),
     ).toBeInTheDocument();
     expect(screen.getByText(/3 août 2026/)).toBeInTheDocument();
+    expect(screen.getByText("a".repeat(64))).toBeInTheDocument();
     expect(screen.getByLabelText(/Je confirme la copie fidèle/)).toBeRequired();
     expect(
       screen.getByRole("button", { name: "Copier dans 01_Pitch" }),
@@ -90,6 +91,7 @@ function makeResult(): MayaPitchQueueResult {
         family: "pitch",
         fileName: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
         modifiedAt: "2026-08-03T22:14:53.763Z",
+        sha256: "a".repeat(64),
         sizeBytes: 4_933_715,
         sourceLabel: "Google Drive · approved-teaser-id",
         webViewLink:

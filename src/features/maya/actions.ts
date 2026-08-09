@@ -15,13 +15,17 @@ import {
 } from "./crm";
 import {
   downloadMayaDriveDeckToTemp,
+  findMayaDriveDraftByExactName,
+  findMayaDriveDraftById,
   findMayaDriveArtifacts,
+  generateMayaDriveFileId,
   getMayaApprovedTemplateFileId,
   getMayaClientsRootFolderId,
   getMayaDriveTemplateFile,
   hasMayaClientDriveConfig,
   inspectMayaDriveDestination,
   uploadMayaDriveDraft,
+  verifyMayaDrivePptxHash,
 } from "./drive";
 import { generateMayaPitchDraft } from "./generator";
 import {
@@ -32,6 +36,12 @@ import {
   buildMayaDraftFileName,
   createLocalMayaPitchStorageAdapter,
 } from "./storage";
+import {
+  claimMayaPitchUpload,
+  completeMayaPitchUploadClaim,
+  failMayaPitchUploadClaim,
+  renewMayaPitchUploadClaim,
+} from "./upload-claims";
 
 export type MayaPitchQueueItem = {
   clientName: string;
@@ -185,6 +195,12 @@ export async function generateMayaPitchDraftForLeadAction(
 
   let sourceTempRoot: string | null = null;
   let outputTempRoot: string | null = null;
+  let activeClaim: {
+    claimId: string;
+    leaseToken: string;
+    reservedDriveFileId: string;
+  } | null = null;
+  let claimFinalized = false;
 
   try {
     const clientsRootFolderId = getMayaClientsRootFolderId();
@@ -205,15 +221,108 @@ export async function generateMayaPitchDraftForLeadAction(
       clientName: lead.clientName,
       date: generationDate,
     });
-    const existing = destination.files.find(
-      (file) => file.name === expectedFileName,
-    );
-    if (existing) {
+    if (!sourceTemplate.expectedSha256) {
+      throw new Error(
+        "Le SHA-256 audité du Teaser est indisponible; aucun upload Drive n'est autorisé.",
+      );
+    }
+
+    const candidateDriveFileId = await generateMayaDriveFileId();
+    const uploadClaim = await claimMayaPitchUpload({
+      draftFileName: expectedFileName,
+      leadId: lead.leadId,
+      organizationId: access.organizationId,
+      pitchFolderId: destination.pitchFolderId,
+      reservedDriveFileId: candidateDriveFileId,
+      supabase: access.supabase,
+      templateDriveFileId: sourceTemplate.driveFileId,
+      templateSha256: sourceTemplate.expectedSha256,
+    });
+    if (uploadClaim.action === "uploaded") {
+      await verifyMayaDrivePptxHash({
+        driveFileId: uploadClaim.driveFileId,
+        expectedFileName,
+        expectedParentFolderId: destination.pitchFolderId,
+        expectedSha256: sourceTemplate.expectedSha256,
+      });
       return {
         draftFileName: expectedFileName,
         draftFilePath:
-          existing.webViewLink ??
-          `https://drive.google.com/file/d/${existing.id}/view`,
+          uploadClaim.driveFileUrl ??
+          `https://drive.google.com/file/d/${uploadClaim.driveFileId}/view`,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
+    if (uploadClaim.action === "busy") {
+      return {
+        error:
+          "Une copie de ce pitch est déjà en cours. Réessaie après sa finalisation; aucun second upload n'a été lancé.",
+        success: false as const,
+      };
+    }
+    activeClaim = {
+      claimId: uploadClaim.claimId,
+      leaseToken: uploadClaim.leaseToken,
+      reservedDriveFileId: uploadClaim.reservedDriveFileId,
+    };
+
+    const reservedExisting = await findMayaDriveDraftById({
+      driveFileId: activeClaim.reservedDriveFileId,
+      expectedFileName,
+      expectedParentFolderId: destination.pitchFolderId,
+      expectedSha256: sourceTemplate.expectedSha256,
+    });
+    if (reservedExisting) {
+      const reservedExistingUrl =
+        reservedExisting.webViewLink ??
+        `https://drive.google.com/file/d/${reservedExisting.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: reservedExisting.id,
+        driveFileUrl: reservedExistingUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: expectedFileName,
+        draftFilePath: reservedExistingUrl,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
+
+    const existing = await findMayaDriveDraftByExactName({
+      draftFileName: expectedFileName,
+      pitchFolderId: destination.pitchFolderId,
+    });
+    if (existing) {
+      await verifyMayaDrivePptxHash({
+        driveFileId: existing.id,
+        expectedFileName,
+        expectedParentFolderId: destination.pitchFolderId,
+        expectedSha256: sourceTemplate.expectedSha256,
+        fileName: existing.name,
+        mimeType: existing.mimeType,
+        parents: existing.parents,
+      });
+      const existingFileUrl =
+        existing.webViewLink ??
+        `https://drive.google.com/file/d/${existing.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: existing.id,
+        driveFileUrl: existingFileUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: expectedFileName,
+        draftFilePath: existingFileUrl,
         reusedExistingDraft: true,
         sourceFileName: sourceTemplate.fileName,
         success: true as const,
@@ -229,15 +338,13 @@ export async function generateMayaPitchDraftForLeadAction(
     const result = await generateMayaPitchDraft({
       clientName: lead.clientName,
       date: generationDate,
+      expectedSourceSha256: sourceTemplate.expectedSha256,
       family: confirmation.family,
       sourceDeckFilePath: downloadedTemplate.filePath,
       storage: createLocalMayaPitchStorageAdapter(outputTempRoot),
     });
     if (result.sourceSha256 !== result.targetSha256) {
-      return {
-        error: "La vérification de fidélité binaire a échoué.",
-        success: false as const,
-      };
+      throw new Error("La vérification de fidélité binaire a échoué.");
     }
 
     // Revalidate immediately before the external write: the folder may have
@@ -248,32 +355,93 @@ export async function generateMayaPitchDraftForLeadAction(
       expectedRootFolderId: clientsRootFolderId,
     });
     if (uploadDestination.pitchFolderId !== destination.pitchFolderId) {
-      return {
-        error:
-          "La destination 01_Pitch a changé pendant la préparation; l'upload est bloqué.",
-        success: false as const,
-      };
+      throw new Error(
+        "La destination 01_Pitch a changé pendant la préparation; l'upload est bloqué.",
+      );
     }
-    const concurrentDraft = uploadDestination.files.find(
-      (file) => file.name === result.draft.fileName,
-    );
+    const concurrentDraft = await findMayaDriveDraftByExactName({
+      draftFileName: result.draft.fileName,
+      pitchFolderId: uploadDestination.pitchFolderId,
+    });
     if (concurrentDraft) {
+      await verifyMayaDrivePptxHash({
+        driveFileId: concurrentDraft.id,
+        expectedFileName: result.draft.fileName,
+        expectedParentFolderId: uploadDestination.pitchFolderId,
+        expectedSha256: sourceTemplate.expectedSha256,
+        fileName: concurrentDraft.name,
+        mimeType: concurrentDraft.mimeType,
+        parents: concurrentDraft.parents,
+      });
+      const concurrentDraftUrl =
+        concurrentDraft.webViewLink ??
+        `https://drive.google.com/file/d/${concurrentDraft.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: concurrentDraft.id,
+        driveFileUrl: concurrentDraftUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
       return {
         draftFileName: result.draft.fileName,
-        draftFilePath:
-          concurrentDraft.webViewLink ??
-          `https://drive.google.com/file/d/${concurrentDraft.id}/view`,
+        draftFilePath: concurrentDraftUrl,
         reusedExistingDraft: true,
         sourceFileName: sourceTemplate.fileName,
         success: true as const,
       };
     }
 
+    // Renew under the row lock immediately before the external write. If an
+    // expired lease was reclaimed while the PPTX was being scanned, the stale
+    // worker stops here and cannot create a second Drive file.
+    await renewMayaPitchUploadClaim({
+      claimId: activeClaim.claimId,
+      leaseToken: activeClaim.leaseToken,
+      supabase: access.supabase,
+    });
+
+    const createdDuringPreparation = await findMayaDriveDraftById({
+      driveFileId: activeClaim.reservedDriveFileId,
+      expectedFileName: result.draft.fileName,
+      expectedParentFolderId: uploadDestination.pitchFolderId,
+      expectedSha256: sourceTemplate.expectedSha256,
+    });
+    if (createdDuringPreparation) {
+      const createdDuringPreparationUrl =
+        createdDuringPreparation.webViewLink ??
+        `https://drive.google.com/file/d/${createdDuringPreparation.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: createdDuringPreparation.id,
+        driveFileUrl: createdDuringPreparationUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: result.draft.fileName,
+        draftFilePath: createdDuringPreparationUrl,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
     const upload = await uploadMayaDriveDraft({
+      driveFileId: activeClaim.reservedDriveFileId,
       draftFileName: result.draft.fileName,
       draftFilePath: result.draft.filePath,
       pitchFolderId: uploadDestination.pitchFolderId,
     });
+    await completeMayaPitchUploadClaim({
+      claimId: activeClaim.claimId,
+      driveFileId: upload.driveFileId,
+      driveFileUrl: upload.draftFilePath,
+      leaseToken: activeClaim.leaseToken,
+      supabase: access.supabase,
+    });
+    claimFinalized = true;
 
     return {
       draftFileName: upload.draftFileName,
@@ -283,8 +451,20 @@ export async function generateMayaPitchDraftForLeadAction(
       success: true as const,
     };
   } catch (error) {
+    const errorMessage = readErrorMessage(
+      error,
+      "Maya n'a pas pu copier le pitch.",
+    );
+    if (activeClaim && !claimFinalized) {
+      await failMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        errorMessage,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      }).catch(() => false);
+    }
     return {
-      error: readErrorMessage(error, "Maya n'a pas pu copier le pitch."),
+      error: errorMessage,
       success: false as const,
     };
   } finally {
@@ -371,6 +551,7 @@ async function loadMayaTemplateSource(
       family,
       fileName: file.fileName,
       modifiedAt: file.modifiedAt.toISOString(),
+      sha256: file.expectedSha256,
       sizeBytes: file.sizeBytes,
       sourceLabel: `Google Drive · ${file.driveFileId}`,
       warning:

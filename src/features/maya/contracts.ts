@@ -19,6 +19,7 @@ export type MayaTemplateSource = {
   family: MayaTemplateFamily;
   fileName?: string;
   modifiedAt?: string;
+  sha256?: string;
   sizeBytes?: number;
   sourceLabel: string;
   warning?: string;

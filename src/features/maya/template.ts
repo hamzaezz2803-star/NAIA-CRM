@@ -10,6 +10,10 @@ const PITCH_FILE_NAME =
 const COMMERCIAL_PROPOSAL_FILE_NAME =
   /(?:proposition[_\s-]*commerciale|commercial[_\s-]*proposal)/i;
 const NON_TEMPLATE_FILE_NAME = /(?:_old|_vdraft|_vf\.pptx$|generic)/i;
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+
+export const MAYA_APPROVED_PITCH_TEMPLATE_FILE_NAME =
+  "Qarizmi_Introduction_Service as a software_Teaser.pptx";
 
 export const DEFAULT_MAYA_FORBIDDEN_CLIENT_TOKENS = [
   "TGCC",
@@ -152,6 +156,32 @@ export function assertMayaPptxSafeForClone(
 
 export function hashMayaPptx(content: Buffer) {
   return createHash("sha256").update(content).digest("hex");
+}
+
+export function normalizeMayaExpectedSha256(value: string | null | undefined) {
+  const normalized = value?.trim().toLocaleLowerCase("en-US") ?? "";
+  return SHA256_HEX.test(normalized) ? normalized : null;
+}
+
+export function assertMayaPptxMatchesExpectedHash(
+  content: Buffer,
+  expectedSha256: string,
+) {
+  const normalizedExpected = normalizeMayaExpectedSha256(expectedSha256);
+  if (!normalizedExpected) {
+    throw new Error(
+      "Le SHA-256 du modèle Maya est absent ou invalide; la copie Drive est bloquée.",
+    );
+  }
+
+  const actualSha256 = hashMayaPptx(content);
+  if (actualSha256 !== normalizedExpected) {
+    throw new Error(
+      "Le contenu du PPTX Drive ne correspond pas au SHA-256 audité; aucune copie n'a été créée.",
+    );
+  }
+
+  return actualSha256;
 }
 
 function readPptxZip(content: Buffer) {
