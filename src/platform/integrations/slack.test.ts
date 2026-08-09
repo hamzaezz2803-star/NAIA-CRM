@@ -2,7 +2,11 @@ import { createHmac } from "node:crypto";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { fetchSlackMessageSnapshot, verifySlackSignature } from "./slack";
+import {
+  fetchSlackMessageSnapshot,
+  findSlackUserByEmail,
+  verifySlackSignature,
+} from "./slack";
 
 const SIGNING_SECRET = "test-signing-secret";
 
@@ -140,5 +144,55 @@ describe("fetchSlackMessageSnapshot", () => {
     expect(url.pathname).toBe("/api/conversations.replies");
     expect(url.searchParams.get("channel")).toBe("C0123456789");
     expect(url.searchParams.get("ts")).toBe("1111.2222");
+  });
+});
+
+describe("findSlackUserByEmail", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("resolves the DM recipient without exposing the bot token", async () => {
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        ok: true,
+        user: {
+          id: "U123",
+          profile: { display_name: "Ali", email: "ali@qarizmi.com" },
+        },
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(findSlackUserByEmail(" Ali@Qarizmi.com ")).resolves.toEqual({
+      displayName: "Ali",
+      email: "ali@qarizmi.com",
+      id: "U123",
+    });
+
+    const [url, options] = fetchMock.mock.calls[0] as [
+      URL,
+      { headers: { Authorization: string } },
+    ];
+    expect(url.searchParams.get("email")).toBe("ali@qarizmi.com");
+    expect(options.headers.Authorization).toBe("Bearer xoxb-test");
+  });
+
+  it("fails closed when Slack cannot find the recipient", async () => {
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({ error: "users_not_found", ok: false }),
+        ok: true,
+      }),
+    );
+
+    await expect(
+      findSlackUserByEmail("nobody@qarizmi.com"),
+    ).resolves.toBeNull();
   });
 });

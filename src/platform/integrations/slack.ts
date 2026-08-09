@@ -52,6 +52,12 @@ export type SlackUserProfile = {
   isBot: boolean;
 };
 
+export type SlackUserLookup = {
+  displayName?: string;
+  email?: string;
+  id: string;
+};
+
 export type SlackConversationMessage = {
   content: string;
   role: "assistant" | "user";
@@ -186,6 +192,46 @@ export async function fetchSlackUserProfile(
   }
 
   return profile;
+}
+
+export async function findSlackUserByEmail(
+  email: string,
+): Promise<SlackUserLookup | null> {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  const url = new URL("https://slack.com/api/users.lookupByEmail");
+  url.searchParams.set("email", normalizedEmail);
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${getSlackBotToken()}` },
+  });
+  const payload = (await response.json()) as {
+    error?: string;
+    ok?: boolean;
+    user?: {
+      id?: string;
+      profile?: { display_name?: string; email?: string };
+      real_name?: string;
+    };
+  };
+
+  if (!response.ok || !payload.ok || !payload.user?.id) {
+    if (payload.error !== "users_not_found") {
+      console.error(
+        "Slack users.lookupByEmail failed:",
+        payload.error ?? `HTTP ${response.status}`,
+      );
+    }
+    return null;
+  }
+
+  return {
+    displayName:
+      payload.user.profile?.display_name || payload.user.real_name || undefined,
+    email: payload.user.profile?.email,
+    id: payload.user.id,
+  };
 }
 
 export async function postSlackMessage({
