@@ -413,8 +413,8 @@ export function buildDailyBriefMessage({
     `${weekMeetings.length} lead(s) en meeting booked`,
   ];
   const mailLines = data.gmailCandidates.slice(0, 5).map((message) => {
-    const from = cleanSlackText(message.from ?? "Expéditeur inconnu", 100);
-    const subject = cleanSlackText(message.subject ?? "Sans objet", 160);
+    const from = (message.from ?? "Expéditeur inconnu").slice(0, 100);
+    const subject = (message.subject ?? "Sans objet").slice(0, 160);
     return `${from} — ${subject}`;
   });
   const dateLabel = new Intl.DateTimeFormat("fr-FR", {

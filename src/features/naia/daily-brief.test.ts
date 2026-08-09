@@ -57,7 +57,7 @@ describe("NAIA daily briefing", () => {
         ],
         gmailCandidates: [
           {
-            from: "Client <client@example.com>",
+            from: "Client & Partner <client@example.com>",
             id: "mail-1",
             subject: "Prochaine étape",
           },
@@ -90,6 +90,8 @@ describe("NAIA daily briefing", () => {
     expect(serialized).toContain("Atlas Telecom");
     expect(serialized).toContain("Meeting TGCC #3");
     expect(serialized).toContain("Prochaine étape");
+    expect(serialized).toContain("Client &amp; Partner");
+    expect(serialized).not.toContain("&amp;amp;");
     expect(serialized).toContain(
       "ne prétend pas qu’un mail lu est sans réponse",
     );
