@@ -19,7 +19,10 @@ email.
   `Authorization: Bearer $CRON_SECRET` et ne charge aucune donnée en cas
   d'échec d'authentification.
 - `naia_daily_brief_runs` est accessible uniquement au rôle de service. Sa
-  contrainte unique par profil et date locale empêche un double envoi.
+  contrainte unique par profil et date locale empêche un double envoi. Un échec
+  prouvé avant acceptation par Slack peut être réclamé transactionnellement ;
+  une livraison réseau ambiguë reste verrouillée en `delivery_uncertain` et
+  n'est jamais rejouée automatiquement.
 
 ## Horaire et variables
 
@@ -38,6 +41,26 @@ NAIA_DAILY_BRIEF_TIME_ZONE=Africa/Casablanca
 
 Le bot Slack requiert `chat:write`, `users:read` et `users:read.email`. Chaque
 destinataire doit avoir connecté son propre compte Google Workspace dans NAIA.
+
+## Séquençage obligatoire de mise en production
+
+Le cron ne doit pas être activé avant ses dépendances. L'ordre de déploiement
+est volontairement explicite :
+
+1. appliquer la migration
+   `supabase/migrations/20260809221355_naia_daily_brief_runs.sql` sur le projet
+   Supabase de production ;
+2. vérifier que la table et la fonction RPC
+   `reclaim_naia_daily_brief_run` existent, que RLS est activé et que seul
+   `service_role` possède les droits requis ;
+3. créer `CRON_SECRET` dans l'environnement **Production** Vercel, puis définir
+   les destinataires et le fuseau si les valeurs par défaut ne conviennent pas ;
+4. seulement ensuite déployer `vercel.json` en production et vérifier que le
+   cron est enregistré.
+
+Une Preview verte ne crée pas le cron : Vercel Cron ne s'exécute qu'en
+production. Ne pas déclencher manuellement la route avec les vrais comptes pour
+un test d'envoi sans accord explicite, car cela produit un DM Slack réel.
 
 ## Interprétation Gmail
 

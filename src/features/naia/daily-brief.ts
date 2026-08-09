@@ -11,6 +11,7 @@ import {
 } from "@/platform/integrations/google-workspace";
 import {
   findSlackUserByEmail,
+  isSlackMessageRejectedError,
   postSlackMessage,
 } from "@/platform/integrations/slack";
 import { resolveBridgeUser, type NaiaBridgeUser } from "@/platform/naia/bridge";
@@ -177,6 +178,7 @@ export async function dispatchDailyBrief({
     };
   }
 
+  let deliveryAttempted = false;
   try {
     const [data, slackUser] = await Promise.all([
       loadDailyBriefData({ now, supabase, user }),
@@ -192,37 +194,60 @@ export async function dispatchDailyBrief({
       now,
       timeZone,
     });
+    deliveryAttempted = true;
     const posted = await postSlackMessage({
       blocks: message.blocks,
       channel: slackUser.id,
       text: message.text,
     });
 
-    await supabase
-      .from("naia_daily_brief_runs")
-      .update({
+    const ledgerUpdated = await updateDailyBriefRun({
+      claimId: claim.id,
+      organizationId: user.organizationId,
+      supabase,
+      values: {
         error_code: null,
         sent_at: new Date().toISOString(),
         slack_channel_id: posted.channel ?? slackUser.id,
         slack_message_ts: posted.ts ?? null,
         status: "sent",
         updated_at: new Date().toISOString(),
-      })
-      .eq("id", claim.id)
-      .eq("organization_id", user.organizationId);
+      },
+    });
+    if (!ledgerUpdated) {
+      console.error("NAIA daily brief sent but its ledger update failed.");
+      return {
+        email: normalizedEmail,
+        reason: "daily_brief_sent_ledger_update_failed",
+        status: "failed",
+      };
+    }
 
     return { email: normalizedEmail, status: "sent" };
   } catch (error) {
     const errorCode = dailyBriefErrorCode(error);
-    await supabase
-      .from("naia_daily_brief_runs")
-      .update({
+    const retrySafe = !deliveryAttempted || isSlackMessageRejectedError(error);
+    const ledgerUpdated = await updateDailyBriefRun({
+      claimId: claim.id,
+      organizationId: user.organizationId,
+      supabase,
+      values: {
         error_code: errorCode,
-        status: "failed",
+        status: retrySafe ? "failed" : "delivery_uncertain",
         updated_at: new Date().toISOString(),
-      })
-      .eq("id", claim.id)
-      .eq("organization_id", user.organizationId);
+      },
+    });
+    if (!ledgerUpdated) {
+      console.error(
+        "NAIA daily brief failed and its ledger update also failed:",
+        errorCode,
+      );
+      return {
+        email: normalizedEmail,
+        reason: "daily_brief_ledger_update_failed",
+        status: "failed",
+      };
+    }
 
     console.error("NAIA daily brief failed:", errorCode);
     return { email: normalizedEmail, reason: errorCode, status: "failed" };
@@ -250,8 +275,43 @@ async function claimDailyBriefRun({
     .single();
 
   if (!error && data?.id) return data as DailyBriefRunRow;
-  if (error?.code === "23505") return null;
+  if (error?.code === "23505") {
+    const { data: reclaimed, error: reclaimError } = await supabase
+      .rpc("reclaim_naia_daily_brief_run", {
+        p_local_date: localDate,
+        p_organization_id: user.organizationId,
+        p_profile_id: user.profileId,
+      })
+      .maybeSingle();
+
+    if (reclaimError) throw new Error("daily_brief_reclaim_failed");
+    const reclaimedRun = reclaimed as DailyBriefRunRow | null;
+    return reclaimedRun?.id ? reclaimedRun : null;
+  }
   throw new Error("daily_brief_claim_failed");
+}
+
+async function updateDailyBriefRun({
+  claimId,
+  organizationId,
+  supabase,
+  values,
+}: {
+  claimId: string;
+  organizationId: string;
+  supabase: SupabaseClient;
+  values: Record<string, unknown>;
+}) {
+  try {
+    const { error } = await supabase
+      .from("naia_daily_brief_runs")
+      .update(values)
+      .eq("id", claimId)
+      .eq("organization_id", organizationId);
+    return !error;
+  } catch {
+    return false;
+  }
 }
 
 export async function loadDailyBriefData({
@@ -379,13 +439,11 @@ export function buildDailyBriefMessage({
     const date = eventDateKey(event.start, timeZone);
     return date > today && date <= weekEnd;
   });
-  const weekMeetings = data.leads.filter(
-    (lead) =>
-      lead.status === "meeting-booked" &&
-      Boolean(lead.leadDate) &&
-      lead.leadDate! >= today &&
-      lead.leadDate! <= weekEnd,
-  );
+  const weekMeetings = data.leads.filter((lead) => {
+    if (lead.status !== "meeting-booked" || !lead.leadDate) return false;
+    const date = eventDateKey(lead.leadDate, timeZone);
+    return date >= today && date <= weekEnd;
+  });
 
   const urgentLines = [
     ...overdueTasks.map(

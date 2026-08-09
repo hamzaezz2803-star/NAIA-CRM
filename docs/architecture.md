@@ -107,7 +107,9 @@ du destinataire. La route Vercel Cron est protégée par `CRON_SECRET`, valide l
 fenêtre locale `Africa/Casablanca`, refuse tout destinataire qui n'est pas Ali
 ou Nabil avec le rôle `owner`, et envoie uniquement un DM Slack résolu par
 email. La table service-role-only `naia_daily_brief_runs` assure l'idempotence
-par profil et date locale. Aucun mail, événement ou changement CRM n'est créé.
+par profil et date locale : les échecs prouvés sans livraison sont reclaimables
+atomiquement, tandis qu'un résultat Slack ambigu est verrouillé sans replay.
+Aucun mail, événement ou changement CRM n'est créé.
 Voir `docs/naia-daily-brief.md`.
 
 ## NAIA on Slack

@@ -7,6 +7,24 @@ export type SlackPreparedMessage = {
   threadTs?: string;
 };
 
+// Slack normally answers application-level rejections with HTTP 200 and
+// `ok: false`. That response proves the message was not accepted and is safe
+// to retry; known local preflight failures use the same classification. Network
+// failures and malformed/non-2xx responses remain ambiguous: callers must
+// assume Slack may have accepted the message and avoid replaying.
+export class SlackMessageRejectedError extends Error {
+  constructor(errorCode: string) {
+    super(`Slack rejected the message: ${errorCode}`);
+    this.name = "SlackMessageRejectedError";
+  }
+}
+
+export function isSlackMessageRejectedError(
+  error: unknown,
+): error is SlackMessageRejectedError {
+  return error instanceof SlackMessageRejectedError;
+}
+
 // Slack signs every request with `v0=HMAC_SHA256(secret, "v0:{ts}:{body}")`.
 // Requests older than five minutes are rejected to block replay attacks.
 const SLACK_SIGNATURE_TOLERANCE_MS = 5 * 60 * 1000;
@@ -240,10 +258,15 @@ export async function postSlackMessage({
   text,
   threadTs,
 }: SlackPreparedMessage) {
-  const token = getSlackBotToken();
+  let token: string;
+  try {
+    token = getSlackBotToken();
+  } catch {
+    throw new SlackMessageRejectedError("bot_token_missing");
+  }
 
   if (!channel) {
-    throw new Error("A Slack channel is required before sending.");
+    throw new SlackMessageRejectedError("channel_missing");
   }
 
   const response = await fetch("https://slack.com/api/chat.postMessage", {
@@ -267,9 +290,12 @@ export async function postSlackMessage({
     ts?: string;
   };
 
+  if (response.ok && payload.ok === false) {
+    throw new SlackMessageRejectedError(payload.error ?? "unknown_error");
+  }
   if (!response.ok || !payload.ok) {
     throw new Error(
-      `Slack rejected the message: ${payload.error ?? "unknown error"}`,
+      `Slack delivery result is uncertain (HTTP ${response.status}).`,
     );
   }
 

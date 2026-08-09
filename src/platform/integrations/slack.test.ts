@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fetchSlackMessageSnapshot,
   findSlackUserByEmail,
+  postSlackMessage,
+  SlackMessageRejectedError,
   verifySlackSignature,
 } from "./slack";
 
@@ -194,5 +196,52 @@ describe("findSlackUserByEmail", () => {
     await expect(
       findSlackUserByEmail("nobody@qarizmi.com"),
     ).resolves.toBeNull();
+  });
+});
+
+describe("postSlackMessage delivery classification", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it("classifies a missing bot token as a pre-delivery retryable failure", async () => {
+    vi.stubEnv("SLACK_BOT_TOKEN", "");
+
+    await expect(
+      postSlackMessage({ channel: "U123", text: "Brief test" }),
+    ).rejects.toBeInstanceOf(SlackMessageRejectedError);
+  });
+
+  it("classifies an explicit Slack API rejection as safe to retry", async () => {
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({ error: "channel_not_found", ok: false }),
+        ok: true,
+        status: 200,
+      }),
+    );
+
+    await expect(
+      postSlackMessage({ channel: "U123", text: "Brief test" }),
+    ).rejects.toBeInstanceOf(SlackMessageRejectedError);
+  });
+
+  it("keeps non-2xx transport outcomes ambiguous", async () => {
+    vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        json: async () => ({ error: "internal_error", ok: false }),
+        ok: false,
+        status: 503,
+      }),
+    );
+
+    await expect(
+      postSlackMessage({ channel: "U123", text: "Brief test" }),
+    ).rejects.not.toBeInstanceOf(SlackMessageRejectedError);
   });
 });

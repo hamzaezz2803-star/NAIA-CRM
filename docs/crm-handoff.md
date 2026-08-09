@@ -264,6 +264,25 @@ The official NAIA voice is configured only through the server-side
 synthesis remains the final explicit fallback when provider audio is
 unavailable.
 
+## NAIA Daily Brief Integration
+
+The private daily brief reads organization-scoped active CRM tasks and leads,
+then combines them with the configured founder's own Calendar and Gmail read
+results. Only Ali or Nabil with the `owner` role can be configured, and the
+output is sent to the exact Slack account resolved by email. No CRM, Gmail, or
+Calendar mutation is part of this workflow.
+
+Production activation has two prerequisites that are not performed by a Vercel
+Preview or by repository CI: apply
+`supabase/migrations/20260809221355_naia_daily_brief_runs.sql`, then configure a
+high-entropy `CRON_SECRET` in the Vercel Production environment before the
+production deployment registers `vercel.json`. The migration creates the
+service-role-only ledger and the atomic `reclaim_naia_daily_brief_run` RPC.
+Only rows in the explicit `failed` state can be reclaimed; `sending`, `sent`,
+and `delivery_uncertain` remain non-retryable to prevent duplicate Slack DMs.
+See `docs/naia-daily-brief.md` for the full release sequence and acceptance
+checks.
+
 ## GitHub Issue Body
 
 Use this if the issue cannot be created automatically:

@@ -37,6 +37,21 @@ describe("NAIA daily briefing", () => {
     ).toBe(false);
   });
 
+  it("dispatches at 09:30 UTC during Morocco's UTC+0 Ramadan offset", () => {
+    expect(
+      isDailyBriefDispatchWindow(
+        new Date("2026-03-10T09:30:00.000Z"),
+        TIME_ZONE,
+      ),
+    ).toBe(true);
+    expect(
+      isDailyBriefDispatchWindow(
+        new Date("2026-03-10T08:30:00.000Z"),
+        TIME_ZONE,
+      ),
+    ).toBe(false);
+  });
+
   it("deduplicates configured recipients", () => {
     expect(
       getDailyBriefRecipients(
@@ -100,6 +115,28 @@ describe("NAIA daily briefing", () => {
   it("neutralizes Slack mentions and markup from provider data", () => {
     expect(cleanSlackText("<!channel> @here & urgent")).toBe(
       "&lt;!channel&gt; @​here &amp; urgent",
+    );
+  });
+
+  it("counts a timezone-aware meeting on the inclusive week-end date", () => {
+    const message = buildDailyBriefMessage({
+      data: data({
+        leads: [
+          {
+            id: "lead-week-end",
+            leadDate: "2026-08-17T17:00:00+01:00",
+            status: "meeting-booked",
+            topic: "Meeting de fin de semaine",
+          },
+        ],
+      }),
+      displayName: "Ali",
+      now: new Date("2026-08-10T08:30:00.000Z"),
+      timeZone: TIME_ZONE,
+    });
+
+    expect(JSON.stringify(message.blocks)).toContain(
+      "1 lead(s) en meeting booked",
     );
   });
 });
