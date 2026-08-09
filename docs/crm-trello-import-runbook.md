@@ -10,7 +10,11 @@ Hard boundaries:
 
 - never persist the raw Trello export;
 - never persist Trello member profiles, emails, actions, cookies, or tokens;
-- never download attachments (metadata and sanitized HTTPS URL only);
+- never download attachments (metadata and sanitized HTTPS URL only); URL
+  userinfo, fragments, tokens, API keys, credentials, sessions, and signatures
+  are removed before staging;
+- never truncate a field accepted by the Trello schema: the normalized value is
+  preserved in full or the input is rejected explicitly by schema validation;
 - never delete CRM or ledger rows during import or rollback;
 - only Ali and Nabil, matched against exact emails in `auth.users`, can read or
   operate the import ledger or `cofounders` CRM rows;
@@ -44,6 +48,17 @@ bounded staging records:
 - duplicate titles are reported for review but not merged automatically;
 - Trello IDs plus stable SHA-256 hashes make repeated dry-runs idempotent.
 
+Before writing staging rows, the service compares active categories, tags, and
+leads with the existing organization CRM. Status keys reconcile categories;
+normalized names reconcile tags; normalized titles reconcile leads. Exactly one
+same-scope candidate is linked without overwriting it. Multiple candidates,
+multiple staged leads competing for one existing title, multiple staged labels
+competing for one existing tag name, or a scope mismatch add a validation error
+and block `apply`. The database repeats those checks inside the transaction so
+direct staging writes cannot bypass the preflight. Existing rows and Trello
+references are read in stable, complete pages rather than relying on the
+PostgREST default row limit.
+
 Trello audit actions are intentionally excluded. The validated source had no
 `commentCard` action, so excluding the action history did not remove comments.
 
@@ -69,7 +84,8 @@ array. Classification is fail-closed:
 1. a list must match the explicit sales-stage allowlist;
 2. every attached label must match the explicit sales-label allowlist;
 3. neither the card nor its checklist/attachment metadata may match the HR,
-   recruiting, candidate, intern, or trainee vocabulary;
+   recruiting, candidat/candidate, CV, PFE, alternant, apprentice, intern,
+   internship, or trainee vocabulary;
 4. an orphaned or unknown reference is always `cofounders`.
 
 Any failed rule produces `cofounders`. Free-text keyword detection is therefore
@@ -84,15 +100,25 @@ new organization-safe label. Do not weaken the fallback.
 2. Call `stageTrelloImportDryRun` only after the migration is deployed. It
    writes normalized rows to the founder-only ledger; it never writes the raw
    export.
-3. Review counts, the three duplicate-title candidates, archived-card handling,
+3. Review counts, duplicate-title candidates, existing-CRM deterministic
+   matches, every `existing-crm:*` validation error, archived-card handling,
    and every founder-only classification.
 4. A founder explicitly calls `applyStagedTrelloImport(runId)`. The database
    function locks the run and applies categories, tags, leads, and tag links in
    one transaction. Identical external references are no-ops; changed hashes
    become conflicts and never overwrite an existing imported record.
-5. If needed, a founder calls `rollbackStagedTrelloImport(runId)`. Created rows
-   and relationships receive `archived_at`; no row is deleted and the ledger
-   remains available for recovery.
+5. If needed, a founder calls `rollbackStagedTrelloImport(runId)`. Created or
+   revived rows and relationships receive `archived_at`; a relation that was
+   already archived before the import gets its prior timestamp restored. No row
+   is deleted and the ledger remains available for recovery.
+6. Staging the exact export again after rollback creates a new active run. Apply
+   revives importer-owned rows and references with the same per-item hash. A
+   changed rolled-back item is a validation error and requires an explicit new
+   reconciliation rather than silently overwriting history.
+
+Every staging/change/reference row is tied to its run by a composite
+`(run_id, organization_id)` foreign key. The `security definer` functions repeat
+the organization predicate on every ledger read and business-row mutation.
 
 ## Latest local validation (aggregate only)
 

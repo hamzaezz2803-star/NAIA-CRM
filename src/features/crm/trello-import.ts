@@ -29,6 +29,8 @@ export type TrelloImportDryRun = {
   review: {
     duplicateLeadTitleExtraRows: number;
     duplicateLeadTitleGroups: number;
+    existingCrmAmbiguousItems: number;
+    existingCrmDeterministicMatches: number;
   };
   preserved: {
     attachments: number;
@@ -39,6 +41,31 @@ export type TrelloImportDryRun = {
   };
   sourceHash: string;
   warnings: string[];
+};
+
+export type ExistingCrmReconciliationSnapshot = {
+  categories: Array<{
+    accessScope: CrmAccessScope;
+    id: string;
+    statusKey: string;
+  }>;
+  externalRefs: Array<{
+    archivedAt: string | null;
+    externalId: string;
+    externalType: "category" | "lead" | "tag";
+    localId: string;
+    sourceHash: string;
+  }>;
+  leads: Array<{
+    accessScope: CrmAccessScope;
+    id: string;
+    topic: string;
+  }>;
+  tags: Array<{
+    accessScope: CrmAccessScope;
+    id: string;
+    name: string;
+  }>;
 };
 
 const trelloId = z.string().trim().min(1).max(256);
@@ -112,7 +139,7 @@ const trelloBoardSchema = z
   .strip();
 
 const FOUNDER_ONLY_PATTERN =
-  /\b(stagiaire|stagiaires|intern|interns|internship|candidat|candidats|recrutement|ressources humaines|human resources|rh|hr)\b/i;
+  /\b(stagiaires?|stages?|interns?|internships?|candidat(?:e|es|s)?|candidatures?|recrutement|ressources humaines|human resources|alternant(?:e|es|s)?|apprenti(?:e|es|s)?|pfe|cv|rh|hr)\b/i;
 const ORGANIZATION_SAFE_LIST_PATTERN =
   /^(backlog\b|to be contacted\b|contacted\b|a relancer\b|en attente de reponse\b|presentation a envoyer\b|meeting booked\b|proposal\b|done\b|contract to be signed\b|cold call\b|lost\b)/i;
 const ORGANIZATION_SAFE_LABEL_PATTERN =
@@ -122,8 +149,19 @@ const BOARD_LABEL_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
   // unknown label on this or another board remains founder-only.
   "69de18c4a11891f0f0aae68a": new Set(["ali", "nabil", "updated"]),
 };
-const CREDENTIAL_KEY_PATTERN =
-  /^(token|api[-_]?key|secret|password|authorization|cookie)$/i;
+const CREDENTIAL_KEY_TERMS = [
+  "token",
+  "apikey",
+  "secret",
+  "password",
+  "authorization",
+  "cookie",
+  "signature",
+  "credential",
+  "accesskey",
+  "session",
+  "jwt",
+] as const;
 
 const COLOR_MAP: Record<string, string> = {
   black: "gray",
@@ -148,6 +186,18 @@ function parseJsonInput(input: string | unknown): unknown {
   }
 }
 
+function isCredentialKey(key: string) {
+  const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
+  return (
+    normalized === "auth" ||
+    normalized === "key" ||
+    normalized === "sig" ||
+    CREDENTIAL_KEY_TERMS.some(
+      (term) => normalized === term || normalized.endsWith(term),
+    )
+  );
+}
+
 function findCredentialKey(value: unknown): string | null {
   if (!value || typeof value !== "object") return null;
   if (Array.isArray(value)) {
@@ -159,7 +209,7 @@ function findCredentialKey(value: unknown): string | null {
   }
 
   for (const [key, child] of Object.entries(value)) {
-    if (CREDENTIAL_KEY_PATTERN.test(key)) return key;
+    if (isCredentialKey(key)) return key;
     const found = findCredentialKey(child);
     if (found) return found;
   }
@@ -193,17 +243,6 @@ function statusKeyForList(externalId: string) {
   return `trello-list-${safeId || sha256StableJson(externalId).slice(0, 16)}`;
 }
 
-function truncate(
-  value: string,
-  maxLength: number,
-  warning: string,
-  warnings: string[],
-) {
-  if (value.length <= maxLength) return value;
-  warnings.push(warning);
-  return value.slice(0, maxLength);
-}
-
 function validDueDate(value: string | null | undefined) {
   if (!value) return undefined;
   const date = new Date(value);
@@ -214,8 +253,11 @@ function safeAttachmentUrl(value: string) {
   try {
     const url = new URL(value);
     if (url.protocol !== "https:") return undefined;
+    url.username = "";
+    url.password = "";
+    url.hash = "";
     for (const key of [...url.searchParams.keys()]) {
-      if (CREDENTIAL_KEY_PATTERN.test(key)) url.searchParams.delete(key);
+      if (isCredentialKey(key)) url.searchParams.delete(key);
     }
     return url.toString();
   } catch {
@@ -241,6 +283,154 @@ function duplicateCounts(values: string[]) {
   return {
     extraRows: duplicates.reduce((sum, count) => sum + count - 1, 0),
     groups: duplicates.length,
+  };
+}
+
+export function normalizeCrmMatchText(value: string) {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function addValidationError(
+  item: TrelloImportStagingItem,
+  error: string,
+): TrelloImportStagingItem {
+  return {
+    ...item,
+    validationErrors: [...new Set([...item.validationErrors, error])],
+  };
+}
+
+export function reconcileTrelloImportWithExistingCrm(
+  dryRun: TrelloImportDryRun,
+  snapshot: ExistingCrmReconciliationSnapshot,
+): TrelloImportDryRun {
+  const refsByExternalKey = new Map(
+    snapshot.externalRefs.map((ref) => [
+      `${ref.externalType}:${ref.externalId}`,
+      ref,
+    ]),
+  );
+  const managedLocalIds = new Set(
+    snapshot.externalRefs.map((ref) => ref.localId),
+  );
+  const categoriesByStatus = new Map<string, typeof snapshot.categories>();
+  const tagsByName = new Map<string, typeof snapshot.tags>();
+  const leadsByTopic = new Map<string, typeof snapshot.leads>();
+  const stagedTagCounts = new Map<string, number>();
+  const stagedLeadCounts = new Map<string, number>();
+
+  for (const category of snapshot.categories) {
+    if (managedLocalIds.has(category.id)) continue;
+    const matches = categoriesByStatus.get(category.statusKey) ?? [];
+    matches.push(category);
+    categoriesByStatus.set(category.statusKey, matches);
+  }
+  for (const tag of snapshot.tags) {
+    if (managedLocalIds.has(tag.id)) continue;
+    const key = normalizeCrmMatchText(tag.name);
+    const matches = tagsByName.get(key) ?? [];
+    matches.push(tag);
+    tagsByName.set(key, matches);
+  }
+  for (const lead of snapshot.leads) {
+    if (managedLocalIds.has(lead.id)) continue;
+    const key = normalizeCrmMatchText(lead.topic);
+    const matches = leadsByTopic.get(key) ?? [];
+    matches.push(lead);
+    leadsByTopic.set(key, matches);
+  }
+  for (const item of dryRun.items) {
+    if (refsByExternalKey.has(`${item.entityType}:${item.externalId}`)) {
+      continue;
+    }
+    if (item.entityType === "tag") {
+      const key = normalizeCrmMatchText(String(item.payload.name ?? ""));
+      stagedTagCounts.set(key, (stagedTagCounts.get(key) ?? 0) + 1);
+    } else if (item.entityType === "lead") {
+      const key = normalizeCrmMatchText(String(item.payload.topic ?? ""));
+      stagedLeadCounts.set(key, (stagedLeadCounts.get(key) ?? 0) + 1);
+    }
+  }
+
+  let ambiguous = 0;
+  let deterministicMatches = 0;
+  const items = dryRun.items.map((originalItem) => {
+    const referenceKey = `${originalItem.entityType}:${originalItem.externalId}`;
+    const existingReference = refsByExternalKey.get(referenceKey);
+    if (existingReference) {
+      if (
+        existingReference.archivedAt &&
+        existingReference.sourceHash !== originalItem.payloadHash
+      ) {
+        ambiguous += 1;
+        return addValidationError(
+          originalItem,
+          `existing-crm:rolled-back-${originalItem.entityType}-changed`,
+        );
+      }
+      return originalItem;
+    }
+
+    let item = originalItem;
+    let candidates: Array<{ accessScope: CrmAccessScope; id: string }> = [];
+    if (item.entityType === "category") {
+      candidates =
+        categoriesByStatus.get(String(item.payload.statusKey ?? "")) ?? [];
+    } else if (item.entityType === "tag") {
+      const nameKey = normalizeCrmMatchText(String(item.payload.name ?? ""));
+      candidates = tagsByName.get(nameKey) ?? [];
+      if (candidates.length > 0 && (stagedTagCounts.get(nameKey) ?? 0) > 1) {
+        item = addValidationError(
+          item,
+          "existing-crm:ambiguous-staged-tag-name",
+        );
+        ambiguous += 1;
+        return item;
+      }
+    } else {
+      const topicKey = normalizeCrmMatchText(String(item.payload.topic ?? ""));
+      candidates = leadsByTopic.get(topicKey) ?? [];
+      if (candidates.length > 0 && (stagedLeadCounts.get(topicKey) ?? 0) > 1) {
+        item = addValidationError(
+          item,
+          "existing-crm:ambiguous-staged-lead-title",
+        );
+        ambiguous += 1;
+        return item;
+      }
+    }
+
+    if (candidates.length > 1) {
+      item = addValidationError(
+        item,
+        `existing-crm:ambiguous-${item.entityType}-match`,
+      );
+      ambiguous += 1;
+      return item;
+    }
+    const candidate = candidates[0];
+    if (!candidate) return item;
+    if (candidate.accessScope !== item.accessScope) {
+      item = addValidationError(
+        item,
+        `existing-crm:${item.entityType}-scope-mismatch`,
+      );
+      ambiguous += 1;
+      return item;
+    }
+
+    deterministicMatches += 1;
+    return item;
+  });
+
+  return {
+    ...dryRun,
+    items,
+    review: {
+      ...dryRun.review,
+      existingCrmAmbiguousItems: ambiguous,
+      existingCrmDeterministicMatches: deterministicMatches,
+    },
   };
 }
 
@@ -391,12 +581,7 @@ export function normalizeTrelloExport(
         externalId: list.id,
         payload: {
           color: accessScope === "cofounders" ? "purple" : "gray",
-          name: truncate(
-            list.name.trim() || "Liste Trello sans nom",
-            200,
-            `Nom de liste tronqué (${list.id}).`,
-            warnings,
-          ),
+          name: list.name.trim() || "Liste Trello sans nom",
           position: index + 1,
           statusKey: statusKeyForList(list.id),
         },
@@ -442,12 +627,7 @@ export function normalizeTrelloExport(
         externalId: label.id,
         payload: {
           color: COLOR_MAP[label.color ?? ""] ?? "teal",
-          name: truncate(
-            label.name.trim(),
-            120,
-            `Nom de label tronqué (${label.id}).`,
-            warnings,
-          ),
+          name: label.name.trim(),
         },
         privacyReasons: privacy.reasons,
         validationErrors: [],
@@ -494,12 +674,7 @@ export function normalizeTrelloExport(
           date: validDueDate(attachment.date),
           externalId: attachment.id,
           mimeType: attachment.mimeType ?? undefined,
-          name: truncate(
-            attachment.name.trim() || "Pièce jointe Trello",
-            500,
-            `Nom de pièce jointe tronqué (${card.id}).`,
-            warnings,
-          ),
+          name: attachment.name.trim() || "Pièce jointe Trello",
           url,
         },
       ];
@@ -595,22 +770,12 @@ export function normalizeTrelloExport(
           ...(due ? { leadDate: due } : {}),
           ...(firstIncompleteItem?.name.trim()
             ? {
-                nextAction: truncate(
-                  firstIncompleteItem.name.trim(),
-                  500,
-                  `Prochaine action de checklist tronquée (${card.id}).`,
-                  warnings,
-                ),
+                nextAction: firstIncompleteItem.name.trim(),
               }
             : due
               ? { nextAction: "Échéance Trello" }
               : {}),
-          notes: truncate(
-            normalizedNotes,
-            20_000,
-            `Description de carte tronquée (${card.id}).`,
-            warnings,
-          ),
+          notes: normalizedNotes,
           source: "Trello",
           sourceMeta: {
             assignedMemberExternalIds: card.idMembers,
@@ -619,12 +784,7 @@ export function normalizeTrelloExport(
           status: card.closed
             ? "dead-end"
             : statusKeyForList(list?.id ?? orphanCategoryExternalId),
-          topic: truncate(
-            card.name.trim() || "Carte Trello sans titre",
-            500,
-            `Titre de carte tronqué (${card.id}).`,
-            warnings,
-          ),
+          topic: card.name.trim() || "Carte Trello sans titre",
         },
         privacyReasons: [...new Set(privacyReasons)],
         validationErrors: [],
@@ -674,6 +834,8 @@ export function normalizeTrelloExport(
     review: {
       duplicateLeadTitleExtraRows: duplicateLeadTitles.extraRows,
       duplicateLeadTitleGroups: duplicateLeadTitles.groups,
+      existingCrmAmbiguousItems: 0,
+      existingCrmDeterministicMatches: 0,
     },
     sourceHash: sha256StableJson(canonicalSource),
     warnings: [...new Set(warnings)],

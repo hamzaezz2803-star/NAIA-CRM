@@ -38,6 +38,48 @@ describe("CRM confidentiality and import migration contract", () => {
     expect(migration).toContain(
       'create policy "crm inherited select" on public.crm_lead_notes',
     );
+    for (const parentTable of ["crm_leads", "crm_contacts", "crm_tasks"]) {
+      expect(migration).toContain(
+        `join public.crm_tags tag on tag.id = crm_${parentTable.replace("crm_", "").replace(/s$/, "")}_tags.tag_id`,
+      );
+    }
+    expect(
+      migration.match(/organization_id = tag\.organization_id/g)?.length,
+    ).toBeGreaterThanOrEqual(12);
+  });
+
+  it("binds every ledger child to the same organization as its run", () => {
+    expect(migration).toContain(
+      "constraint crm_import_runs_id_organization_unique unique (id, organization_id)",
+    );
+    expect(migration).toContain("foreign key (run_id, organization_id)");
+    expect(migration).toContain(
+      "references public.crm_import_runs (id, organization_id)",
+    );
+    expect(migration).toContain(
+      "stage.organization_id = import_run.organization_id",
+    );
+    expect(
+      migration.match(
+        /organization_id = import_run\.organization_id\n\s+and run_id = import_run\.id/g,
+      )?.length,
+    ).toBeGreaterThanOrEqual(4);
+  });
+
+  it("reconciles existing CRM rows and supports safe post-rollback attempts", () => {
+    expect(migration).toContain("private.crm_normalize_match_text");
+    expect(migration).toContain("Ambiguous existing CRM lead match");
+    expect(migration).toContain(
+      "Ambiguous staged Trello tag name for existing CRM tag",
+    );
+    expect(migration).toContain("Existing CRM lead scope mismatch");
+    expect(migration).toContain("ref.local_table = 'crm_tags'");
+    expect(migration).toContain("ref.local_table = 'crm_categories'");
+    expect(migration).toContain("crm_import_runs_active_source_unique_idx");
+    expect(migration).toContain("where status in ('staged', 'applied')");
+    expect(migration).toContain("'revived'");
+    expect(migration).toContain("Rolled-back Trello lead changed");
+    expect(migration).toContain("'previousArchivedAt'");
   });
 
   it("keeps import apply/rollback auditable and delete-free", () => {

@@ -4,6 +4,9 @@ import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 
 import {
   normalizeTrelloExport,
+  reconcileTrelloImportWithExistingCrm,
+  type CrmAccessScope,
+  type ExistingCrmReconciliationSnapshot,
   type TrelloImportDryRun,
 } from "./trello-import";
 
@@ -40,6 +43,112 @@ async function requireImportContext() {
   };
 }
 
+async function reconcileAgainstExistingCrm(
+  client: Awaited<ReturnType<typeof createServerSupabaseClient>>,
+  organizationId: string,
+  dryRun: TrelloImportDryRun,
+) {
+  if (!client) throw new Error("Supabase n'est pas configuré.");
+
+  const pageSize = 1_000;
+  async function fetchAllRows<Row>(
+    label: string,
+    fetchPage: (
+      from: number,
+      to: number,
+    ) => PromiseLike<{
+      data: Row[] | null;
+      error: { message: string } | null;
+    }>,
+  ) {
+    const rows: Row[] = [];
+    let from = 0;
+    for (;;) {
+      const result = await fetchPage(from, from + pageSize - 1);
+      if (result.error) {
+        throw new Error(
+          `Préflight CRM existant impossible (${label}): ${result.error.message}`,
+        );
+      }
+      const page = result.data ?? [];
+      if (page.length === 0) return rows;
+      rows.push(...page);
+      // Advance by the number actually returned. PostgREST can enforce a
+      // server-side maximum below our requested range, so a short page does
+      // not prove that the dataset is exhausted.
+      from += page.length;
+    }
+  }
+
+  const [categories, tags, leads, externalRefs] = await Promise.all([
+    fetchAllRows("catégories", (from, to) =>
+      client
+        .from("crm_categories")
+        .select("id, status_key, access_scope")
+        .eq("organization_id", organizationId)
+        .is("archived_at", null)
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAllRows("tags", (from, to) =>
+      client
+        .from("crm_tags")
+        .select("id, name, access_scope")
+        .eq("organization_id", organizationId)
+        .is("archived_at", null)
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAllRows("leads", (from, to) =>
+      client
+        .from("crm_leads")
+        .select("id, topic, access_scope")
+        .eq("organization_id", organizationId)
+        .is("archived_at", null)
+        .order("id")
+        .range(from, to),
+    ),
+    fetchAllRows("références Trello", (from, to) =>
+      client
+        .from("crm_external_refs")
+        .select(
+          "external_type, external_id, local_id, source_hash, archived_at",
+        )
+        .eq("organization_id", organizationId)
+        .eq("provider", "trello")
+        .order("id")
+        .range(from, to),
+    ),
+  ]);
+
+  const snapshot: ExistingCrmReconciliationSnapshot = {
+    categories: categories.map((row) => ({
+      accessScope: row.access_scope as CrmAccessScope,
+      id: row.id,
+      statusKey: row.status_key,
+    })),
+    externalRefs: externalRefs.map((row) => ({
+      archivedAt: row.archived_at,
+      externalId: row.external_id,
+      externalType: row.external_type as "category" | "lead" | "tag",
+      localId: row.local_id,
+      sourceHash: row.source_hash,
+    })),
+    leads: leads.map((row) => ({
+      accessScope: row.access_scope as CrmAccessScope,
+      id: row.id,
+      topic: row.topic,
+    })),
+    tags: tags.map((row) => ({
+      accessScope: row.access_scope as CrmAccessScope,
+      id: row.id,
+      name: row.name,
+    })),
+  };
+
+  return reconcileTrelloImportWithExistingCrm(dryRun, snapshot);
+}
+
 /**
  * Parses a Trello JSON export and persists only normalized staging rows.
  * The raw export, actions, members, and credentials are never stored.
@@ -47,8 +156,13 @@ async function requireImportContext() {
 export async function stageTrelloImportDryRun(
   input: string | unknown,
 ): Promise<StagedTrelloImport> {
-  const dryRun = normalizeTrelloExport(input);
+  const normalizedDryRun = normalizeTrelloExport(input);
   const { client, organizationId, profileId } = await requireImportContext();
+  const dryRun = await reconcileAgainstExistingCrm(
+    client,
+    organizationId,
+    normalizedDryRun,
+  );
 
   const { data: existingRun, error: existingRunError } = await client
     .from("crm_import_runs")
@@ -57,14 +171,13 @@ export async function stageTrelloImportDryRun(
     .eq("provider", "trello")
     .eq("source_external_id", dryRun.board.externalId)
     .eq("source_hash", dryRun.sourceHash)
+    .in("status", ["staged", "applied"])
+    .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (existingRunError) throw new Error(existingRunError.message);
 
-  if (
-    existingRun?.status === "applied" ||
-    existingRun?.status === "rolled-back"
-  ) {
+  if (existingRun?.status === "applied") {
     return { dryRun, reused: true, runId: existingRun.id };
   }
 

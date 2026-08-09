@@ -358,6 +358,22 @@ describe("executeBridgeAction single-use approval tokens", () => {
     );
 
     expect(client.crmEq).toHaveBeenCalledWith("access_scope", "organization");
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "company.organization_id",
+      "org-1",
+    );
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "contact.organization_id",
+      "org-1",
+    );
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "company.access_scope",
+      "organization",
+    );
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "contact.access_scope",
+      "organization",
+    );
   });
 
   it("reads the acting user's Calendar directly from Slack", async () => {

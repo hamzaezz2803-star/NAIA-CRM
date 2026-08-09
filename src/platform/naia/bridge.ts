@@ -487,14 +487,21 @@ async function fetchBridgeLeads(
     .from("crm_leads")
     .select(
       `id,organization_id,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
-      company:company_id(id,name),
-      contact:contact_id(id,name,email,phone)`,
+      company:company_id(id,organization_id,name,access_scope,archived_at),
+      contact:contact_id(id,organization_id,name,email,phone,access_scope,archived_at)`,
     )
     .eq("organization_id", user.organizationId)
-    .is("archived_at", null);
+    .is("archived_at", null)
+    .eq("company.organization_id", user.organizationId)
+    .is("company.archived_at", null)
+    .eq("contact.organization_id", user.organizationId)
+    .is("contact.archived_at", null);
 
   if (isCofounder !== true) {
-    query = query.eq("access_scope", "organization");
+    query = query
+      .eq("access_scope", "organization")
+      .eq("company.access_scope", "organization")
+      .eq("contact.access_scope", "organization");
   }
 
   const { data, error } = await query
@@ -504,11 +511,20 @@ async function fetchBridgeLeads(
   if (error || !data) return [];
 
   type BridgeLeadRow = {
-    company: { id: string; name: string } | null;
+    company: {
+      access_scope: "cofounders" | "organization";
+      archived_at: string | null;
+      id: string;
+      name: string;
+      organization_id: string;
+    } | null;
     contact: {
+      access_scope: "cofounders" | "organization";
+      archived_at: string | null;
       email: string | null;
       id: string;
       name: string;
+      organization_id: string;
       phone: string | null;
     } | null;
     created_at: string;
@@ -524,24 +540,58 @@ async function fetchBridgeLeads(
     updated_at: string;
   };
 
-  return (data as unknown as BridgeLeadRow[]).map((row) => ({
-    companyId: row.company?.id ?? undefined,
-    companyName: row.company?.name ?? undefined,
-    contactEmail: row.contact?.email ?? undefined,
-    contactId: row.contact?.id ?? undefined,
-    contactName: row.contact?.name ?? undefined,
-    contactPhone: row.contact?.phone ?? undefined,
-    createdAt: row.created_at,
-    id: row.id,
-    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
-    nextAction: row.next_action ?? undefined,
-    notes: row.notes ?? undefined,
-    organizationId: row.organization_id,
-    source: row.source ?? undefined,
-    status: row.status,
-    topic: row.topic,
-    updatedAt: row.updated_at,
-  }));
+  return (data as unknown as BridgeLeadRow[]).map((row) => {
+    const company = isVisibleBridgeRelation(
+      row.company,
+      user.organizationId,
+      isCofounder === true,
+    )
+      ? row.company
+      : null;
+    const contact = isVisibleBridgeRelation(
+      row.contact,
+      user.organizationId,
+      isCofounder === true,
+    )
+      ? row.contact
+      : null;
+
+    return {
+      companyId: company?.id ?? undefined,
+      companyName: company?.name ?? undefined,
+      contactEmail: contact?.email ?? undefined,
+      contactId: contact?.id ?? undefined,
+      contactName: contact?.name ?? undefined,
+      contactPhone: contact?.phone ?? undefined,
+      createdAt: row.created_at,
+      id: row.id,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
+      nextAction: row.next_action ?? undefined,
+      notes: row.notes ?? undefined,
+      organizationId: row.organization_id,
+      source: row.source ?? undefined,
+      status: row.status,
+      topic: row.topic,
+      updatedAt: row.updated_at,
+    };
+  });
+}
+
+function isVisibleBridgeRelation(
+  relation: {
+    access_scope: "cofounders" | "organization";
+    archived_at: string | null;
+    organization_id: string;
+  } | null,
+  organizationId: string,
+  isCofounder: boolean,
+) {
+  return Boolean(
+    relation &&
+    relation.organization_id === organizationId &&
+    relation.archived_at === null &&
+    (isCofounder || relation.access_scope === "organization"),
+  );
 }
 
 function coerceStatus(status: string): CrmLeadStatus | null {
