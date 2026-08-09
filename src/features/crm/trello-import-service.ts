@@ -3,6 +3,7 @@ import "server-only";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 
 import {
+  createTrelloStagingAttestation,
   normalizeTrelloExport,
   reconcileTrelloImportWithExistingCrm,
   type CrmAccessScope,
@@ -39,7 +40,6 @@ async function requireImportContext() {
   return {
     client,
     organizationId: membership.organization_id,
-    profileId: user.id,
   };
 }
 
@@ -157,81 +157,50 @@ export async function stageTrelloImportDryRun(
   input: string | unknown,
 ): Promise<StagedTrelloImport> {
   const normalizedDryRun = normalizeTrelloExport(input);
-  const { client, organizationId, profileId } = await requireImportContext();
+  const { client, organizationId } = await requireImportContext();
   const dryRun = await reconcileAgainstExistingCrm(
     client,
     organizationId,
     normalizedDryRun,
   );
 
-  const { data: existingRun, error: existingRunError } = await client
-    .from("crm_import_runs")
-    .select("id, status")
-    .eq("organization_id", organizationId)
-    .eq("provider", "trello")
-    .eq("source_external_id", dryRun.board.externalId)
-    .eq("source_hash", dryRun.sourceHash)
-    .in("status", ["staged", "applied"])
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-  if (existingRunError) throw new Error(existingRunError.message);
-
-  if (existingRun?.status === "applied") {
-    return { dryRun, reused: true, runId: existingRun.id };
-  }
-
-  let runId = existingRun?.id as string | undefined;
-  if (!runId) {
-    const { data: createdRun, error: createRunError } = await client
-      .from("crm_import_runs")
-      .insert({
-        organization_id: organizationId,
-        provider: "trello",
-        source_external_id: dryRun.board.externalId,
-        source_hash: dryRun.sourceHash,
-        status: "staged",
-        dry_run: true,
-        summary: {
-          boardName: dryRun.board.name,
-          counts: dryRun.counts,
-          review: dryRun.review,
-          warnings: dryRun.warnings,
-        },
-        created_by_profile_id: profileId,
-      })
-      .select("id")
-      .single();
-    if (createRunError || !createdRun) {
-      throw new Error(
-        createRunError?.message ?? "Création du dry-run impossible.",
-      );
-    }
-    runId = createdRun.id;
-  }
-  if (!runId) throw new Error("Identifiant de dry-run introuvable.");
-
+  const attestation = createTrelloStagingAttestation(dryRun.items);
   const stagingRows = dryRun.items.map((item) => ({
     access_scope: item.accessScope,
     entity_type: item.entityType,
     external_id: item.externalId,
     normalized_payload: item.payload,
-    organization_id: organizationId,
     parent_external_id: item.parentExternalId ?? null,
     payload_hash: item.payloadHash,
     privacy_reasons: item.privacyReasons,
-    run_id: runId,
     validation_errors: item.validationErrors,
   }));
+  const { data, error } = await client.rpc("stage_crm_trello_import", {
+    requested_expected_item_count: attestation.expectedItemCount,
+    requested_organization_id: organizationId,
+    requested_rows: stagingRows,
+    requested_source_external_id: dryRun.board.externalId,
+    requested_source_hash: dryRun.sourceHash,
+    requested_staging_hash: attestation.stagingHash,
+    requested_summary: {
+      boardName: dryRun.board.name,
+      counts: dryRun.counts,
+      review: dryRun.review,
+      warnings: dryRun.warnings,
+    },
+  });
+  if (error) throw new Error(error.message);
+  const staged = data as {
+    reused?: boolean;
+    runId?: string;
+  } | null;
+  if (!staged?.runId) throw new Error("Identifiant de dry-run introuvable.");
 
-  const { error: stagingError } = await client
-    .from("crm_import_staging")
-    .upsert(stagingRows, {
-      onConflict: "run_id,entity_type,external_id",
-    });
-  if (stagingError) throw new Error(stagingError.message);
-
-  return { dryRun, reused: Boolean(existingRun), runId };
+  return {
+    dryRun,
+    reused: staged.reused === true,
+    runId: staged.runId,
+  };
 }
 
 /** Apply is an explicit, founder-authorized database transaction. */

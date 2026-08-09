@@ -12,7 +12,8 @@ Hard boundaries:
 - never persist Trello member profiles, emails, actions, cookies, or tokens;
 - never download attachments (metadata and sanitized HTTPS URL only); URL
   userinfo, fragments, tokens, API keys, credentials, sessions, and signatures
-  are removed before staging;
+  are removed before staging, and only the reviewed `download`, `dl`, or
+  `inline` query switches are retained;
 - never truncate a field accepted by the Trello schema: the normalized value is
   preserved in full or the input is rejected explicitly by schema validation;
 - never delete CRM or ledger rows during import or rollback;
@@ -93,13 +94,30 @@ an additional guard, not the sole protection. Before live apply, founders must
 review every `fail-closed:unreviewed-label` result and explicitly approve any
 new organization-safe label. Do not weaken the fallback.
 
+The same vocabulary boundary is enforced by a database trigger for every
+manual company, contact, lead, category, tag, and task write, regardless of the
+UI or API route used. `trainee`, `apprentice`, `alternance`, and their common
+French/English variants are included. A sensitive write is automatically
+changed to `cofounders`; RLS then permits it only for Ali or Nabil. Confidential
+scope is deliberately one-way: an edit cannot downgrade it. This is the safe
+product default until a separately audited founder-only declassification flow
+is designed.
+
+Company/contact/lead/task relationships are validated in both directions. A
+cross-organization parent link, or moving a parent while descendants would be
+stranded in another organization, aborts the transaction. Escalating a parent
+also escalates existing descendants atomically. The migration performs a
+read-only consistency assertion before enabling these triggers and aborts for
+manual review instead of rewriting tenant ownership.
+
 ## Dry-run, apply, and rollback
 
 1. Run `normalizeTrelloExport` locally and inspect only aggregate counts,
    warnings, duplicate groups, and privacy reasons.
 2. Call `stageTrelloImportDryRun` only after the migration is deployed. It
-   writes normalized rows to the founder-only ledger; it never writes the raw
-   export.
+   sends the normalized rows, expected item count, and deterministic staging
+   SHA-256 to one database RPC. Run creation and every staging insert commit in
+   the same transaction; it never writes the raw export.
 3. Review counts, duplicate-title candidates, existing-CRM deterministic
    matches, every `existing-crm:*` validation error, archived-card handling,
    and every founder-only classification.
@@ -119,6 +137,9 @@ new organization-safe label. Do not weaken the fallback.
 Every staging/change/reference row is tied to its run by a composite
 `(run_id, organization_id)` foreign key. The `security definer` functions repeat
 the organization predicate on every ledger read and business-row mutation.
+Authenticated clients receive read-only ledger table grants; only the staging,
+apply, and rollback RPCs may mutate it. `apply` recomputes and checks both the
+expected row count and staging hash before any CRM write, including on a replay.
 
 ## Latest local validation (aggregate only)
 
@@ -134,5 +155,9 @@ the organization predicate on every ledger read and business-row mutation.
 - 0 duplicate Trello list/card/label IDs and 0 validation errors;
 - 1,000 audit actions ignored, including 0 `commentCard` actions.
 
-This validation created no derived export file and made no network or database
-write.
+The full migration chain was also rebuilt in an isolated local Supabase
+Postgres instance. `supabase/tests/crm_confidentiality_boundary.sql` verified
+cross-organization rejections, manual sensitivity escalation and propagation,
+non-founder RLS denial, atomic staging rollback, tamper detection, full
+category/tag/lead apply, and soft rollback. The test transaction was rolled
+back; no live database write or derived export file was created.

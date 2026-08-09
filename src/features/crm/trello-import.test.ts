@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createTrelloStagingAttestation,
   normalizeTrelloExport,
   reconcileTrelloImportWithExistingCrm,
 } from "./trello-import";
@@ -131,24 +132,35 @@ describe("normalizeTrelloExport", () => {
     expect(dryRun.warnings.join(" ")).toMatch(/sans liste reconnue/i);
   });
 
-  it("classifies common French internship vocabulary as cofounders-only", () => {
-    const dryRun = normalizeTrelloExport({
-      ...syntheticBoard,
-      cards: [
-        {
-          closed: false,
-          desc: "CV et évaluation de la candidate",
-          id: "card-pfe",
-          idLabels: [],
-          idList: "list-pipeline",
-          name: "Entretien PFE - Sara",
-        },
-      ],
-    });
+  it("classifies French and English internship vocabulary as cofounders-only", () => {
+    for (const [index, title] of [
+      "Entretien PFE - Sara",
+      "Trainee Sara",
+      "Apprentice Sara",
+      "Apprentie Sara",
+      "Alternance Sara",
+      "Graduate intern Sara",
+    ].entries()) {
+      const externalId = `card-sensitive-${index}`;
+      const dryRun = normalizeTrelloExport({
+        ...syntheticBoard,
+        cards: [
+          {
+            closed: false,
+            desc: "Évaluation de la candidate",
+            id: externalId,
+            idLabels: [],
+            idList: "list-pipeline",
+            name: title,
+          },
+        ],
+      });
 
-    expect(
-      dryRun.items.find((item) => item.externalId === "card-pfe")?.accessScope,
-    ).toBe("cofounders");
+      expect(
+        dryRun.items.find((item) => item.externalId === externalId)
+          ?.accessScope,
+      ).toBe("cofounders");
+    }
   });
 
   it("removes credentials and signatures from attachment URLs", () => {
@@ -161,7 +173,7 @@ describe("normalizeTrelloExport", () => {
             {
               id: "attachment-signed",
               name: "Deck privé",
-              url: "https://user:password@files.example.test/deck.pdf?access_token=secret&X-Amz-Signature=signed&download=1#private",
+              url: "https://user:password@files.example.test/deck.pdf?access_token=secret&AWSAccessKeyId=aws-secret&GoogleAccessId=google-id&X-Goog-Credential=google-secret&Key-Pair-Id=cloudfront-id&Policy=cloudfront-policy&X-Amz-Signature=signed&unknown_secret_name=secret&download=1#private",
             },
           ],
         },
@@ -172,9 +184,41 @@ describe("normalizeTrelloExport", () => {
 
     expect(serialized).toContain("download=1");
     expect(serialized).not.toContain("access_token");
+    expect(serialized).not.toContain("AWSAccessKeyId");
+    expect(serialized).not.toContain("GoogleAccessId");
+    expect(serialized).not.toContain("X-Goog-Credential");
+    expect(serialized).not.toContain("Key-Pair-Id");
+    expect(serialized).not.toContain("Policy");
+    expect(serialized).not.toContain("unknown_secret_name");
     expect(serialized).not.toContain("Signature");
     expect(serialized).not.toContain("password@");
     expect(serialized).not.toContain("#private");
+  });
+
+  it("creates a deterministic count and content attestation for staging", () => {
+    const dryRun = normalizeTrelloExport(syntheticBoard);
+    const first = createTrelloStagingAttestation(dryRun.items);
+    const reordered = createTrelloStagingAttestation(
+      [...dryRun.items].reverse(),
+    );
+    const changed = createTrelloStagingAttestation(
+      dryRun.items.map((item, index) =>
+        index === 0 ? { ...item, payloadHash: "0".repeat(64) } : item,
+      ),
+    );
+    const validationChanged = createTrelloStagingAttestation(
+      dryRun.items.map((item, index) =>
+        index === 0
+          ? { ...item, validationErrors: ["existing-crm:ambiguous"] }
+          : item,
+      ),
+    );
+
+    expect(first.expectedItemCount).toBe(dryRun.items.length);
+    expect(first.stagingHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(reordered).toEqual(first);
+    expect(changed.stagingHash).not.toBe(first.stagingHash);
+    expect(validationChanged.stagingHash).not.toBe(first.stagingHash);
   });
 
   it("preserves accepted long descriptions without truncation", () => {

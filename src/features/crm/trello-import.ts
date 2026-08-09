@@ -1,7 +1,12 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-export type CrmAccessScope = "cofounders" | "organization";
+import {
+  containsSensitiveCrmText,
+  type CrmAccessScope,
+} from "./confidentiality";
+
+export type { CrmAccessScope } from "./confidentiality";
 
 export type TrelloImportStagingItem = {
   accessScope: CrmAccessScope;
@@ -138,8 +143,6 @@ const trelloBoardSchema = z
   })
   .strip();
 
-const FOUNDER_ONLY_PATTERN =
-  /\b(stagiaires?|stages?|interns?|internships?|candidat(?:e|es|s)?|candidatures?|recrutement|ressources humaines|human resources|alternant(?:e|es|s)?|apprenti(?:e|es|s)?|pfe|cv|rh|hr)\b/i;
 const ORGANIZATION_SAFE_LIST_PATTERN =
   /^(backlog\b|to be contacted\b|contacted\b|a relancer\b|en attente de reponse\b|presentation a envoyer\b|meeting booked\b|proposal\b|done\b|contract to be signed\b|cold call\b|lost\b)/i;
 const ORGANIZATION_SAFE_LABEL_PATTERN =
@@ -159,9 +162,17 @@ const CREDENTIAL_KEY_TERMS = [
   "signature",
   "credential",
   "accesskey",
+  "accessid",
+  "keypairid",
   "session",
   "jwt",
+  "bearer",
+  "oauth",
+  "privatekey",
+  "presigned",
+  "policy",
 ] as const;
+const SAFE_ATTACHMENT_QUERY_KEYS = new Set(["dl", "download", "inline"]);
 
 const COLOR_MAP: Record<string, string> = {
   black: "gray",
@@ -190,11 +201,11 @@ function isCredentialKey(key: string) {
   const normalized = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
   return (
     normalized === "auth" ||
+    normalized === "code" ||
     normalized === "key" ||
     normalized === "sig" ||
-    CREDENTIAL_KEY_TERMS.some(
-      (term) => normalized === term || normalized.endsWith(term),
-    )
+    normalized === "ticket" ||
+    CREDENTIAL_KEY_TERMS.some((term) => normalized.includes(term))
   );
 }
 
@@ -234,6 +245,23 @@ export function sha256StableJson(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
 }
 
+export function createTrelloStagingAttestation(
+  items: TrelloImportStagingItem[],
+) {
+  const canonicalRows = items
+    .map(
+      (item) =>
+        `${item.entityType}\u001f${item.externalId}\u001f${item.payloadHash}\u001f${sha256StableJson(item.validationErrors)}`,
+    )
+    .sort();
+  return {
+    expectedItemCount: items.length,
+    stagingHash: createHash("sha256")
+      .update(canonicalRows.join("\n"))
+      .digest("hex"),
+  };
+}
+
 function statusKeyForList(externalId: string) {
   const safeId = externalId
     .normalize("NFKD")
@@ -257,7 +285,12 @@ function safeAttachmentUrl(value: string) {
     url.password = "";
     url.hash = "";
     for (const key of [...url.searchParams.keys()]) {
-      if (isCredentialKey(key)) url.searchParams.delete(key);
+      if (
+        isCredentialKey(key) ||
+        !SAFE_ATTACHMENT_QUERY_KEYS.has(key.toLowerCase())
+      ) {
+        url.searchParams.delete(key);
+      }
     }
     return url.toString();
   } catch {
@@ -519,7 +552,7 @@ export function normalizeTrelloExport(
     { accessScope: CrmAccessScope; reasons: string[] }
   >();
   for (const list of board.lists) {
-    if (FOUNDER_ONLY_PATTERN.test(list.name)) {
+    if (containsSensitiveCrmText(list.name)) {
       listPrivacy.set(list.id, {
         accessScope: "cofounders",
         reasons: ["sensitive-keyword:list"],
@@ -541,7 +574,7 @@ export function normalizeTrelloExport(
     { accessScope: CrmAccessScope; reasons: string[] }
   >();
   for (const label of board.labels) {
-    if (!label.name.trim() || FOUNDER_ONLY_PATTERN.test(label.name)) {
+    if (!label.name.trim() || containsSensitiveCrmText(label.name)) {
       labelPrivacy.set(label.id, {
         accessScope: "cofounders",
         reasons: [
@@ -741,7 +774,7 @@ export function normalizeTrelloExport(
       );
       if (labelRule.accessScope === "cofounders") accessScope = "cofounders";
     }
-    if (FOUNDER_ONLY_PATTERN.test(`${card.name}\n${normalizedNotes}`)) {
+    if (containsSensitiveCrmText(card.name, normalizedNotes)) {
       accessScope = "cofounders";
       privacyReasons.push("sensitive-keyword:card-content");
     }

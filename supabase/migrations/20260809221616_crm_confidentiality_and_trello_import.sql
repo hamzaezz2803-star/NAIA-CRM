@@ -1,7 +1,7 @@
 -- CRM confidentiality boundary and one-shot Trello migration ledger.
 --
 -- This migration is deliberately data-preserving:
---   * existing CRM records stay organization-scoped;
+--   * existing CRM rows are preserved; sensitive rows are scope-escalated;
 --   * import/rollback functions never DELETE business rows;
 --   * confidential records are visible only to the two exact cofounder
 --     identities stored in auth.users (profiles.email is intentionally not
@@ -124,12 +124,23 @@ as $$
   select lower(regexp_replace(btrim(coalesce(input_value, '')), '\s+', ' ', 'g'));
 $$;
 
+create or replace function private.crm_text_requires_cofounder(input_value text)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select lower(coalesce(input_value, '')) ~
+    '(^|[^[:alnum:]_])(stagiaires?|stages?|interns?|internships?|trainees?|apprentices?|apprenti(e|es|s)?|apprentissages?|alternances?|alternants?|alternantes?|candidat(e|es|s)?|candidatures?|recrutement|ressources[[:space:]]+humaines|human[[:space:]]+resources|graduate[[:space:]]+interns?|pfe|cv|rh|hr)([^[:alnum:]_]|$)';
+$$;
+
 revoke execute on function private.is_crm_cofounder(uuid) from public, anon;
 revoke execute on function private.is_crm_cofounder_profile(uuid, uuid) from public, anon, authenticated;
 revoke execute on function private.can_read_crm_record(uuid, text) from public, anon;
 revoke execute on function private.can_write_crm_record(uuid, text) from public, anon;
 revoke execute on function private.can_delete_crm_record(uuid, text) from public, anon;
 revoke execute on function private.crm_normalize_match_text(text) from public, anon, authenticated;
+revoke execute on function private.crm_text_requires_cofounder(text) from public, anon, authenticated;
 grant execute on function private.is_crm_cofounder(uuid) to authenticated, service_role;
 grant execute on function private.is_crm_cofounder_profile(uuid, uuid) to service_role;
 grant execute on function private.can_read_crm_record(uuid, text) to authenticated, service_role;
@@ -203,6 +214,389 @@ alter table public.crm_tasks drop constraint if exists crm_tasks_access_scope_ch
 alter table public.crm_tasks add constraint crm_tasks_access_scope_check
   check (access_scope in ('organization', 'cofounders'));
 
+-- Reject every cross-organization root reference before installing the
+-- durable write boundary. Existing data is never rewritten to another
+-- organization: an inconsistency aborts the migration for manual review.
+do $boundaries$
+begin
+  if exists (
+    select 1
+    from public.crm_contacts contact
+    join public.crm_companies company on company.id = contact.company_id
+    where contact.organization_id <> company.organization_id
+  ) then
+    raise exception 'CRM boundary violation: contact references a company from another organization';
+  end if;
+  if exists (
+    select 1
+    from public.crm_leads lead
+    join public.crm_companies company on company.id = lead.company_id
+    where lead.organization_id <> company.organization_id
+  ) then
+    raise exception 'CRM boundary violation: lead references a company from another organization';
+  end if;
+  if exists (
+    select 1
+    from public.crm_leads lead
+    join public.crm_contacts contact on contact.id = lead.contact_id
+    where lead.organization_id <> contact.organization_id
+  ) then
+    raise exception 'CRM boundary violation: lead references a contact from another organization';
+  end if;
+  if exists (
+    select 1
+    from public.crm_tasks task
+    join public.crm_leads lead on lead.id = task.lead_id
+    where task.organization_id <> lead.organization_id
+  ) then
+    raise exception 'CRM boundary violation: task references a lead from another organization';
+  end if;
+  if exists (
+    select 1
+    from public.crm_lead_notes note
+    join public.crm_leads lead on lead.id = note.lead_id
+    where note.organization_id <> lead.organization_id
+  ) or exists (
+    select 1
+    from public.crm_lead_follow_ups follow_up
+    join public.crm_leads lead on lead.id = follow_up.lead_id
+    where follow_up.organization_id <> lead.organization_id
+  ) then
+    raise exception 'CRM boundary violation: lead child belongs to another organization';
+  end if;
+  if exists (
+    select 1
+    from public.crm_lead_tags relation
+    join public.crm_leads lead on lead.id = relation.lead_id
+    join public.crm_tags tag on tag.id = relation.tag_id
+    where lead.organization_id <> tag.organization_id
+  ) or exists (
+    select 1
+    from public.crm_contact_tags relation
+    join public.crm_contacts contact on contact.id = relation.contact_id
+    join public.crm_tags tag on tag.id = relation.tag_id
+    where contact.organization_id <> tag.organization_id
+  ) or exists (
+    select 1
+    from public.crm_task_tags relation
+    join public.crm_tasks task on task.id = relation.task_id
+    join public.crm_tags tag on tag.id = relation.tag_id
+    where task.organization_id <> tag.organization_id
+  ) then
+    raise exception 'CRM boundary violation: tag relation crosses organizations';
+  end if;
+end
+$boundaries$;
+
+-- Preserve all existing rows while escalating sensitive manual records and
+-- descendants of confidential parents. Scope is one-way: it can never be
+-- downgraded by a later edit.
+update public.crm_companies
+set access_scope = 'cofounders'
+where access_scope <> 'cofounders'
+  and private.crm_text_requires_cofounder(
+    concat_ws(E'\n', name, industry, notes)
+  );
+
+update public.crm_contacts contact
+set access_scope = 'cofounders'
+where contact.access_scope <> 'cofounders'
+  and (
+    private.crm_text_requires_cofounder(
+      concat_ws(E'\n', contact.name, contact.email, contact.phone,
+        contact.job_title, contact.notes)
+    )
+    or exists (
+      select 1 from public.crm_companies company
+      where company.id = contact.company_id
+        and company.organization_id = contact.organization_id
+        and company.access_scope = 'cofounders'
+    )
+  );
+
+update public.crm_leads lead
+set access_scope = 'cofounders'
+where lead.access_scope <> 'cofounders'
+  and (
+    private.crm_text_requires_cofounder(
+      concat_ws(E'\n', lead.topic, lead.source, lead.notes, lead.next_action,
+        lead.contact_job_title)
+    )
+    or exists (
+      select 1 from public.crm_companies company
+      where company.id = lead.company_id
+        and company.organization_id = lead.organization_id
+        and company.access_scope = 'cofounders'
+    )
+    or exists (
+      select 1 from public.crm_contacts contact
+      where contact.id = lead.contact_id
+        and contact.organization_id = lead.organization_id
+        and contact.access_scope = 'cofounders'
+    )
+  );
+
+update public.crm_categories
+set access_scope = 'cofounders'
+where access_scope <> 'cofounders'
+  and private.crm_text_requires_cofounder(concat_ws(E'\n', name, status_key));
+
+update public.crm_tags
+set access_scope = 'cofounders'
+where access_scope <> 'cofounders'
+  and private.crm_text_requires_cofounder(name);
+
+update public.crm_tasks task
+set access_scope = 'cofounders'
+where task.access_scope <> 'cofounders'
+  and (
+    private.crm_text_requires_cofounder(
+      concat_ws(E'\n', task.title, task.description)
+    )
+    or exists (
+      select 1 from public.crm_leads lead
+      where lead.id = task.lead_id
+        and lead.organization_id = task.organization_id
+        and lead.access_scope = 'cofounders'
+    )
+  );
+
+create or replace function private.enforce_crm_root_boundary()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  parent_organization_id uuid;
+  parent_access_scope text;
+  sensitive_text text;
+begin
+  if tg_op = 'UPDATE' and old.access_scope = 'cofounders' then
+    new.access_scope := 'cofounders';
+  end if;
+
+  -- A parent may move only when all existing descendants and tag relations
+  -- already belong to the destination organization. This closes the reverse
+  -- path where updating a parent would otherwise create a cross-org FK.
+  if tg_op = 'UPDATE' and old.organization_id <> new.organization_id then
+    if tg_table_name = 'crm_companies' and (
+      exists (
+        select 1 from public.crm_contacts contact
+        where contact.company_id = new.id
+          and contact.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1 from public.crm_leads lead
+        where lead.company_id = new.id
+          and lead.organization_id <> new.organization_id
+      )
+    ) then
+      raise exception 'CRM boundary violation: company move strands descendants';
+    elsif tg_table_name = 'crm_contacts' and (
+      exists (
+        select 1 from public.crm_leads lead
+        where lead.contact_id = new.id
+          and lead.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1
+        from public.crm_contact_tags relation
+        join public.crm_tags tag on tag.id = relation.tag_id
+        where relation.contact_id = new.id
+          and tag.organization_id <> new.organization_id
+      )
+    ) then
+      raise exception 'CRM boundary violation: contact move strands descendants';
+    elsif tg_table_name = 'crm_leads' and (
+      exists (
+        select 1 from public.crm_tasks task
+        where task.lead_id = new.id
+          and task.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1 from public.crm_lead_notes note
+        where note.lead_id = new.id
+          and note.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1 from public.crm_lead_follow_ups follow_up
+        where follow_up.lead_id = new.id
+          and follow_up.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1
+        from public.crm_lead_tags relation
+        join public.crm_tags tag on tag.id = relation.tag_id
+        where relation.lead_id = new.id
+          and tag.organization_id <> new.organization_id
+      )
+    ) then
+      raise exception 'CRM boundary violation: lead move strands descendants';
+    elsif tg_table_name = 'crm_tasks' and exists (
+      select 1
+      from public.crm_task_tags relation
+      join public.crm_tags tag on tag.id = relation.tag_id
+      where relation.task_id = new.id
+        and tag.organization_id <> new.organization_id
+    ) then
+      raise exception 'CRM boundary violation: task move strands tag relations';
+    elsif tg_table_name = 'crm_tags' and (
+      exists (
+        select 1
+        from public.crm_lead_tags relation
+        join public.crm_leads lead on lead.id = relation.lead_id
+        where relation.tag_id = new.id
+          and lead.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1
+        from public.crm_contact_tags relation
+        join public.crm_contacts contact on contact.id = relation.contact_id
+        where relation.tag_id = new.id
+          and contact.organization_id <> new.organization_id
+      )
+      or exists (
+        select 1
+        from public.crm_task_tags relation
+        join public.crm_tasks task on task.id = relation.task_id
+        where relation.tag_id = new.id
+          and task.organization_id <> new.organization_id
+      )
+    ) then
+      raise exception 'CRM boundary violation: tag move strands relations';
+    end if;
+  end if;
+
+  if tg_table_name = 'crm_companies' then
+    sensitive_text := concat_ws(E'\n', new.name, new.industry, new.notes);
+  elsif tg_table_name = 'crm_contacts' then
+    sensitive_text := concat_ws(E'\n', new.name, new.email, new.phone,
+      new.job_title, new.notes);
+    if new.company_id is not null then
+      select company.organization_id, company.access_scope
+      into parent_organization_id, parent_access_scope
+      from public.crm_companies company
+      where company.id = new.company_id;
+      if not found or parent_organization_id <> new.organization_id then
+        raise exception 'CRM boundary violation: contact/company organization mismatch';
+      end if;
+      if parent_access_scope = 'cofounders' then
+        new.access_scope := 'cofounders';
+      end if;
+    end if;
+  elsif tg_table_name = 'crm_leads' then
+    sensitive_text := concat_ws(E'\n', new.topic, new.source, new.notes,
+      new.next_action, new.contact_job_title);
+    if new.company_id is not null then
+      select company.organization_id, company.access_scope
+      into parent_organization_id, parent_access_scope
+      from public.crm_companies company
+      where company.id = new.company_id;
+      if not found or parent_organization_id <> new.organization_id then
+        raise exception 'CRM boundary violation: lead/company organization mismatch';
+      end if;
+      if parent_access_scope = 'cofounders' then
+        new.access_scope := 'cofounders';
+      end if;
+    end if;
+    if new.contact_id is not null then
+      select contact.organization_id, contact.access_scope
+      into parent_organization_id, parent_access_scope
+      from public.crm_contacts contact
+      where contact.id = new.contact_id;
+      if not found or parent_organization_id <> new.organization_id then
+        raise exception 'CRM boundary violation: lead/contact organization mismatch';
+      end if;
+      if parent_access_scope = 'cofounders' then
+        new.access_scope := 'cofounders';
+      end if;
+    end if;
+  elsif tg_table_name = 'crm_categories' then
+    sensitive_text := concat_ws(E'\n', new.name, new.status_key);
+  elsif tg_table_name = 'crm_tags' then
+    sensitive_text := new.name;
+  elsif tg_table_name = 'crm_tasks' then
+    sensitive_text := concat_ws(E'\n', new.title, new.description);
+    if new.lead_id is not null then
+      select lead.organization_id, lead.access_scope
+      into parent_organization_id, parent_access_scope
+      from public.crm_leads lead
+      where lead.id = new.lead_id;
+      if not found or parent_organization_id <> new.organization_id then
+        raise exception 'CRM boundary violation: task/lead organization mismatch';
+      end if;
+      if parent_access_scope = 'cofounders' then
+        new.access_scope := 'cofounders';
+      end if;
+    end if;
+  else
+    raise exception 'Unsupported CRM root boundary table: %', tg_table_name;
+  end if;
+
+  if private.crm_text_requires_cofounder(sensitive_text) then
+    new.access_scope := 'cofounders';
+  end if;
+
+  -- Escalating a parent also escalates every existing descendant in the same
+  -- organization. These writes are part of the caller's transaction, so an
+  -- outer RLS rejection rolls the entire propagation back atomically.
+  if tg_op = 'UPDATE'
+    and old.access_scope <> 'cofounders'
+    and new.access_scope = 'cofounders' then
+    if tg_table_name = 'crm_companies' then
+      update public.crm_contacts
+      set access_scope = 'cofounders'
+      where company_id = new.id
+        and organization_id = new.organization_id
+        and access_scope <> 'cofounders';
+      update public.crm_leads
+      set access_scope = 'cofounders'
+      where company_id = new.id
+        and organization_id = new.organization_id
+        and access_scope <> 'cofounders';
+    elsif tg_table_name = 'crm_contacts' then
+      update public.crm_leads
+      set access_scope = 'cofounders'
+      where contact_id = new.id
+        and organization_id = new.organization_id
+        and access_scope <> 'cofounders';
+    elsif tg_table_name = 'crm_leads' then
+      update public.crm_tasks
+      set access_scope = 'cofounders'
+      where lead_id = new.id
+        and organization_id = new.organization_id
+        and access_scope <> 'cofounders';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+revoke execute on function private.enforce_crm_root_boundary()
+from public, anon, authenticated, service_role;
+
+do $triggers$
+declare
+  table_name text;
+begin
+  foreach table_name in array array[
+    'crm_companies', 'crm_contacts', 'crm_leads',
+    'crm_categories', 'crm_tags', 'crm_tasks'
+  ]
+  loop
+    execute format(
+      'drop trigger if exists enforce_crm_root_boundary_trigger on public.%I',
+      table_name
+    );
+    execute format(
+      'create trigger enforce_crm_root_boundary_trigger before insert or update on public.%I for each row execute function private.enforce_crm_root_boundary()',
+      table_name
+    );
+  end loop;
+end
+$triggers$;
+
 create index if not exists crm_companies_scope_active_idx
   on public.crm_companies (organization_id, access_scope) where archived_at is null;
 create index if not exists crm_contacts_scope_active_idx
@@ -215,6 +609,8 @@ create index if not exists crm_tags_scope_name_active_idx
   on public.crm_tags (organization_id, access_scope, name) where archived_at is null;
 create index if not exists crm_tasks_scope_due_active_idx
   on public.crm_tasks (organization_id, access_scope, due_date) where archived_at is null;
+create index if not exists crm_tasks_lead_id_idx
+  on public.crm_tasks (lead_id) where lead_id is not null;
 create index if not exists crm_lead_tags_active_idx
   on public.crm_lead_tags (lead_id, tag_id) where archived_at is null;
 create index if not exists crm_contact_tags_active_idx
@@ -302,6 +698,7 @@ using (
     or exists (
       select 1 from public.crm_leads lead
       where lead.id = crm_tasks.lead_id
+        and lead.organization_id = crm_tasks.organization_id
         and lead.archived_at is null
         and private.can_read_crm_record(lead.organization_id, lead.access_scope)
     )
@@ -316,6 +713,7 @@ with check (
     or exists (
       select 1 from public.crm_leads lead
       where lead.id = crm_tasks.lead_id
+        and lead.organization_id = crm_tasks.organization_id
         and lead.archived_at is null
         and private.can_write_crm_record(lead.organization_id, lead.access_scope)
     )
@@ -331,13 +729,27 @@ with check (
     or exists (
       select 1 from public.crm_leads lead
       where lead.id = crm_tasks.lead_id
+        and lead.organization_id = crm_tasks.organization_id
         and lead.archived_at is null
         and private.can_write_crm_record(lead.organization_id, lead.access_scope)
     )
   )
 );
 create policy "crm scoped delete" on public.crm_tasks for delete to authenticated
-using (archived_at is null and private.can_delete_crm_record(organization_id, access_scope));
+using (
+  archived_at is null
+  and private.can_delete_crm_record(organization_id, access_scope)
+  and (
+    lead_id is null
+    or exists (
+      select 1 from public.crm_leads lead
+      where lead.id = crm_tasks.lead_id
+        and lead.organization_id = crm_tasks.organization_id
+        and lead.archived_at is null
+        and private.can_delete_crm_record(lead.organization_id, lead.access_scope)
+    )
+  )
+);
 
 -- Child records inherit their parent scope. Junction policies also check the
 -- tag, preventing a confidential tag name from leaking through an accessible
@@ -629,6 +1041,36 @@ using (exists (
 
 -- One-shot Trello import ledger. Only normalized, bounded fields belong in
 -- staging; raw exports, member payloads and credentials never do.
+create or replace function private.crm_jsonb_has_forbidden_key(document jsonb)
+returns boolean
+language sql
+immutable
+set search_path = ''
+as $$
+  select case jsonb_typeof(document)
+    when 'object' then exists (
+      select 1
+      from jsonb_each(document) field
+      where (
+        regexp_replace(lower(field.key), '[^a-z0-9]', '', 'g')
+          in ('auth', 'code', 'key', 'sig', 'ticket', 'raw', 'members', 'actions')
+        or regexp_replace(lower(field.key), '[^a-z0-9]', '', 'g') ~
+          '(token|apikey|secret|password|authorization|cookie|signature|credential|accesskey|accessid|keypairid|session|jwt|bearer|oauth|privatekey|presigned|policy)'
+        or private.crm_jsonb_has_forbidden_key(field.value)
+      )
+    )
+    when 'array' then exists (
+      select 1
+      from jsonb_array_elements(document) element
+      where private.crm_jsonb_has_forbidden_key(element)
+    )
+    else false
+  end;
+$$;
+
+revoke execute on function private.crm_jsonb_has_forbidden_key(jsonb)
+from public, anon, authenticated;
+
 create table if not exists public.crm_import_runs (
   id uuid primary key default gen_random_uuid(),
   organization_id uuid not null references public.organizations (id) on delete restrict,
@@ -639,6 +1081,9 @@ create table if not exists public.crm_import_runs (
     check (status in ('staged', 'applied', 'rolled-back', 'failed')),
   dry_run boolean not null default true,
   summary jsonb not null default '{}'::jsonb,
+  expected_item_count integer not null
+    check (expected_item_count between 0 and 125000),
+  staging_hash text not null check (staging_hash ~ '^[a-f0-9]{64}$'),
   created_by_profile_id uuid not null references public.profiles (id) on delete restrict,
   created_at timestamptz not null default now(),
   applied_at timestamptz,
@@ -666,7 +1111,7 @@ create table if not exists public.crm_import_staging (
   constraint crm_import_staging_run_organization_fk
     foreign key (run_id, organization_id)
     references public.crm_import_runs (id, organization_id) on delete restrict,
-  check (not (normalized_payload ?| array['token', 'apiKey', 'members', 'actions', 'raw']))
+  check (not private.crm_jsonb_has_forbidden_key(normalized_payload))
 );
 
 alter table public.crm_import_staging
@@ -754,24 +1199,268 @@ begin
       'create policy "cofounders can read crm import ledger" on public.%I for select to authenticated using (private.is_crm_cofounder(organization_id))',
       table_name
     );
-    execute format(
-      'create policy "cofounders can insert crm import ledger" on public.%I for insert to authenticated with check (private.is_crm_cofounder(organization_id))',
-      table_name
-    );
-    execute format(
-      'create policy "cofounders can update crm import ledger" on public.%I for update to authenticated using (private.is_crm_cofounder(organization_id)) with check (private.is_crm_cofounder(organization_id))',
-      table_name
-    );
   end loop;
 end
 $policy$;
 
 revoke all on public.crm_import_runs, public.crm_import_staging,
   public.crm_external_refs, public.crm_import_changes from anon, authenticated;
-grant select, insert, update on public.crm_import_runs, public.crm_import_staging,
+grant select on public.crm_import_runs, public.crm_import_staging,
   public.crm_external_refs, public.crm_import_changes to authenticated;
-grant select, insert, update on public.crm_import_runs, public.crm_import_staging,
+grant select on public.crm_import_runs, public.crm_import_staging,
   public.crm_external_refs, public.crm_import_changes to service_role;
+
+create or replace function private.crm_text_array_hash(input_value jsonb)
+returns text
+language sql
+immutable
+set search_path = ''
+as $$
+  select encode(
+    extensions.digest(
+      convert_to(
+        '[' || coalesce(
+          (
+            select string_agg(
+              to_jsonb(element.value)::text,
+              ',' order by element.ordinality
+            )
+            from jsonb_array_elements_text(input_value)
+              with ordinality as element(value, ordinality)
+          ),
+          ''
+        ) || ']',
+        'UTF8'
+      ),
+      'sha256'
+    ),
+    'hex'
+  );
+$$;
+
+revoke execute on function private.crm_text_array_hash(jsonb)
+from public, anon, authenticated;
+
+create or replace function private.crm_staging_attestation(
+  target_run_id uuid,
+  target_organization_id uuid
+)
+returns table(item_count bigint, staging_hash text)
+language sql
+security definer
+set search_path = ''
+stable
+as $$
+  select
+    count(*) as item_count,
+    encode(
+      extensions.digest(
+        convert_to(
+          coalesce(
+            string_agg(
+              stage.entity_type || chr(31) || stage.external_id || chr(31) ||
+                stage.payload_hash || chr(31) ||
+                private.crm_text_array_hash(stage.validation_errors),
+              E'\n' order by stage.entity_type, stage.external_id
+            ),
+            ''
+          ),
+          'UTF8'
+        ),
+        'sha256'
+      ),
+      'hex'
+    ) as staging_hash
+  from public.crm_import_staging stage
+  where stage.run_id = target_run_id
+    and stage.organization_id = target_organization_id;
+$$;
+
+revoke execute on function private.crm_staging_attestation(uuid, uuid)
+from public, anon, authenticated;
+
+-- Run creation and staging happen in one database transaction. Authenticated
+-- clients have no direct INSERT/UPDATE privilege on the ledger, so a partial
+-- or subsequently tampered staging set cannot be attested as complete.
+create or replace function public.stage_crm_trello_import(
+  requested_organization_id uuid,
+  requested_source_external_id text,
+  requested_source_hash text,
+  requested_staging_hash text,
+  requested_expected_item_count integer,
+  requested_summary jsonb,
+  requested_rows jsonb
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  import_run public.crm_import_runs%rowtype;
+  actual_item_count bigint;
+  actual_staging_hash text;
+begin
+  if (select auth.uid()) is null
+    or not private.is_crm_cofounder(requested_organization_id) then
+    raise exception 'CRM import staging not authorized';
+  end if;
+  if requested_organization_id is null
+    or requested_source_external_id is null
+    or length(btrim(requested_source_external_id)) not between 1 and 256
+    or requested_source_hash !~ '^[a-f0-9]{64}$'
+    or requested_staging_hash !~ '^[a-f0-9]{64}$'
+    or requested_expected_item_count not between 0 and 125000 then
+    raise exception 'CRM import staging metadata is invalid';
+  end if;
+  if jsonb_typeof(requested_summary) <> 'object'
+    or octet_length(requested_summary::text) > 200000
+    or jsonb_typeof(requested_rows) <> 'array'
+    or octet_length(requested_rows::text) > 50000000
+    or jsonb_array_length(requested_rows) <> requested_expected_item_count then
+    raise exception 'CRM import staging count or summary is invalid';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_array_elements(requested_rows) row_value
+    where jsonb_typeof(row_value) <> 'object'
+      or jsonb_typeof(row_value -> 'entity_type') <> 'string'
+      or row_value ->> 'entity_type' not in ('category', 'tag', 'lead')
+      or jsonb_typeof(row_value -> 'external_id') <> 'string'
+      or length(row_value ->> 'external_id') not between 1 and 256
+      or (
+        row_value ? 'parent_external_id'
+        and row_value -> 'parent_external_id' <> 'null'::jsonb
+        and (
+          jsonb_typeof(row_value -> 'parent_external_id') <> 'string'
+          or length(row_value ->> 'parent_external_id') not between 1 and 256
+        )
+      )
+      or jsonb_typeof(row_value -> 'access_scope') <> 'string'
+      or row_value ->> 'access_scope' not in ('organization', 'cofounders')
+      or jsonb_typeof(row_value -> 'normalized_payload') <> 'object'
+      or octet_length((row_value -> 'normalized_payload')::text) > 2000000
+      or private.crm_jsonb_has_forbidden_key(row_value -> 'normalized_payload')
+      or jsonb_typeof(row_value -> 'payload_hash') <> 'string'
+      or (row_value ->> 'payload_hash') !~ '^[a-f0-9]{64}$'
+      or jsonb_typeof(row_value -> 'privacy_reasons') <> 'array'
+      or jsonb_typeof(row_value -> 'validation_errors') <> 'array'
+      or (
+        row_value ->> 'entity_type' = 'lead'
+        and coalesce(row_value ->> 'parent_external_id', '') = ''
+      )
+  ) then
+    raise exception 'CRM import contains an invalid or forbidden staging row';
+  end if;
+  if exists (
+    select 1
+    from jsonb_array_elements(requested_rows) row_value
+    cross join lateral jsonb_array_elements(
+      (row_value -> 'privacy_reasons') || (row_value -> 'validation_errors')
+    ) reason
+    where jsonb_typeof(reason) <> 'string'
+      or length(reason #>> '{}') > 500
+  ) then
+    raise exception 'CRM import staging reasons are invalid';
+  end if;
+
+  perform pg_catalog.pg_advisory_xact_lock(
+    pg_catalog.hashtextextended(
+      requested_organization_id::text || E'\n' ||
+        requested_source_external_id || E'\n' || requested_source_hash,
+      0
+    )
+  );
+
+  select * into import_run
+  from public.crm_import_runs run
+  where run.organization_id = requested_organization_id
+    and run.provider = 'trello'
+    and run.source_external_id = requested_source_external_id
+    and run.source_hash = requested_source_hash
+    and run.status in ('staged', 'applied')
+  order by run.created_at desc
+  limit 1
+  for update;
+
+  if found then
+    if import_run.expected_item_count <> requested_expected_item_count
+      or import_run.staging_hash <> requested_staging_hash then
+      raise exception 'Existing CRM import attestation differs; create a reviewed export version';
+    end if;
+    select attestation.item_count, attestation.staging_hash
+    into actual_item_count, actual_staging_hash
+    from private.crm_staging_attestation(
+      import_run.id,
+      import_run.organization_id
+    ) attestation;
+    if actual_item_count <> import_run.expected_item_count
+      or actual_staging_hash <> import_run.staging_hash then
+      raise exception 'Existing CRM import staging attestation is invalid';
+    end if;
+    return jsonb_build_object(
+      'runId', import_run.id,
+      'reused', true,
+      'status', import_run.status
+    );
+  end if;
+
+  insert into public.crm_import_runs (
+    organization_id, provider, source_external_id, source_hash, status,
+    dry_run, summary, expected_item_count, staging_hash,
+    created_by_profile_id
+  ) values (
+    requested_organization_id, 'trello', requested_source_external_id,
+    requested_source_hash, 'staged', true, requested_summary,
+    requested_expected_item_count, requested_staging_hash, (select auth.uid())
+  ) returning * into import_run;
+
+  insert into public.crm_import_staging (
+    organization_id, run_id, entity_type, external_id, parent_external_id,
+    access_scope, normalized_payload, payload_hash, privacy_reasons,
+    validation_errors
+  )
+  select
+    requested_organization_id,
+    import_run.id,
+    row_record.entity_type,
+    row_record.external_id,
+    row_record.parent_external_id,
+    row_record.access_scope,
+    row_record.normalized_payload,
+    row_record.payload_hash,
+    row_record.privacy_reasons,
+    row_record.validation_errors
+  from jsonb_to_recordset(requested_rows) as row_record(
+    entity_type text,
+    external_id text,
+    parent_external_id text,
+    access_scope text,
+    normalized_payload jsonb,
+    payload_hash text,
+    privacy_reasons jsonb,
+    validation_errors jsonb
+  );
+
+  select attestation.item_count, attestation.staging_hash
+  into actual_item_count, actual_staging_hash
+  from private.crm_staging_attestation(
+    import_run.id,
+    import_run.organization_id
+  ) attestation;
+  if actual_item_count <> import_run.expected_item_count
+    or actual_staging_hash <> import_run.staging_hash then
+    raise exception 'CRM import staging attestation failed';
+  end if;
+
+  return jsonb_build_object(
+    'runId', import_run.id,
+    'reused', false,
+    'status', import_run.status
+  );
+end;
+$$;
 
 -- Transactional one-shot apply. Existing imported entities are never
 -- overwritten: a changed hash becomes an auditable conflict. Replaying the
@@ -802,6 +1491,8 @@ declare
   revived_count integer := 0;
   unchanged_count integer := 0;
   conflict_count integer := 0;
+  attested_item_count bigint;
+  attested_staging_hash text;
 begin
   select * into import_run
   from public.crm_import_runs
@@ -810,6 +1501,17 @@ begin
 
   if not found or not private.is_crm_cofounder(import_run.organization_id) then
     raise exception 'CRM import not found or not authorized';
+  end if;
+
+  select attestation.item_count, attestation.staging_hash
+  into attested_item_count, attested_staging_hash
+  from private.crm_staging_attestation(
+    import_run.id,
+    import_run.organization_id
+  ) attestation;
+  if attested_item_count <> import_run.expected_item_count
+    or attested_staging_hash <> import_run.staging_hash then
+    raise exception 'CRM import staging attestation is incomplete or invalid';
   end if;
 
   if import_run.status = 'applied' then
@@ -1499,8 +2201,14 @@ begin
 end;
 $$;
 
+revoke execute on function public.stage_crm_trello_import(
+  uuid, text, text, text, integer, jsonb, jsonb
+) from public, anon;
 revoke execute on function public.apply_crm_trello_import(uuid) from public, anon;
 revoke execute on function public.rollback_crm_trello_import(uuid) from public, anon;
+grant execute on function public.stage_crm_trello_import(
+  uuid, text, text, text, integer, jsonb, jsonb
+) to authenticated;
 grant execute on function public.apply_crm_trello_import(uuid) to authenticated;
 grant execute on function public.rollback_crm_trello_import(uuid) to authenticated;
 grant execute on function public.apply_crm_trello_import(uuid) to service_role;

@@ -46,6 +46,29 @@ describe("CRM confidentiality and import migration contract", () => {
     expect(
       migration.match(/organization_id = tag\.organization_id/g)?.length,
     ).toBeGreaterThanOrEqual(12);
+    expect(migration).toContain("private.enforce_crm_root_boundary");
+    expect(migration).toContain(
+      "CRM boundary violation: task/lead organization mismatch",
+    );
+    expect(migration).toContain(
+      "lead.organization_id = crm_tasks.organization_id",
+    );
+    expect(migration).toContain("crm_tasks_lead_id_idx");
+  });
+
+  it("escalates sensitive manual records and prevents scope downgrades", () => {
+    expect(migration).toContain("private.crm_text_requires_cofounder");
+    for (const vocabulary of [
+      "trainees?",
+      "apprentices?",
+      "apprenti(e|es|s)?",
+      "alternances?",
+      "graduate[[:space:]]+interns?",
+    ]) {
+      expect(migration).toContain(vocabulary);
+    }
+    expect(migration).toContain("old.access_scope = 'cofounders'");
+    expect(migration).toContain("new.access_scope := 'cofounders'");
   });
 
   it("binds every ledger child to the same organization as its run", () => {
@@ -96,6 +119,25 @@ describe("CRM confidentiality and import migration contract", () => {
       "create table if not exists public.crm_import_changes",
     );
     expect(migration).toContain("apply_crm_trello_import");
+    expect(migration).toContain("stage_crm_trello_import");
+    expect(migration).toContain("private.crm_staging_attestation");
+    expect(migration).toContain(
+      "private.crm_text_array_hash(stage.validation_errors)",
+    );
+    expect(migration).toContain("expected_item_count");
+    expect(migration).toContain("staging_hash");
+    expect(migration).toContain(
+      "CRM import staging attestation is incomplete or invalid",
+    );
+    expect(migration).toContain(
+      "grant select on public.crm_import_runs, public.crm_import_staging",
+    );
+    expect(migration).not.toContain(
+      "grant select, insert, update on public.crm_import_runs, public.crm_import_staging,\n  public.crm_external_refs, public.crm_import_changes to authenticated",
+    );
+    expect(migration).not.toContain(
+      'create policy "cofounders can insert crm import ledger"',
+    );
     expect(migration).toContain("rollback_crm_trello_import");
     expect(migration).not.toMatch(/\bdelete\s+from\s+public\.crm_/i);
     expect(migration).not.toMatch(
