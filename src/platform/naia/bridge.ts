@@ -150,7 +150,7 @@ export async function planBridgeCommand(
   // The commandHash inside the approval tokens is computed on this same
   // truncated string, so HMAC verification stays consistent per channel.
   const cleanCommand = normalizeBridgeCommand(command).slice(0, maxLength);
-  const crmLeads = await fetchBridgeLeads(user.organizationId);
+  const crmLeads = await fetchBridgeLeads(user);
   const supabase = createServiceRoleSupabaseClient();
   const { mode, result } = await planNaiaAssistant({
     actor: {
@@ -460,19 +460,44 @@ function requireCrmPermission(
 }
 
 async function fetchBridgeLeads(
-  organizationId: string,
+  user: NaiaBridgeUser,
 ): Promise<CrmLeadSummary[]> {
   const supabase = createServiceRoleSupabaseClient();
   if (!supabase) return [];
 
-  const { data, error } = await supabase
+  // Service-role clients bypass RLS. Re-check the actor against the exact
+  // auth.users cofounder allowlist before permitting confidential rows. Any
+  // missing migration/RPC/error fails closed to an empty CRM context.
+  const { data: isCofounder, error: cofounderError } = await supabase.rpc(
+    "crm_bridge_actor_is_cofounder",
+    {
+      target_organization_id: user.organizationId,
+      target_profile_id: user.profileId,
+    },
+  );
+  if (cofounderError) {
+    console.error(
+      "NAIA bridge CRM confidentiality check failed:",
+      cofounderError,
+    );
+    return [];
+  }
+
+  let query = supabase
     .from("crm_leads")
     .select(
       `id,organization_id,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
       company:company_id(id,name),
       contact:contact_id(id,name,email,phone)`,
     )
-    .eq("organization_id", organizationId)
+    .eq("organization_id", user.organizationId)
+    .is("archived_at", null);
+
+  if (isCofounder !== true) {
+    query = query.eq("access_scope", "organization");
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .limit(100);
 

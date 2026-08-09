@@ -32,6 +32,7 @@ import {
 } from "./dummy-data";
 import { extractCrmLeadWithGroq, generateCrmFollowUpWithGroq } from "./ai";
 import { normalizeCrmDateTimeForStorage } from "./date-time";
+import { CRM_PIPELINE_LEAD_COLUMNS, mapCrmPipelineLead } from "./pipeline-data";
 
 // ────────────────────────────────────────────────────────────
 // Types for DB rows (aligned with 20260624120000_crm_tables.sql)
@@ -199,94 +200,6 @@ function parseContactInfoFromNotes(notes?: string | null) {
   return { company, contact };
 }
 
-async function backfillLeads(
-  supabase: SupabaseClient,
-  orgId: string,
-  leads: DbLead[],
-  userId: string | null,
-) {
-  const leadsToUpdate = leads.filter(
-    (row) => !row.company_id && row.notes && row.notes.includes("Entreprise:"),
-  );
-  if (leadsToUpdate.length === 0) return;
-
-  for (const lead of leadsToUpdate) {
-    const { company, contact } = parseContactInfoFromNotes(lead.notes);
-    if (!company) continue;
-
-    let companyId: string | null = null;
-    let contactId: string | null = null;
-
-    // Find or create company
-    const { data: existingComp } = await supabase
-      .from("crm_companies")
-      .select("id")
-      .eq("organization_id", orgId)
-      .eq("name", company)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingComp) {
-      companyId = existingComp.id;
-    } else {
-      const { data: newComp } = await supabase
-        .from("crm_companies")
-        .insert({
-          organization_id: orgId,
-          name: company,
-          created_by_profile_id: userId,
-        })
-        .select("id")
-        .single();
-      if (newComp) companyId = newComp.id;
-    }
-
-    if (companyId && contact) {
-      // Find or create contact
-      const { data: existingCont } = await supabase
-        .from("crm_contacts")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("company_id", companyId)
-        .eq("name", contact)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingCont) {
-        contactId = existingCont.id;
-      } else {
-        const { data: newCont } = await supabase
-          .from("crm_contacts")
-          .insert({
-            organization_id: orgId,
-            company_id: companyId,
-            name: contact,
-            job_title: lead.contact_job_title,
-            linkedin_url: lead.contact_linkedin_url,
-            created_by_profile_id: userId,
-          })
-          .select("id")
-          .single();
-        if (newCont) contactId = newCont.id;
-      }
-    }
-
-    if (companyId) {
-      await supabase
-        .from("crm_leads")
-        .update({
-          company_id: companyId,
-          contact_id: contactId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", lead.id);
-
-      lead.company_id = companyId;
-      lead.contact_id = contactId;
-    }
-  }
-}
-
 async function syncLeadTask(
   supabase: any,
   orgId: string,
@@ -356,8 +269,11 @@ async function syncLeadTask(
 // ────────────────────────────────────────────────────────────
 
 export async function fetchLeadsAction(
-  options: { backfill?: boolean } = {},
+  _options: { backfill?: boolean } = {},
 ): Promise<CrmLeadSummary[]> {
+  // Kept temporarily for callers that still pass { backfill: false }.
+  // Reads are now always side-effect-free regardless of this legacy option.
+  void _options;
   const supabase = await createServerSupabaseClient();
   if (!supabase) return fallbackLeads();
 
@@ -366,19 +282,9 @@ export async function fetchLeadsAction(
 
   const { data, error } = await supabase
     .from("crm_leads")
-    .select(
-      `
-      *,
-      assigned_to:assigned_to_profile_id(id, full_name, email),
-      last_updated_by:last_updated_by_profile_id(id, full_name, email),
-      company:company_id(id, name),
-      contact:contact_id(id, name, email, phone),
-      crm_lead_tags(
-        crm_tags(id, name, color)
-      )
-    `,
-    )
+    .select(CRM_PIPELINE_LEAD_COLUMNS)
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("created_at", { ascending: false });
 
   if (error || !data) {
@@ -389,55 +295,7 @@ export async function fetchLeadsAction(
   const rows = data as any[];
   if (rows.length === 0) return fallbackLeads();
 
-  if (options.backfill !== false) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    await backfillLeads(supabase, orgId, rows as DbLead[], user?.id ?? null);
-  }
-
-  return rows.map((row) => ({
-    id: row.id,
-    organizationId: row.organization_id,
-    companyId: row.company_id ?? undefined,
-    companyName: row.company?.name ?? undefined,
-    contactId: row.contact_id ?? undefined,
-    contactName: row.contact?.name ?? undefined,
-    contactEmail: row.contact?.email ?? undefined,
-    contactPhone: row.contact?.phone ?? undefined,
-    topic: row.topic,
-    source: row.source ?? undefined,
-    status: row.status,
-    notes: row.notes ?? undefined,
-    nextAction: row.next_action ?? undefined,
-    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
-    contactJobTitle: row.contact_job_title ?? undefined,
-    contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
-    assignedToProfileId: row.assigned_to_profile_id ?? undefined,
-    assignedToName:
-      row.assigned_to?.full_name ||
-      row.assigned_to?.email?.split("@")[0] ||
-      undefined,
-    lastUpdatedByProfileId: row.last_updated_by_profile_id ?? undefined,
-    lastUpdatedByName:
-      row.last_updated_by?.full_name ||
-      row.last_updated_by?.email?.split("@")[0] ||
-      undefined,
-    lastUpdatedAt: row.last_updated_at ?? undefined,
-    lastContactedAt: row.last_contacted_at ?? undefined,
-    driveFolderUrl: row.drive_folder_url ?? undefined,
-    tags: (row.crm_lead_tags ?? [])
-      .map((lt: any) => lt.crm_tags)
-      .filter(Boolean)
-      .map((t: any) => ({
-        id: t.id,
-        organizationId: t.organization_id,
-        name: t.name,
-        color: t.color,
-      })),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }));
+  return rows.map(mapCrmPipelineLead);
 }
 
 export type LeadTodoCard = {
@@ -479,6 +337,7 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
     `,
     )
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("lead_date", { ascending: true, nullsFirst: false });
 
   if (error || !data) {
@@ -1355,31 +1214,11 @@ export async function fetchCompaniesAction(): Promise<CrmCompanySummary[]> {
   const orgId = await getOrgId();
   if (!orgId) return fallbackCompanies();
 
-  // Run the backfill first to ensure any text-only companies from leads are created & linked
-  try {
-    const { data: leadsData } = await supabase
-      .from("crm_leads")
-      .select("*")
-      .eq("organization_id", orgId);
-    if (leadsData) {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      await backfillLeads(
-        supabase,
-        orgId,
-        leadsData as DbLead[],
-        user?.id ?? null,
-      );
-    }
-  } catch (e) {
-    console.error("Backfill failed in fetchCompaniesAction:", e);
-  }
-
   const { data, error } = await supabase
     .from("crm_companies")
     .select("id, organization_id, name, drive_folder_url")
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("name");
 
   if (error || !data || data.length === 0) return fallbackCompanies();
@@ -2869,76 +2708,14 @@ export async function fetchCategoriesAction(): Promise<CrmCategory[]> {
 
   const { data, error } = await supabase
     .from("crm_categories")
-    .select("*")
+    .select("id, organization_id, name, status_key, color, position")
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("position", { ascending: true });
 
   if (error) {
     console.error("Error fetching CRM categories:", error);
     return [];
-  }
-
-  if (data.length === 0) {
-    // Seed default categories
-    const defaults = [
-      {
-        name: "À contacter",
-        status_key: "lead-to-contact",
-        color: "blue",
-        position: 1,
-      },
-      { name: "Contacté", status_key: "contacted", color: "gray", position: 2 },
-      {
-        name: "À relancer",
-        status_key: "to-follow-up",
-        color: "yellow",
-        position: 3,
-      },
-      {
-        name: "Meeting fixé",
-        status_key: "meeting-booked",
-        color: "indigo",
-        position: 4,
-      },
-      {
-        name: "Propale envoyée",
-        status_key: "proposal-sent",
-        color: "emerald",
-        position: 5,
-      },
-      { name: "Gagné ✓", status_key: "won", color: "teal", position: 6 },
-      { name: "Dead end", status_key: "dead-end", color: "red", position: 7 },
-    ];
-
-    const toInsert = defaults.map((d) => ({
-      organization_id: orgId,
-      name: d.name,
-      status_key: d.status_key,
-      color: d.color,
-      position: d.position,
-    }));
-
-    const { data: insertedData, error: insertError } = await supabase
-      .from("crm_categories")
-      .upsert(toInsert, {
-        onConflict: "organization_id,status_key",
-        ignoreDuplicates: false,
-      })
-      .select();
-
-    if (insertError || !insertedData) {
-      console.error("Error seeding default categories:", insertError);
-      return [];
-    }
-
-    return insertedData.map((row) => ({
-      id: row.id,
-      organizationId: row.organization_id,
-      name: row.name,
-      statusKey: row.status_key,
-      color: row.color,
-      position: row.position,
-    }));
   }
 
   return data.map((row) => ({
@@ -3193,8 +2970,9 @@ export async function fetchTagsAction(): Promise<CrmTag[]> {
 
   const { data, error } = await supabase
     .from("crm_tags")
-    .select("*")
+    .select("id, organization_id, name, color")
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("name");
 
   if (error || !data) return [];

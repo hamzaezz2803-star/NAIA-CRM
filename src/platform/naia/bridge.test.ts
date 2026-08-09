@@ -97,22 +97,31 @@ const hydratedCrmCreateAction: NaiaActionDraft = {
 };
 
 function fakeServiceRoleClient({
+  cofounderError = null,
+  isCofounder = true,
   leads = [],
 }: {
+  cofounderError?: unknown;
+  isCofounder?: boolean;
   leads?: unknown[];
 } = {}) {
+  const crmEq = vi.fn(() => crmQuery);
+  const crmQuery = {
+    eq: crmEq,
+    is: () => crmQuery,
+    limit: vi.fn().mockResolvedValue({ data: leads, error: null }),
+    order: () => crmQuery,
+    select: () => crmQuery,
+  };
+
   return {
+    crmEq,
+    rpc: vi
+      .fn()
+      .mockResolvedValue({ data: isCofounder, error: cofounderError }),
     from: vi.fn((table: string) => {
       if (table === "crm_leads") {
-        return {
-          select: () => ({
-            eq: () => ({
-              order: () => ({
-                limit: vi.fn().mockResolvedValue({ data: leads, error: null }),
-              }),
-            }),
-          }),
-        };
+        return crmQuery;
       }
 
       if (table === "naia_consumed_action_tokens") {
@@ -310,6 +319,45 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(plan.response).toContain("Ali");
     expect(plan.response).toContain("ali@qarizmi.com");
     expect(plan.response).toContain("propriétaire");
+  });
+
+  it("fails closed before a service-role CRM read when founder validation errors", async () => {
+    const client = fakeServiceRoleClient({
+      cofounderError: { message: "RPC unavailable" },
+    });
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(client);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    await planBridgeCommand(bridgeUser, "qui suis-je ?");
+
+    expect(client.rpc).toHaveBeenCalledWith(
+      "crm_bridge_actor_is_cofounder",
+      expect.objectContaining({
+        target_organization_id: bridgeUser.organizationId,
+        target_profile_id: bridgeUser.profileId,
+      }),
+    );
+    expect(client.from).not.toHaveBeenCalledWith("crm_leads");
+    consoleError.mockRestore();
+  });
+
+  it("restricts non-cofounder service-role reads to organization rows", async () => {
+    const client = fakeServiceRoleClient({ isCofounder: false });
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(client);
+
+    await planBridgeCommand(
+      {
+        ...bridgeUser,
+        email: "member@example.test",
+        profileId: "profile-member",
+        role: "member",
+      },
+      "qui suis-je ?",
+    );
+
+    expect(client.crmEq).toHaveBeenCalledWith("access_scope", "organization");
   });
 
   it("reads the acting user's Calendar directly from Slack", async () => {
