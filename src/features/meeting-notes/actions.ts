@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 
 import { crmLeadStatuses } from "@/features/crm/contracts";
@@ -497,13 +498,13 @@ export async function askMeetingKnowledgeAction(
 
     const outputFields =
       "id,meeting_id,version,notes_markdown,reviewed_notes_markdown,transcript_text,created_at";
-    const [outputsResult, geminiResult] = await Promise.all([
-      supabase
-        .from("meeting_outputs")
-        .select(outputFields)
-        .eq("organization_id", organizationId)
-        .in("meeting_id", meetingIds)
-        .order("version", { ascending: false }),
+    const [outputRows, geminiResult] = await Promise.all([
+      listAllMeetingKnowledgeOutputs(
+        supabase,
+        organizationId,
+        meetingIds,
+        outputFields,
+      ),
       supabase
         .from("meeting_external_artifacts")
         .select("id,meeting_id,title,notes_markdown,document_text,occurred_at")
@@ -512,7 +513,6 @@ export async function askMeetingKnowledgeAction(
         .order("occurred_at", { ascending: false, nullsFirst: false })
         .limit(input.scope === "meeting" ? 10 : 100),
     ]);
-    if (outputsResult.error) throw outputsResult.error;
     if (geminiResult.error) throw geminiResult.error;
 
     const meetingById = new Map(
@@ -526,7 +526,7 @@ export async function askMeetingKnowledgeAction(
     );
     const documents: MeetingKnowledgeDocument[] = [];
     const latestOutputs = selectLatestMeetingOutputRows(
-      (outputsResult.data ?? []) as unknown as MeetingKnowledgeOutputRow[],
+      outputRows as unknown as MeetingKnowledgeOutputRow[],
     );
     for (const output of latestOutputs) {
       const meeting = meetingById.get(output.meeting_id as string);
@@ -1799,6 +1799,31 @@ type MeetingKnowledgeDocument = {
   sourceType: MeetingKnowledgeAnswer["sources"][number]["sourceType"];
   text: string;
 };
+
+async function listAllMeetingKnowledgeOutputs(
+  supabase: SupabaseClient,
+  organizationId: string,
+  meetingIds: string[],
+  fields: string,
+) {
+  const pageSize = 1_000;
+  const rows: unknown[] = [];
+  for (let from = 0; ; from += pageSize) {
+    const { data, error } = await supabase
+      .from("meeting_outputs")
+      .select(fields)
+      .eq("organization_id", organizationId)
+      .in("meeting_id", meetingIds)
+      .order("meeting_id", { ascending: true })
+      .order("version", { ascending: false })
+      .order("id", { ascending: true })
+      .range(from, from + pageSize - 1);
+    if (error) throw error;
+    rows.push(...(data ?? []));
+    if ((data?.length ?? 0) < pageSize) break;
+  }
+  return rows;
+}
 
 function rankMeetingKnowledge(
   question: string,
