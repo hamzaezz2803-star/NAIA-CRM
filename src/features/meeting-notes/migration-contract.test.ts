@@ -17,6 +17,13 @@ const oneStepCaptureMigration = readFileSync(
   ),
   "utf8",
 );
+const geminiArtifactMigration = readFileSync(
+  path.join(
+    process.cwd(),
+    "supabase/migrations/20260810001500_meeting_gemini_artifacts.sql",
+  ),
+  "utf8",
+);
 
 describe("meeting intelligence migration contract", () => {
   it("queues recording assets, jobs, and meeting state atomically", () => {
@@ -73,5 +80,24 @@ describe("meeting intelligence migration contract", () => {
     );
     expect(oneStepCaptureMigration).not.toContain("create policy");
     expect(oneStepCaptureMigration).not.toContain("delete from");
+  });
+
+  it("keeps Gemini imports founder-only, tenant-bound and non-deletable", () => {
+    expect(geminiArtifactMigration).toContain(
+      "unique (organization_id, provider, external_message_id)",
+    );
+    expect(geminiArtifactMigration).toContain(
+      "validate_meeting_external_artifact_tenant",
+    );
+    expect(geminiArtifactMigration).toContain(
+      "public.is_meeting_notes_cofounder(organization_id)",
+    );
+    expect(geminiArtifactMigration).toContain(
+      "grant select, insert, update on public.meeting_external_artifacts to authenticated",
+    );
+    expect(geminiArtifactMigration).not.toContain(
+      "grant delete on public.meeting_external_artifacts to authenticated",
+    );
+    expect(geminiArtifactMigration).not.toContain("delete from");
   });
 });

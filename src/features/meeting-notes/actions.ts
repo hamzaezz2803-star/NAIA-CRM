@@ -9,13 +9,18 @@ import {
   updateDriveFileContent,
   uploadDriveFile,
 } from "@/platform/integrations/google-drive-service";
-import { createGoogleCalendarReminder } from "@/platform/integrations/google-workspace";
+import {
+  createGoogleCalendarReminder,
+  listGeminiMeetingNoteMessages,
+} from "@/platform/integrations/google-workspace";
 
 import { requireMeetingNotesAccess } from "./access";
 import {
   MAX_SUPPORT_BYTES,
   MEETING_RECORDINGS_BUCKET,
+  type MeetingExternalArtifactSummary,
   type MeetingIntelligenceState,
+  type MeetingKnowledgeAnswer,
   type MeetingJobSummary,
   type MeetingOutputSummary,
   type MeetingStructuredOutput,
@@ -26,6 +31,10 @@ import {
   recordingManifestSchema,
 } from "./contracts";
 import { archiveMeetingOutput } from "./drive";
+import {
+  matchGeminiNoteToMeeting,
+  parseGeminiMeetingNoteMessage,
+} from "./gemini-email";
 
 const queueInputSchema = z.object({
   meetingId: z.string().uuid(),
@@ -60,6 +69,15 @@ const transcriptInputSchema = z.object({
   meetingId: z.string().uuid(),
   outputId: z.string().uuid(),
   outputVersion: z.number().int().positive(),
+});
+const linkGeminiArtifactSchema = z.object({
+  artifactId: z.string().uuid(),
+  meetingId: z.string().uuid(),
+});
+const meetingKnowledgeQuestionSchema = z.object({
+  meetingId: z.string().uuid().optional(),
+  question: z.string().trim().min(2).max(500),
+  scope: z.enum(["meeting", "all"]).default("meeting"),
 });
 
 const REVIEW_ARCHIVE_PENDING = "Version relue en attente d'archivage Drive.";
@@ -114,6 +132,21 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
 
     if (jobsResult.error) throw jobsResult.error;
     if (outputsResult.error) throw outputsResult.error;
+
+    const geminiResult = await supabase
+      .from("meeting_external_artifacts")
+      .select(
+        "id,meeting_id,provider,title,occurred_at,notes_markdown,document_url,document_text,recording_url",
+      )
+      .eq("organization_id", organizationId)
+      .order("occurred_at", { ascending: false, nullsFirst: false })
+      .limit(100);
+    if (
+      geminiResult.error &&
+      !isMissingGeminiArtifactSchema(geminiResult.error.message)
+    ) {
+      throw geminiResult.error;
+    }
 
     const latestJobByMeeting = new Map<string, MeetingJobSummary>();
     for (const row of jobsResult.data ?? []) {
@@ -186,7 +219,27 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
       } satisfies MeetingWorkspace;
     });
 
-    return { configured: true, meetings: shaped, organizationId };
+    const geminiArtifacts = (geminiResult.data ?? []).map(
+      (row) =>
+        ({
+          documentUrl: row.document_url ?? undefined,
+          documentTextAvailable: Boolean(row.document_text),
+          id: row.id as string,
+          meetingId: row.meeting_id ?? undefined,
+          notesMarkdown: row.notes_markdown as string,
+          occurredAt: row.occurred_at ?? undefined,
+          provider: "google-gemini",
+          recordingUrl: row.recording_url ?? undefined,
+          title: row.title as string,
+        }) satisfies MeetingExternalArtifactSummary,
+    );
+
+    return {
+      configured: true,
+      geminiArtifacts,
+      meetings: shaped,
+      organizationId,
+    };
   } catch (error) {
     return {
       configured: false,
@@ -227,6 +280,277 @@ export async function fetchMeetingTranscriptAction(
         error instanceof Error
           ? error.message
           : "Impossible de charger le transcript.",
+      success: false,
+    };
+  }
+}
+
+export async function syncGeminiMeetingNotesAction() {
+  try {
+    const { organizationId, supabase, user } =
+      await requireMeetingNotesAccess();
+    const messages = await listGeminiMeetingNoteMessages(
+      { maxResults: 40, newerThanDays: 180 },
+      { organizationId, profileId: user.id, supabase },
+    );
+    const parsed = messages
+      .map(parseGeminiMeetingNoteMessage)
+      .filter((note): note is NonNullable<typeof note> => Boolean(note));
+    if (!parsed.length) {
+      return { imported: 0, matched: 0, success: true, total: 0 };
+    }
+
+    const { data: meetings, error: meetingsError } = await supabase
+      .from("meetings")
+      .select("id,title,starts_at")
+      .eq("organization_id", organizationId)
+      .order("starts_at", { ascending: false, nullsFirst: false })
+      .limit(200);
+    if (meetingsError) throw meetingsError;
+
+    const externalMessageIds = parsed.map((note) => note.externalMessageId);
+    const { data: existing, error: existingError } = await supabase
+      .from("meeting_external_artifacts")
+      .select("external_message_id,meeting_id")
+      .eq("organization_id", organizationId)
+      .eq("provider", "google-gemini")
+      .in("external_message_id", externalMessageIds);
+    if (existingError) throw existingError;
+    const existingMeetingByMessage = new Map(
+      (existing ?? []).map((row) => [
+        row.external_message_id as string,
+        row.meeting_id as string | null,
+      ]),
+    );
+    const meetingCandidates = (meetings ?? []).map((meeting) => ({
+      id: meeting.id as string,
+      startsAt: meeting.starts_at ?? undefined,
+      title: meeting.title as string,
+    }));
+    const now = new Date().toISOString();
+    const rows = parsed.map((note) => {
+      const preservedMeeting = existingMeetingByMessage.get(
+        note.externalMessageId,
+      );
+      const matchedMeetingId =
+        preservedMeeting ?? matchGeminiNoteToMeeting(note, meetingCandidates);
+      return {
+        document_file_id: note.documentFileId ?? null,
+        document_text: note.documentText ?? null,
+        document_url: note.documentUrl ?? null,
+        external_message_id: note.externalMessageId,
+        external_thread_id: note.externalThreadId ?? null,
+        imported_by_profile_id: user.id,
+        meeting_id: matchedMeetingId ?? null,
+        notes_markdown: note.notesMarkdown,
+        occurred_at: note.occurredAt ?? null,
+        organization_id: organizationId,
+        provider: "google-gemini",
+        recording_url: note.recordingUrl ?? null,
+        sender_email: note.senderEmail,
+        title: note.title,
+        updated_at: now,
+      };
+    });
+
+    const { error: upsertError } = await supabase
+      .from("meeting_external_artifacts")
+      .upsert(rows, {
+        onConflict: "organization_id,provider,external_message_id",
+      });
+    if (upsertError) throw upsertError;
+    revalidatePath("/meetings");
+
+    return {
+      imported: rows.filter(
+        (row) => !existingMeetingByMessage.has(row.external_message_id),
+      ).length,
+      matched: rows.filter((row) => Boolean(row.meeting_id)).length,
+      success: true,
+      total: rows.length,
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Impossible de synchroniser les notes Gemini.",
+      success: false,
+    };
+  }
+}
+
+export async function linkGeminiArtifactToMeetingAction(rawInput: unknown) {
+  try {
+    const input = linkGeminiArtifactSchema.parse(rawInput);
+    const { organizationId, supabase } = await requireMeetingNotesAccess();
+    const { data: meeting, error: meetingError } = await supabase
+      .from("meetings")
+      .select("id")
+      .eq("id", input.meetingId)
+      .eq("organization_id", organizationId)
+      .maybeSingle();
+    if (meetingError) throw meetingError;
+    if (!meeting) throw new Error("Meeting introuvable.");
+
+    const { data: artifact, error: artifactError } = await supabase
+      .from("meeting_external_artifacts")
+      .update({
+        meeting_id: input.meetingId,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", input.artifactId)
+      .eq("organization_id", organizationId)
+      .select("id")
+      .maybeSingle();
+    if (artifactError) throw artifactError;
+    if (!artifact) throw new Error("Note Gemini introuvable.");
+    revalidatePath("/meetings");
+    return { success: true };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Impossible d'associer cette note Gemini.",
+      success: false,
+    };
+  }
+}
+
+export async function askMeetingKnowledgeAction(
+  rawInput: unknown,
+): Promise<
+  | ({ success: true } & MeetingKnowledgeAnswer)
+  | { error: string; success: false }
+> {
+  try {
+    const input = meetingKnowledgeQuestionSchema.parse(rawInput);
+    if (input.scope === "meeting" && !input.meetingId) {
+      throw new Error("Sélectionne un meeting pour limiter la recherche.");
+    }
+    const { organizationId, supabase } = await requireMeetingNotesAccess();
+    let meetingQuery = supabase
+      .from("meetings")
+      .select("id,title,starts_at")
+      .eq("organization_id", organizationId)
+      .order("starts_at", { ascending: false, nullsFirst: false })
+      .limit(input.scope === "meeting" ? 1 : 50);
+    if (input.scope === "meeting" && input.meetingId) {
+      meetingQuery = meetingQuery.eq("id", input.meetingId);
+    }
+    const { data: meetings, error: meetingsError } = await meetingQuery;
+    if (meetingsError) throw meetingsError;
+    const meetingIds = (meetings ?? []).map((meeting) => meeting.id as string);
+    if (!meetingIds.length) {
+      return {
+        answer: "Aucun meeting privé ne correspond à cette recherche.",
+        sources: [],
+        success: true,
+      };
+    }
+
+    const outputFields =
+      input.scope === "meeting"
+        ? "id,meeting_id,notes_markdown,reviewed_notes_markdown,transcript_text,created_at"
+        : "id,meeting_id,notes_markdown,reviewed_notes_markdown,created_at";
+    const [outputsResult, geminiResult] = await Promise.all([
+      supabase
+        .from("meeting_outputs")
+        .select(outputFields)
+        .eq("organization_id", organizationId)
+        .in("meeting_id", meetingIds)
+        .order("created_at", { ascending: false })
+        .limit(input.scope === "meeting" ? 5 : 50),
+      supabase
+        .from("meeting_external_artifacts")
+        .select("id,meeting_id,title,notes_markdown,document_text,occurred_at")
+        .eq("organization_id", organizationId)
+        .in("meeting_id", meetingIds)
+        .order("occurred_at", { ascending: false, nullsFirst: false })
+        .limit(input.scope === "meeting" ? 10 : 100),
+    ]);
+    if (outputsResult.error) throw outputsResult.error;
+    if (geminiResult.error) throw geminiResult.error;
+
+    const meetingById = new Map(
+      (meetings ?? []).map((meeting) => [
+        meeting.id as string,
+        {
+          startsAt: meeting.starts_at as string | null,
+          title: meeting.title as string,
+        },
+      ]),
+    );
+    const documents: MeetingKnowledgeDocument[] = [];
+    for (const rawOutput of outputsResult.data ?? []) {
+      const output = rawOutput as unknown as MeetingKnowledgeOutputRow;
+      const meeting = meetingById.get(output.meeting_id as string);
+      const label = knowledgeSourceLabel(
+        meeting?.title ?? "Meeting",
+        meeting?.startsAt ?? undefined,
+      );
+      documents.push({
+        meetingId: output.meeting_id as string,
+        sourceId: output.id as string,
+        sourceLabel: label,
+        sourceType: "meeting-notes",
+        text:
+          (output.reviewed_notes_markdown as string | null) ??
+          (output.notes_markdown as string),
+      });
+      if (
+        input.scope === "meeting" &&
+        typeof output.transcript_text === "string"
+      ) {
+        documents.push({
+          meetingId: output.meeting_id as string,
+          sourceId: `${output.id}:transcript`,
+          sourceLabel: `${label} · transcript`,
+          sourceType: "transcript",
+          text: output.transcript_text,
+        });
+      }
+    }
+    for (const artifact of geminiResult.data ?? []) {
+      documents.push({
+        meetingId: artifact.meeting_id as string,
+        sourceId: artifact.id as string,
+        sourceLabel: `${knowledgeSourceLabel(
+          artifact.title as string,
+          artifact.occurred_at ?? undefined,
+        )} · Gemini`,
+        sourceType: "gemini-notes",
+        text: artifact.notes_markdown as string,
+      });
+      if (typeof artifact.document_text === "string") {
+        documents.push({
+          meetingId: artifact.meeting_id as string,
+          sourceId: `${artifact.id}:document`,
+          sourceLabel: `${knowledgeSourceLabel(
+            artifact.title as string,
+            artifact.occurred_at ?? undefined,
+          )} · document Gemini`,
+          sourceType: "transcript",
+          text: artifact.document_text,
+        });
+      }
+    }
+
+    const sources = rankMeetingKnowledge(input.question, documents);
+    return {
+      answer: sources.length
+        ? "Voici les passages les plus pertinents dans les notes privées et transcripts disponibles."
+        : "Je n'ai trouvé aucun passage suffisamment proche dans les sources privées disponibles.",
+      sources,
+      success: true,
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Impossible de rechercher dans les meetings.",
       success: false,
     };
   }
@@ -1427,6 +1751,135 @@ async function applyRecommendation({
   }
 }
 
+type MeetingKnowledgeDocument = {
+  meetingId?: string;
+  sourceId: string;
+  sourceLabel: string;
+  sourceType: MeetingKnowledgeAnswer["sources"][number]["sourceType"];
+  text: string;
+};
+
+type MeetingKnowledgeOutputRow = {
+  created_at?: string;
+  id: string;
+  meeting_id: string;
+  notes_markdown: string;
+  reviewed_notes_markdown?: string | null;
+  transcript_text?: string | null;
+};
+
+function rankMeetingKnowledge(
+  question: string,
+  documents: MeetingKnowledgeDocument[],
+): MeetingKnowledgeAnswer["sources"] {
+  const normalizedQuestion = normalizeKnowledgeText(question);
+  const tokens = new Set(knowledgeTokens(normalizedQuestion));
+  if (/\b(decid|decision|decide|arbitr)/u.test(normalizedQuestion)) {
+    ["decision", "decide", "arbitrage"].forEach((token) => tokens.add(token));
+  }
+  if (/\b(action|suivi|follow|relanc|prochaine)/u.test(normalizedQuestion)) {
+    ["action", "suivi", "relance", "prochaine"].forEach((token) =>
+      tokens.add(token),
+    );
+  }
+  if (!tokens.size) return [];
+
+  const ranked: Array<
+    MeetingKnowledgeAnswer["sources"][number] & {
+      score: number;
+    }
+  > = [];
+  for (const document of documents) {
+    const passages = document.text
+      .slice(0, 350_000)
+      .split(/\n{2,}|(?<=\.)\s+(?=[A-ZÀ-ÖØ-Þ])/u)
+      .map((passage) => passage.replace(/\s+/g, " ").trim())
+      .filter((passage) => passage.length >= 25)
+      .slice(0, 2_000);
+    for (const passage of passages) {
+      const normalizedPassage = normalizeKnowledgeText(passage);
+      const passageTokens = new Set(knowledgeTokens(normalizedPassage));
+      let score = 0;
+      let matched = 0;
+      for (const token of tokens) {
+        if (!passageTokens.has(token)) continue;
+        matched += 1;
+        score += token.length >= 7 ? 4 : 2;
+      }
+      if (normalizedPassage.includes(normalizedQuestion)) score += 12;
+      score += (matched / tokens.size) * 8;
+      if (score < 3) continue;
+      ranked.push({
+        excerpt: passage.slice(0, 700),
+        meetingId: document.meetingId,
+        score,
+        sourceId: document.sourceId,
+        sourceLabel: document.sourceLabel,
+        sourceType: document.sourceType,
+      });
+    }
+  }
+
+  const perSource = new Map<string, number>();
+  return ranked
+    .sort((left, right) => right.score - left.score)
+    .filter((candidate) => {
+      const count = perSource.get(candidate.sourceId) ?? 0;
+      if (count >= 2) return false;
+      perSource.set(candidate.sourceId, count + 1);
+      return true;
+    })
+    .slice(0, 5)
+    .map((source) => ({
+      excerpt: source.excerpt,
+      meetingId: source.meetingId,
+      sourceId: source.sourceId,
+      sourceLabel: source.sourceLabel,
+      sourceType: source.sourceType,
+    }));
+}
+
+function knowledgeSourceLabel(title: string, startsAt?: string) {
+  if (!startsAt) return title;
+  const date = new Date(startsAt);
+  if (Number.isNaN(date.getTime())) return title;
+  return `${title} · ${new Intl.DateTimeFormat("fr-FR", {
+    dateStyle: "medium",
+    timeZone: "Africa/Casablanca",
+  }).format(date)}`;
+}
+
+function normalizeKnowledgeText(value: string) {
+  return value
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("fr")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function knowledgeTokens(value: string) {
+  return value
+    .split(" ")
+    .filter((token) => token.length >= 3 && !KNOWLEDGE_STOP_WORDS.has(token));
+}
+
+const KNOWLEDGE_STOP_WORDS = new Set([
+  "avec",
+  "dans",
+  "des",
+  "est",
+  "les",
+  "meeting",
+  "nous",
+  "pour",
+  "que",
+  "qui",
+  "sur",
+  "une",
+]);
+
 function firstRelation(value: unknown) {
   return Array.isArray(value) ? (value[0] ?? null) : (value ?? null);
 }
@@ -1448,6 +1901,12 @@ function isIdempotentRecommendation(kind: string) {
 
 function isMissingMeetingSchema(message: string) {
   return /meeting(s|_outputs|_processing_jobs).*does not exist|schema cache/i.test(
+    message,
+  );
+}
+
+function isMissingGeminiArtifactSchema(message: string) {
+  return /meeting_external_artifacts.*does not exist|schema cache/i.test(
     message,
   );
 }

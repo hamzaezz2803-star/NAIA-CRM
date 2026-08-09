@@ -2,6 +2,8 @@
 
 import {
   AlertCircle,
+  Bell,
+  BookOpen,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -10,10 +12,13 @@ import {
   FileAudio,
   FileUp,
   LoaderCircle,
-  Mic,
   Paperclip,
+  Pause,
+  Play,
   RefreshCw,
+  Search,
   ShieldCheck,
+  Sparkles,
   UploadCloud,
   Users,
 } from "lucide-react";
@@ -33,13 +38,16 @@ import type { GoogleCalendarEventSummary } from "@/platform/integrations/google-
 
 import {
   approveMeetingOutputAction,
+  askMeetingKnowledgeAction,
   fetchMeetingIntelligenceAction,
   fetchMeetingTranscriptAction,
+  linkGeminiArtifactToMeetingAction,
   queueMeetingProcessingAction,
   registerMeetingSupportAction,
   retryMeetingDriveArchiveAction,
   retryMeetingProcessingAction,
   saveMeetingCaptureDraftAction,
+  syncGeminiMeetingNotesAction,
 } from "./actions";
 import {
   MAX_RECORDING_BYTES,
@@ -47,6 +55,7 @@ import {
   MAX_SUPPORT_BYTES,
   MEETING_RECORDINGS_BUCKET,
   type MeetingAttendee,
+  type MeetingKnowledgeAnswer,
   type MeetingIntelligenceState,
   type MeetingStructuredOutput,
   type MeetingWorkspace,
@@ -73,7 +82,7 @@ const ACTIVE_JOB_STATUSES = new Set([
   "finalizing",
 ]);
 
-type CaptureMode = "idle" | "recording" | "uploading";
+type CaptureMode = "idle" | "paused" | "recording" | "uploading";
 type DraftSaveState = "idle" | "saving" | "saved" | "error";
 type MeetingRecommendation = MeetingStructuredOutput["actions"][number];
 type ReviewTab = "notes" | "transcript";
@@ -113,6 +122,15 @@ export function MeetingIntelligenceWorkspace({
   const [isApproving, setIsApproving] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isUploadingSupport, setIsUploadingSupport] = useState(false);
+  const [isSyncingGemini, setIsSyncingGemini] = useState(false);
+  const [isLinkingGemini, setIsLinkingGemini] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState<
+    NotificationPermission | "unsupported"
+  >(() =>
+    typeof window !== "undefined" && "Notification" in window
+      ? window.Notification.permission
+      : "unsupported",
+  );
   const [meetingTitle, setMeetingTitle] = useState(initialMeeting?.title ?? "");
   const [participantsText, setParticipantsText] = useState(() =>
     formatAttendees(initialMeeting?.attendees ?? []),
@@ -135,6 +153,8 @@ export function MeetingIntelligenceWorkspace({
   const mediaStreamRef = useRef<MediaStream | null>(null);
   const audioPartsRef = useRef<Blob[]>([]);
   const recordingStartedAtRef = useRef(0);
+  const recordingPausedAtRef = useRef(0);
+  const recordingPausedDurationRef = useRef(0);
   const recoveryWriteRef = useRef<Promise<void>>(Promise.resolve());
   const captureDraftRef = useRef({
     liveNotesMarkdown: initialMeeting?.liveNotesMarkdown ?? "",
@@ -160,9 +180,28 @@ export function MeetingIntelligenceWorkspace({
     () => matchCalendarEvent(selectedMeeting, calendarEvents),
     [calendarEvents, selectedMeeting],
   );
+  const selectedGeminiArtifacts = useMemo(
+    () =>
+      (workspaceState.geminiArtifacts ?? []).filter(
+        (artifact) => artifact.meetingId === selectedMeeting?.id,
+      ),
+    [selectedMeeting?.id, workspaceState.geminiArtifacts],
+  );
+  const unmatchedGeminiArtifacts = useMemo(
+    () =>
+      (workspaceState.geminiArtifacts ?? []).filter(
+        (artifact) => !artifact.meetingId,
+      ),
+    [workspaceState.geminiArtifacts],
+  );
 
   const isBusy =
-    captureMode !== "idle" || isApproving || isRetrying || isUploadingSupport;
+    captureMode !== "idle" ||
+    isApproving ||
+    isRetrying ||
+    isUploadingSupport ||
+    isSyncingGemini ||
+    isLinkingGemini;
   const hasActiveJobs = crmMeetings.some((meeting) =>
     meeting.job ? ACTIVE_JOB_STATUSES.has(meeting.job.status) : false,
   );
@@ -186,6 +225,36 @@ export function MeetingIntelligenceWorkspace({
   }, []);
 
   useEffect(() => {
+    if (notificationPermission !== "granted" || !calendarEvents.length) return;
+    const notifyUpcomingMeetings = () => {
+      const now = Date.now();
+      for (const event of calendarEvents) {
+        if (!event.start) continue;
+        const start = new Date(event.start).getTime();
+        const minutesUntil = (start - now) / 60_000;
+        if (minutesUntil < 0 || minutesUntil > 10) continue;
+        const storageKey = `naia:meeting-reminder:${event.id}:${event.start}`;
+        if (window.localStorage.getItem(storageKey)) continue;
+        try {
+          new window.Notification(
+            `Meeting dans ${Math.max(1, Math.ceil(minutesUntil))} min`,
+            {
+              body: event.title,
+              tag: storageKey,
+            },
+          );
+          window.localStorage.setItem(storageKey, new Date().toISOString());
+        } catch {
+          // Browser/OS notification failures never interrupt note taking.
+        }
+      }
+    };
+    notifyUpcomingMeetings();
+    const timer = window.setInterval(notifyUpcomingMeetings, 60_000);
+    return () => window.clearInterval(timer);
+  }, [calendarEvents, notificationPermission]);
+
+  useEffect(() => {
     if (
       !selectedMeeting ||
       hydratedMeetingIdRef.current === selectedMeeting.id
@@ -199,7 +268,6 @@ export function MeetingIntelligenceWorkspace({
       ? storedDraft
       : undefined;
     const calendarAttendees = (matchedCalendarEvent?.attendees ?? [])
-      .filter((attendee) => !attendee.self)
       .map((attendee) => ({
         displayName: attendee.displayName,
         email: attendee.email,
@@ -295,13 +363,22 @@ export function MeetingIntelligenceWorkspace({
   ]);
 
   useEffect(() => {
-    if (captureMode !== "recording") return;
+    if (captureMode !== "recording" && captureMode !== "paused") return;
 
     const updateElapsed = () => {
+      const effectiveNow =
+        captureMode === "paused" && recordingPausedAtRef.current
+          ? recordingPausedAtRef.current
+          : Date.now();
       setElapsedSeconds(
         Math.max(
           0,
-          Math.floor((Date.now() - recordingStartedAtRef.current) / 1000),
+          Math.floor(
+            (effectiveNow -
+              recordingStartedAtRef.current -
+              recordingPausedDurationRef.current) /
+              1000,
+          ),
         ),
       );
     };
@@ -507,6 +584,8 @@ export function MeetingIntelligenceWorkspace({
       mediaRecorderRef.current = recorder;
       audioPartsRef.current = [];
       recordingStartedAtRef.current = Date.now();
+      recordingPausedAtRef.current = 0;
+      recordingPausedDurationRef.current = 0;
       recoveryWriteRef.current = Promise.resolve();
       setElapsedSeconds(0);
 
@@ -526,12 +605,22 @@ export function MeetingIntelligenceWorkspace({
         void (async () => {
           const durationSeconds = Math.max(
             1,
-            Math.round((Date.now() - recordingStartedAtRef.current) / 1000),
+            Math.round(
+              (Date.now() -
+                recordingStartedAtRef.current -
+                recordingPausedDurationRef.current -
+                (recordingPausedAtRef.current
+                  ? Date.now() - recordingPausedAtRef.current
+                  : 0)) /
+                1000,
+            ),
           );
           const audio = new Blob(audioPartsRef.current, { type: mimeType });
           mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
           mediaRecorderRef.current = null;
           mediaStreamRef.current = null;
+          recordingPausedAtRef.current = 0;
+          recordingPausedDurationRef.current = 0;
           audioPartsRef.current = [];
 
           await recoveryWriteRef.current;
@@ -599,6 +688,30 @@ export function MeetingIntelligenceWorkspace({
   const stopRecording = () => {
     const recorder = mediaRecorderRef.current;
     if (recorder && recorder.state !== "inactive") recorder.stop();
+  };
+
+  const toggleRecordingPause = () => {
+    const recorder = mediaRecorderRef.current;
+    if (!recorder || recorder.state === "inactive") return;
+    if (recorder.state === "recording") {
+      recorder.pause();
+      recordingPausedAtRef.current = Date.now();
+      setCaptureMode("paused");
+      setFeedback({
+        message: "Capture en pause. Les notes restent sauvegardées.",
+      });
+      return;
+    }
+    if (recorder.state === "paused") {
+      if (recordingPausedAtRef.current) {
+        recordingPausedDurationRef.current +=
+          Date.now() - recordingPausedAtRef.current;
+      }
+      recordingPausedAtRef.current = 0;
+      recorder.resume();
+      setCaptureMode("recording");
+      setFeedback({ message: "Capture reprise." });
+    }
   };
 
   const importAudio = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -795,6 +908,67 @@ export function MeetingIntelligenceWorkspace({
     }
   };
 
+  const enableMeetingReminders = async () => {
+    if (typeof window === "undefined" || !("Notification" in window)) {
+      setNotificationPermission("unsupported");
+      setFeedback({
+        error: "Les notifications ne sont pas disponibles dans ce navigateur.",
+      });
+      return;
+    }
+    try {
+      const permission = await window.Notification.requestPermission();
+      setNotificationPermission(permission);
+      setFeedback({
+        message:
+          permission === "granted"
+            ? "Rappels activés: NAIA te préviendra 10 minutes avant les meetings tant que l'app est ouverte."
+            : "Notifications non autorisées. Tu peux les réactiver dans les réglages du navigateur.",
+      });
+    } catch (error) {
+      setFeedback({ error: getErrorMessage(error) });
+    }
+  };
+
+  const syncGeminiNotes = async () => {
+    setIsSyncingGemini(true);
+    setFeedback({});
+    try {
+      const result = await syncGeminiMeetingNotesAction();
+      if (!result.success) throw new Error(result.error);
+      setFeedback({
+        message:
+          result.total === 0
+            ? "Aucune nouvelle note Gemini trouvée dans Gmail."
+            : `${result.total} note(s) Gemini synchronisée(s), dont ${result.matched} associée(s) automatiquement.`,
+      });
+      await refreshWorkspace(true);
+    } catch (error) {
+      setFeedback({ error: getErrorMessage(error) });
+    } finally {
+      if (!disposedRef.current) setIsSyncingGemini(false);
+    }
+  };
+
+  const linkGeminiArtifact = async (artifactId: string) => {
+    if (!selectedMeeting) return;
+    setIsLinkingGemini(true);
+    setFeedback({});
+    try {
+      const result = await linkGeminiArtifactToMeetingAction({
+        artifactId,
+        meetingId: selectedMeeting.id,
+      });
+      if (!result.success) throw new Error(result.error);
+      setFeedback({ message: "Note Gemini associée à ce meeting." });
+      await refreshWorkspace(true);
+    } catch (error) {
+      setFeedback({ error: getErrorMessage(error) });
+    } finally {
+      if (!disposedRef.current) setIsLinkingGemini(false);
+    }
+  };
+
   if (!workspaceState.configured) {
     return (
       <section
@@ -821,6 +995,13 @@ export function MeetingIntelligenceWorkspace({
   const operationalStatus = selectedMeeting
     ? getOperationalStatus(selectedMeeting)
     : undefined;
+  const displayedAttendees = parseAttendees(participantsText);
+  const qarizmiAttendees = displayedAttendees.filter(isQarizmiAttendee);
+  const clientAttendees = displayedAttendees.filter(
+    (attendee) => !isQarizmiAttendee(attendee),
+  );
+  const meetingDate = matchedCalendarEvent?.start ?? selectedMeeting?.startsAt;
+  const calendarAttachments = matchedCalendarEvent?.attachments ?? [];
 
   return (
     <section
@@ -856,19 +1037,54 @@ export function MeetingIntelligenceWorkspace({
           </p>
         </div>
 
-        <Button
-          aria-label="Actualiser les meetings"
-          className="h-11 w-11 self-end px-0 sm:self-auto"
-          disabled={isRefreshing}
-          onClick={() => void refreshWorkspace()}
-          title="Actualiser"
-          variant="ghost"
-        >
-          <RefreshCw
-            className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
-            aria-hidden="true"
-          />
-        </Button>
+        <div className="flex self-end gap-1 sm:self-auto">
+          <Button
+            aria-label="Synchroniser les notes Gemini depuis Gmail"
+            className="h-11"
+            disabled={isBusy}
+            onClick={() => void syncGeminiNotes()}
+            title="Lecture Gmail en accès restreint, sans modifier les emails"
+            variant="ghost"
+          >
+            {isSyncingGemini ? (
+              <LoaderCircle
+                className="h-4 w-4 animate-spin"
+                aria-hidden="true"
+              />
+            ) : (
+              <Sparkles className="h-4 w-4" aria-hidden="true" />
+            )}
+            <span className="hidden sm:inline">Gemini</span>
+          </Button>
+          <Button
+            aria-label="Activer les rappels avant meeting"
+            className="h-11"
+            disabled={notificationPermission === "denied"}
+            onClick={() => void enableMeetingReminders()}
+            title="Rappel navigateur 10 minutes avant le meeting"
+            variant="ghost"
+          >
+            <Bell className="h-4 w-4" aria-hidden="true" />
+            <span className="hidden sm:inline">
+              {notificationPermission === "granted"
+                ? "Rappels actifs"
+                : "Rappels"}
+            </span>
+          </Button>
+          <Button
+            aria-label="Actualiser les meetings"
+            className="h-11 w-11 px-0"
+            disabled={isRefreshing}
+            onClick={() => void refreshWorkspace()}
+            title="Actualiser"
+            variant="ghost"
+          >
+            <RefreshCw
+              className={`h-4 w-4 ${isRefreshing ? "animate-spin" : ""}`}
+              aria-hidden="true"
+            />
+          </Button>
+        </div>
       </header>
 
       {crmMeetings.length === 0 ? (
@@ -898,7 +1114,9 @@ export function MeetingIntelligenceWorkspace({
                   <select
                     id="meeting-intelligence-select"
                     className="mt-2 h-11 w-full rounded-md border px-3 text-sm outline-none transition focus-visible:ring-2 focus-visible:ring-teal-600"
-                    disabled={captureMode === "recording"}
+                    disabled={
+                      captureMode === "recording" || captureMode === "paused"
+                    }
                     onChange={(event) =>
                       setSelectedMeetingId(event.target.value)
                     }
@@ -925,6 +1143,66 @@ export function MeetingIntelligenceWorkspace({
 
               {selectedMeeting ? (
                 <>
+                  <div className="mt-4 flex items-center justify-between gap-4">
+                    <p
+                      className="text-xs font-medium"
+                      style={{ color: "var(--maison-text-muted)" }}
+                    >
+                      {captureMode === "recording"
+                        ? `Capture en cours · ${formatDuration(elapsedSeconds)}`
+                        : captureMode === "paused"
+                          ? `Capture en pause · ${formatDuration(elapsedSeconds)}`
+                          : "Capture prête"}
+                    </p>
+                    <button
+                      aria-label={
+                        captureMode === "recording"
+                          ? "Mettre l'enregistrement en pause"
+                          : captureMode === "paused"
+                            ? "Reprendre l'enregistrement"
+                            : "Démarrer l'enregistrement"
+                      }
+                      className="inline-flex h-10 items-center gap-1.5 rounded-full border px-3 transition hover:bg-stone-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:opacity-50 dark:hover:bg-stone-800"
+                      disabled={
+                        captureMode === "uploading" ||
+                        (captureMode === "idle" &&
+                          (isBusy || hasActiveJob(selectedMeeting)))
+                      }
+                      onClick={() =>
+                        void (captureMode === "idle"
+                          ? startRecording()
+                          : toggleRecordingPause())
+                      }
+                      title="Contrôle discret: démarrer, mettre en pause ou reprendre"
+                      type="button"
+                    >
+                      <span
+                        className={`h-2.5 w-2.5 rounded-full bg-orange-500 transition-opacity ${
+                          captureMode === "recording"
+                            ? "opacity-100"
+                            : "opacity-25"
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <span
+                        className={`h-2.5 w-2.5 rounded-full bg-emerald-500 transition-opacity ${
+                          captureMode === "recording"
+                            ? "opacity-25"
+                            : "opacity-100"
+                        }`}
+                        aria-hidden="true"
+                      />
+                      {captureMode === "recording" ? (
+                        <Pause
+                          className="ml-1 h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Play className="ml-1 h-3.5 w-3.5" aria-hidden="true" />
+                      )}
+                    </button>
+                  </div>
+
                   {matchedCalendarEvent ? (
                     <div
                       className="mt-4 flex flex-col gap-3 rounded-md border px-3 py-3 sm:flex-row sm:items-center sm:justify-between"
@@ -995,7 +1273,7 @@ export function MeetingIntelligenceWorkspace({
                       htmlFor="meeting-capture-title"
                     >
                       <span style={{ color: "var(--maison-text-secondary)" }}>
-                        Titre
+                        Titre du meeting
                       </span>
                       <input
                         id="meeting-capture-title"
@@ -1012,14 +1290,76 @@ export function MeetingIntelligenceWorkspace({
                         value={meetingTitle}
                       />
                     </label>
-                    <label
-                      className="text-sm font-medium"
-                      htmlFor="meeting-capture-participants"
-                    >
+                    <div className="text-sm font-medium">
                       <span style={{ color: "var(--maison-text-secondary)" }}>
-                        Participants
+                        Date
                       </span>
+                      <div
+                        className="mt-2 flex h-11 items-center rounded-md border px-3 text-sm"
+                        style={{
+                          background: "var(--maison-page)",
+                          borderColor: "var(--maison-border)",
+                          color: "var(--maison-text-primary)",
+                        }}
+                      >
+                        {meetingDate
+                          ? formatMeetingDate(meetingDate)
+                          : "Date à confirmer"}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    className="mt-4 rounded-md border px-3 py-3"
+                    style={{
+                      background: "var(--maison-page)",
+                      borderColor: "var(--maison-border)",
+                    }}
+                  >
+                    <p
+                      className="text-xs font-medium uppercase tracking-wide"
+                      style={{ color: "var(--maison-text-muted)" }}
+                    >
+                      Objet du meeting
+                    </p>
+                    <p
+                      className="mt-1 text-sm font-semibold"
+                      style={{ color: "var(--maison-text-primary)" }}
+                    >
+                      {matchedCalendarEvent?.title ?? meetingTitle}
+                    </p>
+                  </div>
+
+                  <div className="mt-4">
+                    <div className="flex items-center gap-2">
+                      <Users className="h-4 w-4" aria-hidden="true" />
+                      <p
+                        className="text-sm font-medium"
+                        style={{ color: "var(--maison-text-secondary)" }}
+                      >
+                        Participants
+                      </p>
+                    </div>
+                    <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                      <AttendeeGroup
+                        attendees={qarizmiAttendees}
+                        emptyLabel="Aucun participant Qarizmi identifié"
+                        label="Qarizmi"
+                      />
+                      <AttendeeGroup
+                        attendees={clientAttendees}
+                        emptyLabel="Aucun participant client identifié"
+                        label="Client"
+                      />
+                    </div>
+                    <label
+                      className="mt-3 block text-xs font-medium"
+                      htmlFor="meeting-capture-participants"
+                      style={{ color: "var(--maison-text-muted)" }}
+                    >
+                      Ajuster les participants
                       <input
+                        aria-label="Participants"
                         id="meeting-capture-participants"
                         className="mt-2 h-11 w-full rounded-md border px-3 text-sm outline-none transition focus-visible:ring-2 focus-visible:ring-teal-600"
                         maxLength={4_000}
@@ -1053,14 +1393,42 @@ export function MeetingIntelligenceWorkspace({
                           style={{ color: "var(--maison-text-primary)" }}
                         >
                           {selectedMeeting.supportFileName ??
-                            "Support présenté (optionnel)"}
+                            calendarAttachments[0]?.title ??
+                            "Supports du meeting"}
                         </p>
                         <p
                           className="text-xs"
                           style={{ color: "var(--maison-text-muted)" }}
                         >
-                          PDF, TXT ou Markdown · 25 Mo max
+                          {calendarAttachments.length
+                            ? `${calendarAttachments.length} document(s) prérempli(s) depuis Calendar/Drive`
+                            : "PDF, TXT ou Markdown · 25 Mo max"}
                         </p>
+                        {calendarAttachments.length ? (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {calendarAttachments
+                              .slice(0, 5)
+                              .map((attachment) =>
+                                attachment.fileUrl ? (
+                                  <a
+                                    className="inline-flex items-center gap-1 text-xs font-medium text-teal-700 underline-offset-2 hover:underline dark:text-teal-300"
+                                    href={attachment.fileUrl}
+                                    key={
+                                      attachment.fileId ?? attachment.fileUrl
+                                    }
+                                    rel="noreferrer"
+                                    target="_blank"
+                                  >
+                                    {attachment.title ?? "Document Drive"}
+                                    <ExternalLink
+                                      className="h-3 w-3"
+                                      aria-hidden="true"
+                                    />
+                                  </a>
+                                ) : null,
+                              )}
+                          </div>
+                        ) : null}
                       </div>
                     </div>
                     <Button
@@ -1090,6 +1458,105 @@ export function MeetingIntelligenceWorkspace({
                       type="file"
                     />
                   </div>
+
+                  {selectedGeminiArtifacts.length ||
+                  unmatchedGeminiArtifacts.length ? (
+                    <div
+                      className="mt-4 rounded-md border px-3 py-3"
+                      style={{ borderColor: "var(--maison-border)" }}
+                    >
+                      <div className="flex items-center gap-2">
+                        <Sparkles
+                          className="h-4 w-4 text-violet-600 dark:text-violet-300"
+                          aria-hidden="true"
+                        />
+                        <p
+                          className="text-sm font-semibold"
+                          style={{ color: "var(--maison-text-primary)" }}
+                        >
+                          Notes Gemini
+                        </p>
+                      </div>
+                      {selectedGeminiArtifacts.map((artifact) => (
+                        <details
+                          className="mt-3 rounded-md bg-stone-50 px-3 py-2 text-sm dark:bg-stone-900/50"
+                          key={artifact.id}
+                        >
+                          <summary className="cursor-pointer font-medium">
+                            {artifact.title}
+                            {artifact.occurredAt
+                              ? ` · ${formatMeetingDate(artifact.occurredAt)}`
+                              : ""}
+                            {artifact.documentTextAvailable
+                              ? " · document/transcript indexé"
+                              : ""}
+                          </summary>
+                          <p className="mt-2 whitespace-pre-wrap text-sm leading-6">
+                            {artifact.notesMarkdown.slice(0, 4_000)}
+                            {artifact.notesMarkdown.length > 4_000 ? "…" : ""}
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-3 text-xs font-medium">
+                            {artifact.documentUrl ? (
+                              <a
+                                className="text-teal-700 hover:underline dark:text-teal-300"
+                                href={artifact.documentUrl}
+                                rel="noreferrer"
+                                target="_blank"
+                              >
+                                Ouvrir les notes Google
+                              </a>
+                            ) : null}
+                            {artifact.recordingUrl ? (
+                              <a
+                                className="text-teal-700 hover:underline dark:text-teal-300"
+                                href={artifact.recordingUrl}
+                                rel="noreferrer"
+                                target="_blank"
+                              >
+                                {"Ouvrir l'enregistrement"}
+                              </a>
+                            ) : null}
+                          </div>
+                        </details>
+                      ))}
+                      {unmatchedGeminiArtifacts.length ? (
+                        <div
+                          className="mt-3 border-t pt-3"
+                          style={{ borderColor: "var(--maison-border)" }}
+                        >
+                          <p
+                            className="text-xs"
+                            style={{ color: "var(--maison-text-muted)" }}
+                          >
+                            {unmatchedGeminiArtifacts.length} note(s) à associer
+                            manuellement
+                          </p>
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {unmatchedGeminiArtifacts
+                              .slice(0, 5)
+                              .map((artifact) => (
+                                <Button
+                                  className="h-9"
+                                  disabled={isLinkingGemini || isBusy}
+                                  key={artifact.id}
+                                  onClick={() =>
+                                    void linkGeminiArtifact(artifact.id)
+                                  }
+                                  title={`Associer “${artifact.title}” au meeting sélectionné`}
+                                  variant="outline"
+                                >
+                                  <BookOpen
+                                    className="h-3.5 w-3.5"
+                                    aria-hidden="true"
+                                  />
+                                  {artifact.title.slice(0, 44)}
+                                </Button>
+                              ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
 
                   <label
                     className="mt-5 block text-sm font-medium"
@@ -1128,7 +1595,9 @@ export function MeetingIntelligenceWorkspace({
                     <input
                       checked={consentConfirmed}
                       className="mt-0.5 h-5 w-5 shrink-0 accent-teal-700 focus-visible:ring-2 focus-visible:ring-teal-600"
-                      disabled={captureMode === "recording"}
+                      disabled={
+                        captureMode === "recording" || captureMode === "paused"
+                      }
                       onChange={(event) =>
                         setConsentConfirmed(event.target.checked)
                       }
@@ -1156,11 +1625,12 @@ export function MeetingIntelligenceWorkspace({
                   ) : null}
 
                   <div className="mt-5 flex flex-col gap-2 sm:flex-row">
-                    {captureMode === "recording" ? (
+                    {captureMode === "recording" || captureMode === "paused" ? (
                       <Button
-                        className="h-12 min-w-56 bg-stone-950 text-white hover:bg-stone-800 dark:bg-stone-50 dark:text-stone-950 dark:hover:bg-stone-200"
+                        className="h-12 min-w-56"
                         onClick={stopRecording}
                         title="Terminer l'enregistrement et lancer le traitement"
+                        variant="outline"
                       >
                         <span
                           className="h-2.5 w-2.5 rounded-full bg-red-500"
@@ -1168,38 +1638,26 @@ export function MeetingIntelligenceWorkspace({
                         />
                         Terminer et traiter · {formatDuration(elapsedSeconds)}
                       </Button>
-                    ) : (
+                    ) : recoveredRecording ? (
                       <Button
                         className="h-12 min-w-56"
                         disabled={isBusy || hasActiveJob(selectedMeeting)}
-                        onClick={() =>
-                          void (recoveredRecording
-                            ? processRecoveredRecording()
-                            : startRecording())
-                        }
-                        title={
-                          recoveredRecording
-                            ? "Reprendre l'envoi local et lancer le traitement"
-                            : "Démarrer l'enregistrement du micro"
-                        }
+                        onClick={() => void processRecoveredRecording()}
+                        title="Reprendre l'envoi local et lancer le traitement"
                       >
                         {captureMode === "uploading" ? (
                           <LoaderCircle
                             className="h-4 w-4 animate-spin"
                             aria-hidden="true"
                           />
-                        ) : recoveredRecording ? (
-                          <UploadCloud className="h-4 w-4" aria-hidden="true" />
                         ) : (
-                          <Mic className="h-4 w-4" aria-hidden="true" />
+                          <UploadCloud className="h-4 w-4" aria-hidden="true" />
                         )}
                         {captureMode === "uploading"
                           ? "Envoi en cours…"
-                          : recoveredRecording
-                            ? "Reprendre et traiter"
-                            : "Démarrer l'enregistrement"}
+                          : "Reprendre et traiter"}
                       </Button>
-                    )}
+                    ) : null}
 
                     <Button
                       className="h-12"
@@ -1280,6 +1738,9 @@ export function MeetingIntelligenceWorkspace({
             ) : (
               <PendingWorkspace meeting={selectedMeeting} />
             )}
+            {selectedMeeting ? (
+              <MeetingKnowledgeSearch meetingId={selectedMeeting.id} />
+            ) : null}
           </div>
         </div>
       )}
@@ -1288,6 +1749,188 @@ export function MeetingIntelligenceWorkspace({
         <FeedbackBar feedback={feedback} />
       ) : null}
     </section>
+  );
+}
+
+function AttendeeGroup({
+  attendees,
+  emptyLabel,
+  label,
+}: {
+  attendees: MeetingAttendee[];
+  emptyLabel: string;
+  label: string;
+}) {
+  return (
+    <div
+      className="min-h-24 rounded-md border px-3 py-3"
+      style={{
+        background: "var(--maison-page)",
+        borderColor: "var(--maison-border)",
+      }}
+    >
+      <p
+        className="text-xs font-semibold uppercase tracking-wide"
+        style={{ color: "var(--maison-text-muted)" }}
+      >
+        {label}
+      </p>
+      {attendees.length ? (
+        <ul className="mt-2 space-y-1">
+          {attendees.map((attendee, index) => (
+            <li
+              className="text-sm"
+              key={`${attendee.email ?? attendee.displayName ?? attendee.name ?? "participant"}-${index}`}
+              style={{ color: "var(--maison-text-primary)" }}
+            >
+              {attendee.displayName || attendee.name || attendee.email}
+              {(attendee.displayName || attendee.name) && attendee.email ? (
+                <span
+                  className="ml-1 text-xs"
+                  style={{ color: "var(--maison-text-muted)" }}
+                >
+                  {attendee.email}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p
+          className="mt-2 text-xs"
+          style={{ color: "var(--maison-text-muted)" }}
+        >
+          {emptyLabel}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function MeetingKnowledgeSearch({ meetingId }: { meetingId: string }) {
+  const [question, setQuestion] = useState("");
+  const [scope, setScope] = useState<"all" | "meeting">("meeting");
+  const [result, setResult] = useState<MeetingKnowledgeAnswer>();
+  const [error, setError] = useState<string>();
+  const [isSearching, setIsSearching] = useState(false);
+
+  const searchKnowledge = async () => {
+    if (question.trim().length < 2) return;
+    setIsSearching(true);
+    setError(undefined);
+    try {
+      const response = await askMeetingKnowledgeAction({
+        meetingId: scope === "meeting" ? meetingId : undefined,
+        question: question.trim(),
+        scope,
+      });
+      if (!response.success) throw new Error(response.error);
+      setResult({ answer: response.answer, sources: response.sources });
+    } catch (searchError) {
+      setError(getErrorMessage(searchError));
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  return (
+    <div
+      className="mt-6 rounded-lg border px-4 py-4"
+      style={{
+        background: "var(--maison-page)",
+        borderColor: "var(--maison-border)",
+      }}
+    >
+      <div className="flex items-start gap-3">
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-violet-50 text-violet-700 dark:bg-violet-950/40 dark:text-violet-200">
+          <Sparkles className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <div>
+          <p
+            className="text-sm font-semibold"
+            style={{ color: "var(--maison-text-primary)" }}
+          >
+            Ask NAIA
+          </p>
+          <p
+            className="mt-0.5 text-xs"
+            style={{ color: "var(--maison-text-muted)" }}
+          >
+            Recherche sourcée dans les notes, transcripts et imports Gemini
+            privés. Aucune API IA payante.
+          </p>
+        </div>
+      </div>
+      <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+        <label className="sr-only" htmlFor="meeting-knowledge-question">
+          Question sur les meetings
+        </label>
+        <input
+          id="meeting-knowledge-question"
+          className="h-11 min-w-0 flex-1 rounded-md border px-3 text-sm outline-none focus-visible:ring-2 focus-visible:ring-violet-600"
+          maxLength={500}
+          onChange={(event) => setQuestion(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter") {
+              event.preventDefault();
+              void searchKnowledge();
+            }
+          }}
+          placeholder="Qu'avons-nous décidé sur le calendrier de lancement ?"
+          value={question}
+        />
+        <select
+          aria-label="Périmètre de recherche"
+          className="h-11 rounded-md border px-3 text-sm"
+          onChange={(event) =>
+            setScope(event.target.value as "all" | "meeting")
+          }
+          value={scope}
+        >
+          <option value="meeting">Ce meeting</option>
+          <option value="all">Tous les meetings</option>
+        </select>
+        <Button
+          className="h-11"
+          disabled={isSearching || question.trim().length < 2}
+          onClick={() => void searchKnowledge()}
+        >
+          {isSearching ? (
+            <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <Search className="h-4 w-4" aria-hidden="true" />
+          )}
+          Rechercher
+        </Button>
+      </div>
+      {error ? (
+        <p className="mt-3 text-sm text-red-700 dark:text-red-300">{error}</p>
+      ) : null}
+      {result ? (
+        <div className="mt-4 space-y-3" aria-live="polite">
+          <p
+            className="text-sm"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            {result.answer}
+          </p>
+          {result.sources.map((source) => (
+            <blockquote
+              className="rounded-md border-l-2 border-violet-400 px-3 py-2 text-sm"
+              key={`${source.sourceId}:${source.excerpt}`}
+            >
+              <p className="leading-6">{source.excerpt}</p>
+              <footer
+                className="mt-1 text-xs"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
+                {source.sourceLabel}
+              </footer>
+            </blockquote>
+          ))}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -2045,6 +2688,19 @@ function formatAttendees(attendees: MeetingAttendee[]) {
     })
     .filter(Boolean)
     .join(", ");
+}
+
+function isQarizmiAttendee(attendee: MeetingAttendee) {
+  if (attendee.email?.trim().toLocaleLowerCase("en").endsWith("@qarizmi.com")) {
+    return true;
+  }
+  const name = (attendee.displayName ?? attendee.name ?? "")
+    .normalize("NFKD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("fr");
+  return ["ali el abbassy", "nabil jamal eddine"].some((founder) =>
+    name.includes(founder),
+  );
 }
 
 function parseAttendees(value: string): MeetingAttendee[] {

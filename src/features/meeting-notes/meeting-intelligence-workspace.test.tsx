@@ -1,17 +1,20 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MeetingIntelligenceState } from "./contracts";
 
 const mocks = vi.hoisted(() => ({
   approveMeetingOutputAction: vi.fn(),
+  askMeetingKnowledgeAction: vi.fn(),
   fetchMeetingIntelligenceAction: vi.fn(),
   fetchMeetingTranscriptAction: vi.fn(),
+  linkGeminiArtifactToMeetingAction: vi.fn(),
   queueMeetingProcessingAction: vi.fn(),
   registerMeetingSupportAction: vi.fn(),
   retryMeetingDriveArchiveAction: vi.fn(),
   retryMeetingProcessingAction: vi.fn(),
   saveMeetingCaptureDraftAction: vi.fn(),
+  syncGeminiMeetingNotesAction: vi.fn(),
   remove: vi.fn(),
   storageFrom: vi.fn(),
   upload: vi.fn(),
@@ -19,13 +22,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./actions", () => ({
   approveMeetingOutputAction: mocks.approveMeetingOutputAction,
+  askMeetingKnowledgeAction: mocks.askMeetingKnowledgeAction,
   fetchMeetingIntelligenceAction: mocks.fetchMeetingIntelligenceAction,
   fetchMeetingTranscriptAction: mocks.fetchMeetingTranscriptAction,
+  linkGeminiArtifactToMeetingAction: mocks.linkGeminiArtifactToMeetingAction,
   queueMeetingProcessingAction: mocks.queueMeetingProcessingAction,
   registerMeetingSupportAction: mocks.registerMeetingSupportAction,
   retryMeetingDriveArchiveAction: mocks.retryMeetingDriveArchiveAction,
   retryMeetingProcessingAction: mocks.retryMeetingProcessingAction,
   saveMeetingCaptureDraftAction: mocks.saveMeetingCaptureDraftAction,
+  syncGeminiMeetingNotesAction: mocks.syncGeminiMeetingNotesAction,
 }));
 
 vi.mock("@/platform/auth/supabase-client", () => ({
@@ -76,6 +82,20 @@ describe("MeetingIntelligenceWorkspace", () => {
     mocks.queueMeetingProcessingAction.mockResolvedValue({ success: true });
     mocks.registerMeetingSupportAction.mockResolvedValue({ success: true });
     mocks.saveMeetingCaptureDraftAction.mockResolvedValue({ success: true });
+    mocks.syncGeminiMeetingNotesAction.mockResolvedValue({
+      imported: 0,
+      matched: 0,
+      success: true,
+      total: 0,
+    });
+    mocks.linkGeminiArtifactToMeetingAction.mockResolvedValue({
+      success: true,
+    });
+    mocks.askMeetingKnowledgeAction.mockResolvedValue({
+      answer: "Passages pertinents.",
+      sources: [],
+      success: true,
+    });
     mocks.fetchMeetingTranscriptAction.mockResolvedValue({
       success: true,
       transcriptSrt:
@@ -91,6 +111,10 @@ describe("MeetingIntelligenceWorkspace", () => {
     });
     mocks.fetchMeetingIntelligenceAction.mockResolvedValue(baseState);
     vi.spyOn(crypto, "randomUUID").mockReturnValue(sessionId);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
   });
 
   it("uploads an imported recording in 5 MB chunks before queuing it", async () => {
@@ -262,11 +286,130 @@ describe("MeetingIntelligenceWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("uses the discreet control to start, pause and resume capture", async () => {
+    const pause = vi.fn();
+    const resume = vi.fn();
+    class FakeMediaRecorder {
+      static isTypeSupported = () => true;
+      mimeType = "audio/mp4";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      state: "inactive" | "paused" | "recording" = "inactive";
+
+      pause() {
+        this.state = "paused";
+        pause();
+      }
+
+      resume() {
+        this.state = "recording";
+        resume();
+      }
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+      }
+    }
+    const stopTrack = vi.fn();
+    vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+    vi.stubGlobal("navigator", {
+      ...window.navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: stopTrack }],
+        }),
+      },
+    });
+
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /participants ont été informés/i,
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Démarrer l'enregistrement" }),
+    );
+    const pauseButton = await screen.findByRole("button", {
+      name: "Mettre l'enregistrement en pause",
+    });
+    fireEvent.click(pauseButton);
+    expect(pause).toHaveBeenCalledTimes(1);
+    const resumeButton = screen.getByRole("button", {
+      name: "Reprendre l'enregistrement",
+    });
+    fireEvent.click(resumeButton);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("syncs Gemini read-only and searches private meeting knowledge", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    );
+    await waitFor(() =>
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenCalledTimes(1),
+    );
+
+    fireEvent.change(screen.getByPlaceholderText(/Qu'avons-nous décidé/i), {
+      target: { value: "Qu'avons-nous décidé pour le lancement ?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
+    await waitFor(() =>
+      expect(mocks.askMeetingKnowledgeAction).toHaveBeenCalledWith({
+        meetingId,
+        question: "Qu'avons-nous décidé pour le lancement ?",
+        scope: "meeting",
+      }),
+    );
+    expect(screen.getByText("Passages pertinents.")).toBeInTheDocument();
+  });
+
+  it("keeps unmatched Gemini notes private until a founder links them", async () => {
+    const geminiState: MeetingIntelligenceState = {
+      ...baseState,
+      geminiArtifacts: [
+        {
+          documentTextAvailable: false,
+          id: "44444444-4444-4444-8444-444444444444",
+          notesMarkdown: "Résumé privé de la réunion.",
+          occurredAt: "2026-07-18T10:00:00.000Z",
+          provider: "google-gemini",
+          title: "Projet HPS",
+        },
+      ],
+    };
+    render(<MeetingIntelligenceWorkspace initialState={geminiState} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Projet HPS" }));
+    await waitFor(() =>
+      expect(mocks.linkGeminiArtifactToMeetingAction).toHaveBeenCalledWith({
+        artifactId: "44444444-4444-4444-8444-444444444444",
+        meetingId,
+      }),
+    );
+  });
+
   it("prefills participants and exposes the matched Google Meet safely", async () => {
     render(
       <MeetingIntelligenceWorkspace
         calendarEvents={[
           {
+            attachments: [
+              {
+                fileId: "drive-slide-1",
+                fileUrl: "https://drive.google.com/file/d/drive-slide-1/view",
+                mimeType: "application/vnd.google-apps.presentation",
+                title: "Pitch HPS",
+              },
+            ],
             attendees: [
               { email: "ali@qarizmi.com", self: true },
               {
@@ -287,7 +430,7 @@ describe("MeetingIntelligenceWorkspace", () => {
     );
 
     expect(screen.getByLabelText("Participants")).toHaveValue(
-      "Sara Benali <sara@hps.com>",
+      "ali@qarizmi.com, Sara Benali <sara@hps.com>",
     );
     expect(
       screen.getByRole("link", { name: "Rejoindre Meet" }),
@@ -295,6 +438,12 @@ describe("MeetingIntelligenceWorkspace", () => {
     expect(
       screen.getByText(/aucun enregistrement automatique/i),
     ).toBeInTheDocument();
+    expect(screen.getByText("Qarizmi")).toBeInTheDocument();
+    expect(screen.getByText("Client")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Pitch HPS/ })).toHaveAttribute(
+      "href",
+      "https://drive.google.com/file/d/drive-slide-1/view",
+    );
   });
 
   it("autosaves live notes and participants to the founder-only draft", async () => {

@@ -7,7 +7,7 @@ import {
   type IntegrationHealth,
   plannedIntegrationProviders,
 } from "./contracts";
-import { GOOGLE_USER_SCOPES } from "./google-workspace-scopes";
+import { GOOGLE_USER_REQUIRED_SCOPES } from "./google-workspace-scopes";
 
 type IntegrationConnectionRow = {
   encrypted_token_reference: string | null;
@@ -30,7 +30,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
     const scopes = connection?.scopes ?? [];
     const missingRequiredScopes =
       provider.provider === "google"
-        ? GOOGLE_USER_SCOPES.filter((scope) => !scopes.includes(scope))
+        ? GOOGLE_USER_REQUIRED_SCOPES.filter((scope) => !scopes.includes(scope))
         : [];
 
     if (!provider.isImplemented) {
@@ -79,7 +79,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
         capabilities: [...provider.capabilities],
         detail:
           missingRequiredScopes.length > 0
-            ? "Une connexion existe, mais elle n'a pas encore les nouveaux scopes Gmail. Reconnecte Google Workspace."
+            ? "Une connexion existe, mais elle n'a pas encore tous les scopes Calendar et Gmail requis. Reconnecte Google Workspace."
             : "Une connexion existe, mais il manque une variable serveur ou une reference token. Reconnecte le provider.",
         envVars: [...provider.envVars],
         externalAccountLabel: connection.external_account_label ?? undefined,

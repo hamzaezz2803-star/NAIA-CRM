@@ -240,6 +240,29 @@ export type MeetingTranscript = {
   transcriptText: string;
 };
 
+export type MeetingExternalArtifactSummary = {
+  documentTextAvailable: boolean;
+  documentUrl?: string;
+  id: string;
+  meetingId?: string;
+  notesMarkdown: string;
+  occurredAt?: string;
+  provider: "google-gemini";
+  recordingUrl?: string;
+  title: string;
+};
+
+export type MeetingKnowledgeAnswer = {
+  answer: string;
+  sources: Array<{
+    excerpt: string;
+    meetingId?: string;
+    sourceId: string;
+    sourceLabel: string;
+    sourceType: "gemini-notes" | "meeting-notes" | "transcript";
+  }>;
+};
+
 export type MeetingWorkspace = {
   attendees: MeetingAttendee[];
   calendarEventId?: string;
@@ -263,6 +286,7 @@ export type MeetingWorkspace = {
 export type MeetingIntelligenceState = {
   configured: boolean;
   error?: string;
+  geminiArtifacts?: MeetingExternalArtifactSummary[];
   meetings: MeetingWorkspace[];
   organizationId?: string;
 };
