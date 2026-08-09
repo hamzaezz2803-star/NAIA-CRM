@@ -81,19 +81,23 @@ function createClient({
   };
 }
 
-function stubSuccessfulGoogleExchange() {
+function stubSuccessfulGoogleExchange({
+  omitScope = false,
+  scope = "openid email https://www.googleapis.com/auth/calendar",
+}: { omitScope?: boolean; scope?: string } = {}) {
+  const tokenPayload: Record<string, unknown> = {
+    access_token: "access-token",
+    expires_in: 3600,
+    refresh_token: "refresh-token",
+  };
+  if (!omitScope) tokenPayload.scope = scope;
   const fetchMock = vi
     .fn()
     .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          access_token: "access-token",
-          expires_in: 3600,
-          refresh_token: "refresh-token",
-          scope: "openid email https://www.googleapis.com/auth/calendar",
-        }),
-        { headers: { "Content-Type": "application/json" }, status: 200 },
-      ),
+      new Response(JSON.stringify(tokenPayload), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      }),
     )
     .mockResolvedValueOnce(
       new Response(JSON.stringify({ email: "ali@qarizmi.com" }), {
@@ -183,5 +187,26 @@ describe("GET /api/integrations/google/callback", () => {
 
     expect(response.status).toBe(500);
     expect(await response.text()).toContain("database unavailable");
+  });
+
+  it("never invents a Drive grant when Google omits the returned scope", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({ omitScope: true });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.send",
+        ],
+      }),
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    );
   });
 });

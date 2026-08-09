@@ -72,6 +72,8 @@ import {
 
 const AUDIO_CHUNK_BYTES = 5 * 1024 * 1024;
 const POLLING_INTERVAL_MS = 5_000;
+const GOOGLE_MEETING_NOTES_AUTH_URL =
+  "/api/integrations/google/auth?intent=meeting-notes";
 const ACTIVE_JOB_STATUSES = new Set([
   "queued",
   "claimed",
@@ -124,6 +126,9 @@ export function MeetingIntelligenceWorkspace({
   const [isUploadingSupport, setIsUploadingSupport] = useState(false);
   const [isSyncingGemini, setIsSyncingGemini] = useState(false);
   const [isLinkingGemini, setIsLinkingGemini] = useState(false);
+  const [isAuthorizingGeminiDocuments, setIsAuthorizingGeminiDocuments] =
+    useState(false);
+  const [geminiNextPageToken, setGeminiNextPageToken] = useState<string>();
   const [notificationPermission, setNotificationPermission] = useState<
     NotificationPermission | "unsupported"
   >(() =>
@@ -165,6 +170,8 @@ export function MeetingIntelligenceWorkspace({
   const supportFileInputRef = useRef<HTMLInputElement | null>(null);
   const disposedRef = useRef(false);
   const hydratedMeetingIdRef = useRef("");
+  const googleAuthPopupRef = useRef<Window | null>(null);
+  const googleAuthPopupTimerRef = useRef<number | null>(null);
 
   const crmMeetings = useMemo(
     () => workspaceState.meetings.filter((meeting) => meeting.leadId),
@@ -413,6 +420,36 @@ export function MeetingIntelligenceWorkspace({
       if (!disposedRef.current && !silent) setIsRefreshing(false);
     }
   }, []);
+
+  useEffect(() => {
+    const handleGoogleAuthMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "GOOGLE_AUTH_SUCCESS") return;
+
+      if (googleAuthPopupTimerRef.current) {
+        window.clearInterval(googleAuthPopupTimerRef.current);
+        googleAuthPopupTimerRef.current = null;
+      }
+      googleAuthPopupRef.current?.close();
+      googleAuthPopupRef.current = null;
+      setIsAuthorizingGeminiDocuments(false);
+      setGeminiNextPageToken(undefined);
+      setFeedback({
+        message:
+          "Autorisation Google reçue. Vérification de l’accès aux documents Meet…",
+      });
+      void refreshWorkspace(true);
+    };
+
+    window.addEventListener("message", handleGoogleAuthMessage);
+    return () => {
+      window.removeEventListener("message", handleGoogleAuthMessage);
+      if (googleAuthPopupTimerRef.current) {
+        window.clearInterval(googleAuthPopupTimerRef.current);
+        googleAuthPopupTimerRef.current = null;
+      }
+    };
+  }, [refreshWorkspace]);
 
   useEffect(() => {
     if (!hasActiveJobs) return;
@@ -930,17 +967,60 @@ export function MeetingIntelligenceWorkspace({
     }
   };
 
+  const authorizeGeminiDocuments = () => {
+    const width = 520;
+    const height = 680;
+    const left = window.screen.width / 2 - width / 2;
+    const top = window.screen.height / 2 - height / 2;
+    const popup = window.open(
+      GOOGLE_MEETING_NOTES_AUTH_URL,
+      "GoogleMeetingNotesAuth",
+      `width=${width},height=${height},left=${left},top=${top},status=no,resizable=yes,scrollbars=yes`,
+    );
+
+    if (!popup) {
+      window.open(GOOGLE_MEETING_NOTES_AUTH_URL, "_self");
+      return;
+    }
+
+    if (googleAuthPopupTimerRef.current) {
+      window.clearInterval(googleAuthPopupTimerRef.current);
+    }
+    googleAuthPopupRef.current = popup;
+    setIsAuthorizingGeminiDocuments(true);
+    setFeedback({
+      message: "Autorisation Google des documents Meet en cours…",
+    });
+    googleAuthPopupTimerRef.current = window.setInterval(() => {
+      if (!popup.closed) return;
+      if (googleAuthPopupTimerRef.current) {
+        window.clearInterval(googleAuthPopupTimerRef.current);
+        googleAuthPopupTimerRef.current = null;
+      }
+      googleAuthPopupRef.current = null;
+      setIsAuthorizingGeminiDocuments(false);
+      setFeedback({ message: "Autorisation Google annulée." });
+    }, 500);
+  };
+
   const syncGeminiNotes = async () => {
     setIsSyncingGemini(true);
     setFeedback({});
     try {
-      const result = await syncGeminiMeetingNotesAction();
+      const result = await syncGeminiMeetingNotesAction({
+        pageToken: geminiNextPageToken,
+      });
       if (!result.success) throw new Error(result.error);
+      setGeminiNextPageToken(result.nextPageToken);
+      const scanSummary = `${result.scanned} message(s) Gmail analysé(s).`;
+      const backfillSummary = result.nextPageToken
+        ? " D’autres messages sont disponibles pour le backfill."
+        : " Backfill Gemini à jour.";
       setFeedback({
         message:
           result.total === 0
-            ? "Aucune nouvelle note Gemini trouvée dans Gmail."
-            : `${result.total} note(s) Gemini synchronisée(s), dont ${result.matched} associée(s) automatiquement.`,
+            ? `Aucune nouvelle note Gemini trouvée. ${scanSummary}${backfillSummary}`
+            : `${result.total} note(s) Gemini synchronisée(s), dont ${result.matched} associée(s) automatiquement. ${scanSummary}${backfillSummary}`,
       });
       await refreshWorkspace(true);
     } catch (error) {
@@ -1039,11 +1119,19 @@ export function MeetingIntelligenceWorkspace({
 
         <div className="flex self-end gap-1 sm:self-auto">
           <Button
-            aria-label="Synchroniser les notes Gemini depuis Gmail"
+            aria-label={
+              geminiNextPageToken
+                ? "Continuer le backfill Gemini"
+                : "Synchroniser les notes Gemini depuis Gmail"
+            }
             className="h-11"
             disabled={isBusy}
             onClick={() => void syncGeminiNotes()}
-            title="Lecture Gmail en accès restreint, sans modifier les emails"
+            title={
+              geminiNextPageToken
+                ? "Analyser la page suivante des messages Gemini"
+                : "Lecture Gmail en accès restreint, sans modifier les emails"
+            }
             variant="ghost"
           >
             {isSyncingGemini ? (
@@ -1054,7 +1142,9 @@ export function MeetingIntelligenceWorkspace({
             ) : (
               <Sparkles className="h-4 w-4" aria-hidden="true" />
             )}
-            <span className="hidden sm:inline">Gemini</span>
+            <span className="hidden sm:inline">
+              {geminiNextPageToken ? "Continuer le backfill Gemini" : "Gemini"}
+            </span>
           </Button>
           <Button
             aria-label="Activer les rappels avant meeting"
@@ -1086,6 +1176,74 @@ export function MeetingIntelligenceWorkspace({
           </Button>
         </div>
       </header>
+
+      <div
+        className="flex flex-col gap-3 border-b px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+        style={{ borderColor: "var(--maison-border)" }}
+      >
+        {workspaceState.geminiDocumentAccess ? (
+          <div className="flex items-start gap-2" role="status">
+            <CheckCircle2
+              className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600 dark:text-emerald-300"
+              aria-hidden="true"
+            />
+            <div>
+              <p
+                className="text-sm font-medium"
+                style={{ color: "var(--maison-text-primary)" }}
+              >
+                Documents et transcripts Gemini actifs
+              </p>
+              <p
+                className="mt-0.5 text-xs"
+                style={{ color: "var(--maison-text-muted)" }}
+              >
+                Les documents Meet liés peuvent enrichir les imports Gmail.
+              </p>
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="flex items-start gap-2">
+              <ShieldCheck
+                className="mt-0.5 h-4 w-4 shrink-0 text-violet-600 dark:text-violet-300"
+                aria-hidden="true"
+              />
+              <div>
+                <p
+                  className="text-sm font-medium"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  Accès documents Meet à autoriser
+                </p>
+                <p
+                  className="mt-0.5 text-xs"
+                  style={{ color: "var(--maison-text-muted)" }}
+                >
+                  Réservé aux cofondateurs. La synchronisation des résumés Gmail
+                  reste disponible sans cette autorisation.
+                </p>
+              </div>
+            </div>
+            <Button
+              className="h-10 shrink-0"
+              disabled={isAuthorizingGeminiDocuments}
+              onClick={authorizeGeminiDocuments}
+              variant="outline"
+            >
+              {isAuthorizingGeminiDocuments ? (
+                <LoaderCircle
+                  className="h-4 w-4 animate-spin"
+                  aria-hidden="true"
+                />
+              ) : (
+                <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              )}
+              Autoriser les documents Meet
+            </Button>
+          </>
+        )}
+      </div>
 
       {crmMeetings.length === 0 ? (
         <div className="flex min-h-36 items-center justify-center px-4 py-8 text-center">
@@ -1809,7 +1967,7 @@ function AttendeeGroup({
 
 function MeetingKnowledgeSearch({ meetingId }: { meetingId: string }) {
   const [question, setQuestion] = useState("");
-  const [scope, setScope] = useState<"all" | "meeting">("meeting");
+  const [scope, setScope] = useState<"meeting" | "recent">("meeting");
   const [result, setResult] = useState<MeetingKnowledgeAnswer>();
   const [error, setError] = useState<string>();
   const [isSearching, setIsSearching] = useState(false);
@@ -1883,12 +2041,12 @@ function MeetingKnowledgeSearch({ meetingId }: { meetingId: string }) {
           aria-label="Périmètre de recherche"
           className="h-11 rounded-md border px-3 text-sm"
           onChange={(event) =>
-            setScope(event.target.value as "all" | "meeting")
+            setScope(event.target.value as "meeting" | "recent")
           }
           value={scope}
         >
           <option value="meeting">Ce meeting</option>
-          <option value="all">Tous les meetings</option>
+          <option value="recent">50 meetings récents</option>
         </select>
         <Button
           className="h-11"

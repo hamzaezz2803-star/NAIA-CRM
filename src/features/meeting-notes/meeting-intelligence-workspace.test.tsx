@@ -85,6 +85,8 @@ describe("MeetingIntelligenceWorkspace", () => {
     mocks.syncGeminiMeetingNotesAction.mockResolvedValue({
       imported: 0,
       matched: 0,
+      nextPageToken: undefined,
+      scanned: 0,
       success: true,
       total: 0,
     });
@@ -354,9 +356,14 @@ describe("MeetingIntelligenceWorkspace", () => {
         name: "Synchroniser les notes Gemini depuis Gmail",
       }),
     );
-    await waitFor(() =>
-      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenCalledTimes(1),
-    );
+    await waitFor(() => {
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenCalledWith({
+        pageToken: undefined,
+      });
+    });
+    expect(
+      screen.getByText(/0 message\(s\) Gmail analysé\(s\)/i),
+    ).toBeInTheDocument();
 
     fireEvent.change(screen.getByPlaceholderText(/Qu'avons-nous décidé/i), {
       target: { value: "Qu'avons-nous décidé pour le lancement ?" },
@@ -370,6 +377,157 @@ describe("MeetingIntelligenceWorkspace", () => {
       }),
     );
     expect(screen.getByText("Passages pertinents.")).toBeInTheDocument();
+  });
+
+  it("continues the Gemini backfill with the returned cursor and reports scanned messages", async () => {
+    mocks.syncGeminiMeetingNotesAction
+      .mockResolvedValueOnce({
+        imported: 2,
+        matched: 1,
+        nextPageToken: "gmail-page-2",
+        scanned: 200,
+        success: true,
+        total: 2,
+      })
+      .mockResolvedValueOnce({
+        imported: 0,
+        matched: 0,
+        nextPageToken: undefined,
+        scanned: 37,
+        success: true,
+        total: 0,
+      });
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenNthCalledWith(1, {
+        pageToken: undefined,
+      });
+    });
+    expect(
+      await screen.findByText(/200 message\(s\) Gmail analysé\(s\)/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Continuer le backfill Gemini" }),
+    ).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continuer le backfill Gemini" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenNthCalledWith(2, {
+        pageToken: "gmail-page-2",
+      });
+    });
+    expect(
+      await screen.findByText(/37 message\(s\) Gmail analysé\(s\)/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    ).toBeEnabled();
+  });
+
+  it("searches only the 50 most recent meetings when requested", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.change(screen.getByLabelText("Périmètre de recherche"), {
+      target: { value: "recent" },
+    });
+    expect(
+      screen.getByRole("option", { name: "50 meetings récents" }),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/Qu'avons-nous décidé/i), {
+      target: { value: "Quelles décisions sont encore ouvertes ?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
+
+    await waitFor(() => {
+      expect(mocks.askMeetingKnowledgeAction).toHaveBeenCalledWith({
+        meetingId: undefined,
+        question: "Quelles décisions sont encore ouvertes ?",
+        scope: "recent",
+      });
+    });
+  });
+
+  it("authorizes Meet documents in a popup and trusts only the same origin callback", async () => {
+    const popup = { close: vi.fn(), closed: false };
+    const open = vi
+      .spyOn(window, "open")
+      .mockReturnValue(popup as unknown as Window);
+    mocks.fetchMeetingIntelligenceAction.mockResolvedValueOnce({
+      ...baseState,
+      geminiDocumentAccess: true,
+    });
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    expect(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    ).toBeEnabled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Autoriser les documents Meet" }),
+    );
+    expect(open).toHaveBeenCalledWith(
+      "/api/integrations/google/auth?intent=meeting-notes",
+      "GoogleMeetingNotesAuth",
+      expect.stringContaining("width=520"),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    ).toBeEnabled();
+
+    fireEvent(
+      window,
+      new MessageEvent("message", {
+        data: { type: "GOOGLE_AUTH_SUCCESS" },
+        origin: "https://attacker.example",
+      }),
+    );
+    expect(mocks.fetchMeetingIntelligenceAction).not.toHaveBeenCalled();
+
+    fireEvent(
+      window,
+      new MessageEvent("message", {
+        data: { type: "GOOGLE_AUTH_SUCCESS" },
+        origin: window.location.origin,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.fetchMeetingIntelligenceAction).toHaveBeenCalledTimes(1);
+    });
+    expect(popup.close).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText("Documents et transcripts Gemini actifs"),
+    ).toBeInTheDocument();
+  });
+
+  it("uses in-app navigation when the browser blocks the Google popup", () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Autoriser les documents Meet" }),
+    );
+
+    expect(window.open).toHaveBeenNthCalledWith(
+      2,
+      "/api/integrations/google/auth?intent=meeting-notes",
+      "_self",
+    );
   });
 
   it("keeps unmatched Gemini notes private until a founder links them", async () => {

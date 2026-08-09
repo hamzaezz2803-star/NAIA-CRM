@@ -1,13 +1,27 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  requireMeetingNotesAccess: vi.fn(),
+}));
+
+vi.mock("@/features/meeting-notes/access", () => ({
+  requireMeetingNotesAccess: mocks.requireMeetingNotesAccess,
+}));
 
 import { GET } from "./route";
 
 describe("Google integration auth route", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.requireMeetingNotesAccess.mockResolvedValue({});
+  });
+
   afterEach(() => {
     vi.unstubAllEnvs();
   });
 
-  it("requests Calendar, Gmail and read-only Drive for linked Gemini docs", async () => {
+  it("keeps ordinary employee sign-in limited to Calendar and Gmail", async () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "google-client-id");
     vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://os.qarizmi.com");
 
@@ -24,9 +38,51 @@ describe("Google integration auth route", () => {
       "https://www.googleapis.com/auth/calendar.freebusy",
       "https://www.googleapis.com/auth/gmail.readonly",
       "https://www.googleapis.com/auth/gmail.send",
-      "https://www.googleapis.com/auth/drive.readonly",
     ]);
+    expect(scopes).not.toContain(
+      "https://www.googleapis.com/auth/drive.meet.readonly",
+    );
+    expect(scopes).not.toContain(
+      "https://www.googleapis.com/auth/drive.readonly",
+    );
     expect(scopes).not.toContain("https://www.googleapis.com/auth/drive.file");
+  });
+
+  it("requests only the narrow Meet document scope for an authorized founder", async () => {
+    vi.stubEnv("GOOGLE_CLIENT_ID", "google-client-id");
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://os.qarizmi.com");
+    const request = new NextRequest(
+      "https://os.qarizmi.com/api/integrations/google/auth?intent=meeting-notes",
+    );
+
+    const response = await GET(request);
+    const scopes =
+      new URL(response.headers.get("location") ?? "").searchParams
+        .get("scope")
+        ?.split(" ") ?? [];
+
+    expect(mocks.requireMeetingNotesAccess).toHaveBeenCalledTimes(1);
+    expect(scopes).toContain(
+      "https://www.googleapis.com/auth/drive.meet.readonly",
+    );
+    expect(scopes).not.toContain(
+      "https://www.googleapis.com/auth/drive.readonly",
+    );
+  });
+
+  it("rejects incremental Meet document access for a non-founder", async () => {
+    vi.stubEnv("GOOGLE_CLIENT_ID", "google-client-id");
+    mocks.requireMeetingNotesAccess.mockRejectedValue(
+      new Error("founder access required"),
+    );
+    const request = new NextRequest(
+      "https://os.qarizmi.com/api/integrations/google/auth?intent=meeting-notes",
+    );
+
+    const response = await GET(request);
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("location")).toBeNull();
   });
 
   it("mints a CSRF state bound to a cookie", async () => {

@@ -287,6 +287,7 @@ export type MeetingIntelligenceState = {
   configured: boolean;
   error?: string;
   geminiArtifacts?: MeetingExternalArtifactSummary[];
+  geminiDocumentAccess?: boolean;
   meetings: MeetingWorkspace[];
   organizationId?: string;
 };

@@ -71,6 +71,12 @@ export type GmailMeetingNoteMessage = GmailMessageSummary & {
   senderEmail: string;
 };
 
+export type GmailMeetingNoteBatch = {
+  messages: GmailMeetingNoteMessage[];
+  nextPageToken?: string;
+  scanned: number;
+};
+
 export type GoogleCalendarReminderResult = {
   htmlLink?: string;
   id: string;
@@ -491,50 +497,69 @@ const GEMINI_MEETING_NOTE_SENDERS = new Set([
  */
 export async function listGeminiMeetingNoteMessages(
   {
-    maxResults = 30,
+    maxResults = 100,
     newerThanDays = 120,
-  }: { maxResults?: number; newerThanDays?: number } = {},
+    pageToken,
+  }: {
+    maxResults?: number;
+    newerThanDays?: number;
+    pageToken?: string;
+  } = {},
   context?: GoogleWorkspaceContext,
-): Promise<GmailMeetingNoteMessage[]> {
+): Promise<GmailMeetingNoteBatch> {
   const connection = await getGoogleWorkspaceConnection(context);
   const accessToken = await getGoogleAccessToken(connection, context?.supabase);
-  const boundedMaxResults = Math.max(1, Math.min(maxResults, 50));
+  const boundedMaxResults = Math.max(1, Math.min(maxResults, 200));
   const boundedDays = Math.max(1, Math.min(newerThanDays, 365));
   const canReadLinkedDocuments = (connection.scopes ?? []).some((scope) =>
     [
       "https://www.googleapis.com/auth/drive",
       "https://www.googleapis.com/auth/drive.readonly",
+      "https://www.googleapis.com/auth/drive.meet.readonly",
     ].includes(scope),
   );
-  const listUrl = new URL(
-    "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-  );
-  listUrl.searchParams.set("maxResults", String(boundedMaxResults));
-  listUrl.searchParams.set(
-    "q",
-    `{from:gemini-notes@google.com from:meetings-noreply@google.com} newer_than:${boundedDays}d -in:spam -in:trash`,
-  );
+  const messages: Array<{ id: string; threadId?: string }> = [];
+  let nextPageToken = pageToken?.trim() || undefined;
+  do {
+    const listUrl = new URL(
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+    );
+    listUrl.searchParams.set(
+      "maxResults",
+      String(Math.min(100, boundedMaxResults - messages.length)),
+    );
+    listUrl.searchParams.set(
+      "q",
+      `{from:gemini-notes@google.com from:meetings-noreply@google.com} newer_than:${boundedDays}d -in:spam -in:trash`,
+    );
+    if (nextPageToken) listUrl.searchParams.set("pageToken", nextPageToken);
 
-  const listResponse = await fetch(listUrl, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
-  if (!listResponse.ok) {
-    throw new Error(await providerError("Gmail", listResponse));
-  }
+    const listResponse = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!listResponse.ok) {
+      throw new Error(await providerError("Gmail", listResponse));
+    }
 
-  const listPayload = (await listResponse.json()) as {
-    messages?: Array<{ id?: string; threadId?: string }>;
-  };
-  const messages = (listPayload.messages ?? [])
-    .filter((message): message is { id: string; threadId?: string } =>
-      Boolean(message.id),
-    )
-    .slice(0, boundedMaxResults);
+    const listPayload = (await listResponse.json()) as {
+      messages?: Array<{ id?: string; threadId?: string }>;
+      nextPageToken?: string;
+    };
+    messages.push(
+      ...(listPayload.messages ?? []).filter(
+        (message): message is { id: string; threadId?: string } =>
+          Boolean(message.id),
+      ),
+    );
+    nextPageToken = listPayload.nextPageToken;
+  } while (nextPageToken && messages.length < boundedMaxResults);
+
+  const boundedMessages = messages.slice(0, boundedMaxResults);
 
   const detailed = await mapWithConcurrency<
     (typeof messages)[number],
     GmailMeetingNoteMessage | undefined
-  >(messages, 5, async (message) => {
+  >(boundedMessages, 8, async (message) => {
     const detailUrl = new URL(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}`,
     );
@@ -545,8 +570,9 @@ export async function listGeminiMeetingNoteMessages(
     if (!detailResponse.ok) return undefined;
 
     const detail = (await detailResponse.json()) as GmailFullMessagePayload;
+    const rawHeaders = detail.payload?.headers ?? [];
     const headers = new Map(
-      (detail.payload?.headers ?? []).map((header) => [
+      rawHeaders.map((header) => [
         header.name?.toLocaleLowerCase("en") ?? "",
         header.value,
       ]),
@@ -555,7 +581,7 @@ export async function listGeminiMeetingNoteMessages(
     const senderEmail = extractMailboxAddress(from);
     const subject = headers.get("subject") ?? "";
     if (
-      !GEMINI_MEETING_NOTE_SENDERS.has(senderEmail) ||
+      !isAuthenticatedGeminiSender(rawHeaders, senderEmail) ||
       !/^notes\s*:/iu.test(subject.trim())
     ) {
       return undefined;
@@ -584,9 +610,13 @@ export async function listGeminiMeetingNoteMessages(
     } satisfies GmailMeetingNoteMessage;
   });
 
-  return detailed.filter((message): message is GmailMeetingNoteMessage =>
-    Boolean(message),
-  );
+  return {
+    messages: detailed.filter((message): message is GmailMeetingNoteMessage =>
+      Boolean(message),
+    ),
+    nextPageToken,
+    scanned: boundedMessages.length,
+  };
 }
 
 async function downloadGeminiDocumentText(
@@ -668,6 +698,33 @@ function extractMailboxAddress(value: string) {
   const bracketed = value.match(/<([^<>\s]+@[^<>\s]+)>/u)?.[1];
   const bare = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu)?.[0];
   return (bracketed ?? bare ?? "").trim().toLocaleLowerCase("en");
+}
+
+function isAuthenticatedGeminiSender(
+  headers: Array<{ name?: string; value?: string }>,
+  senderEmail: string,
+) {
+  if (!GEMINI_MEETING_NOTE_SENDERS.has(senderEmail)) return false;
+  // Gmail prepends its own Authentication-Results header before any
+  // untrusted header supplied by the sender. Only the first result minted by
+  // mx.google.com is authoritative; accepting a later, sender-controlled
+  // header would make an exact From address spoofable.
+  const authenticationResult = headers
+    .filter(
+      (header) =>
+        header.name?.trim().toLocaleLowerCase("en") ===
+        "authentication-results",
+    )
+    .map((header) => header.value?.replace(/\s+/g, " ").trim() ?? "")
+    .find((value) => /^mx\.google\.com\s*;/iu.test(value));
+
+  return Boolean(
+    authenticationResult &&
+    /(?:^|[;\s])dkim=pass(?:[;\s]|$)/iu.test(authenticationResult) &&
+    /header\.(?:d|from|i)\s*=\s*@?google\.com(?:[;\s]|$)/iu.test(
+      authenticationResult,
+    ),
+  );
 }
 
 async function mapWithConcurrency<T, R>(

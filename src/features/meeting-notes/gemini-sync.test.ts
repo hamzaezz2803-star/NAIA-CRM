@@ -33,24 +33,28 @@ describe("Gemini Gmail meeting sync", () => {
   });
 
   it("reads only the allowlisted feed and upserts a deduplicated private artifact", async () => {
-    mocks.listGeminiMeetingNoteMessages.mockResolvedValue([
-      {
-        bodyText: [
-          'Notes de "Projet Atlas - Production"',
-          "",
-          "Résumé",
-          "Le pilote a été validé.",
-          "",
-          "https://docs.google.com/document/d/doc-123/edit",
-        ].join("\n"),
-        date: "Thu, 6 Aug 2026 15:15:23 +0000",
-        from: "Gemini <gemini-notes@google.com>",
-        id: "gmail-message-1",
-        senderEmail: "gemini-notes@google.com",
-        subject: 'Notes : "Projet Atlas - Production" 6 août 2026',
-        threadId: "gmail-thread-1",
-      },
-    ]);
+    mocks.listGeminiMeetingNoteMessages.mockResolvedValue({
+      messages: [
+        {
+          bodyText: [
+            'Notes de "Projet Atlas - Production"',
+            "",
+            "Résumé",
+            "Le pilote a été validé.",
+            "",
+            "https://docs.google.com/document/d/doc-123/edit",
+          ].join("\n"),
+          date: "Thu, 6 Aug 2026 15:15:23 +0000",
+          from: "Gemini <gemini-notes@google.com>",
+          id: "gmail-message-1",
+          senderEmail: "gemini-notes@google.com",
+          subject: 'Notes : "Projet Atlas - Production" 6 août 2026',
+          threadId: "gmail-thread-1",
+        },
+      ],
+      nextPageToken: "next-opaque-cursor",
+      scanned: 37,
+    });
     const upsert = vi.fn().mockResolvedValue({ data: null, error: null });
     let artifactReadCount = 0;
     const supabase = {
@@ -82,16 +86,24 @@ describe("Gemini Gmail meeting sync", () => {
       user: { id: profileId },
     });
 
-    const result = await syncGeminiMeetingNotesAction();
+    const result = await syncGeminiMeetingNotesAction({
+      pageToken: "starting-opaque-cursor",
+    });
 
     expect(result).toMatchObject({
       imported: 1,
       matched: 1,
+      nextPageToken: "next-opaque-cursor",
+      scanned: 37,
       success: true,
       total: 1,
     });
     expect(mocks.listGeminiMeetingNoteMessages).toHaveBeenCalledWith(
-      { maxResults: 40, newerThanDays: 180 },
+      {
+        maxResults: 200,
+        newerThanDays: 180,
+        pageToken: "starting-opaque-cursor",
+      },
       { organizationId, profileId, supabase },
     );
     expect(upsert).toHaveBeenCalledWith(
@@ -112,7 +124,11 @@ describe("Gemini Gmail meeting sync", () => {
 
   it("does not touch Supabase when Gmail returns no matching note", async () => {
     const supabase = { from: vi.fn() };
-    mocks.listGeminiMeetingNoteMessages.mockResolvedValue([]);
+    mocks.listGeminiMeetingNoteMessages.mockResolvedValue({
+      messages: [],
+      nextPageToken: undefined,
+      scanned: 0,
+    });
     mocks.requireMeetingNotesAccess.mockResolvedValue({
       organizationId,
       supabase,
@@ -122,6 +138,8 @@ describe("Gemini Gmail meeting sync", () => {
     await expect(syncGeminiMeetingNotesAction()).resolves.toEqual({
       imported: 0,
       matched: 0,
+      nextPageToken: undefined,
+      scanned: 0,
       success: true,
       total: 0,
     });

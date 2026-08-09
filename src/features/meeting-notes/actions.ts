@@ -13,6 +13,7 @@ import {
   createGoogleCalendarReminder,
   listGeminiMeetingNoteMessages,
 } from "@/platform/integrations/google-workspace";
+import { GOOGLE_MEETING_NOTE_SCOPE } from "@/platform/integrations/google-workspace-scopes";
 
 import { requireMeetingNotesAccess } from "./access";
 import {
@@ -74,10 +75,13 @@ const linkGeminiArtifactSchema = z.object({
   artifactId: z.string().uuid(),
   meetingId: z.string().uuid(),
 });
+const syncGeminiInputSchema = z
+  .object({ pageToken: z.string().trim().min(1).max(2_048).optional() })
+  .default({});
 const meetingKnowledgeQuestionSchema = z.object({
   meetingId: z.string().uuid().optional(),
   question: z.string().trim().min(2).max(500),
-  scope: z.enum(["meeting", "all"]).default("meeting"),
+  scope: z.enum(["meeting", "recent"]).default("meeting"),
 });
 
 const REVIEW_ARCHIVE_PENDING = "Version relue en attente d'archivage Drive.";
@@ -86,7 +90,8 @@ const REVIEW_ARCHIVE_MISSING_FOLDER =
 
 export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntelligenceState> {
   try {
-    const { organizationId, supabase } = await requireMeetingNotesAccess();
+    const { organizationId, supabase, user } =
+      await requireMeetingNotesAccess();
     const { data: meetings, error: meetingError } = await supabase
       .from("meetings")
       .select("*, company:company_id(name), contact:contact_id(name)")
@@ -147,6 +152,27 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
     ) {
       throw geminiResult.error;
     }
+
+    const { data: googleConnection } = await supabase
+      .from("integration_connections")
+      .select("scopes")
+      .eq("organization_id", organizationId)
+      .eq("provider", "google")
+      .eq("connected_by_profile_id", user.id)
+      .eq("status", "connected")
+      .order("connected_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    const googleScopes = Array.isArray(googleConnection?.scopes)
+      ? (googleConnection.scopes as string[])
+      : [];
+    const geminiDocumentAccess = googleScopes.some((scope) =>
+      [
+        "https://www.googleapis.com/auth/drive",
+        "https://www.googleapis.com/auth/drive.readonly",
+        GOOGLE_MEETING_NOTE_SCOPE,
+      ].includes(scope),
+    );
 
     const latestJobByMeeting = new Map<string, MeetingJobSummary>();
     for (const row of jobsResult.data ?? []) {
@@ -236,6 +262,7 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
 
     return {
       configured: true,
+      geminiDocumentAccess,
       geminiArtifacts,
       meetings: shaped,
       organizationId,
@@ -285,19 +312,31 @@ export async function fetchMeetingTranscriptAction(
   }
 }
 
-export async function syncGeminiMeetingNotesAction() {
+export async function syncGeminiMeetingNotesAction(rawInput: unknown = {}) {
   try {
+    const input = syncGeminiInputSchema.parse(rawInput);
     const { organizationId, supabase, user } =
       await requireMeetingNotesAccess();
-    const messages = await listGeminiMeetingNoteMessages(
-      { maxResults: 40, newerThanDays: 180 },
+    const batch = await listGeminiMeetingNoteMessages(
+      {
+        maxResults: 200,
+        newerThanDays: 180,
+        pageToken: input.pageToken,
+      },
       { organizationId, profileId: user.id, supabase },
     );
-    const parsed = messages
+    const parsed = batch.messages
       .map(parseGeminiMeetingNoteMessage)
       .filter((note): note is NonNullable<typeof note> => Boolean(note));
     if (!parsed.length) {
-      return { imported: 0, matched: 0, success: true, total: 0 };
+      return {
+        imported: 0,
+        matched: 0,
+        nextPageToken: batch.nextPageToken,
+        scanned: batch.scanned,
+        success: true,
+        total: 0,
+      };
     }
 
     const { data: meetings, error: meetingsError } = await supabase
@@ -366,6 +405,8 @@ export async function syncGeminiMeetingNotesAction() {
         (row) => !existingMeetingByMessage.has(row.external_message_id),
       ).length,
       matched: rows.filter((row) => Boolean(row.meeting_id)).length,
+      nextPageToken: batch.nextPageToken,
+      scanned: batch.scanned,
       success: true,
       total: rows.length,
     };
@@ -451,9 +492,7 @@ export async function askMeetingKnowledgeAction(
     }
 
     const outputFields =
-      input.scope === "meeting"
-        ? "id,meeting_id,notes_markdown,reviewed_notes_markdown,transcript_text,created_at"
-        : "id,meeting_id,notes_markdown,reviewed_notes_markdown,created_at";
+      "id,meeting_id,notes_markdown,reviewed_notes_markdown,transcript_text,created_at";
     const [outputsResult, geminiResult] = await Promise.all([
       supabase
         .from("meeting_outputs")
@@ -499,10 +538,7 @@ export async function askMeetingKnowledgeAction(
           (output.reviewed_notes_markdown as string | null) ??
           (output.notes_markdown as string),
       });
-      if (
-        input.scope === "meeting" &&
-        typeof output.transcript_text === "string"
-      ) {
+      if (typeof output.transcript_text === "string") {
         documents.push({
           meetingId: output.meeting_id as string,
           sourceId: `${output.id}:transcript`,

@@ -102,7 +102,7 @@ function scoreMeetingMatch(
     if (hours <= 8) score += 20;
     else if (hours <= 30) score += 12;
     else if (hours <= 72) score += 4;
-    else if (!exact && !contained) score = 0;
+    else score = 0;
   }
 
   return score;

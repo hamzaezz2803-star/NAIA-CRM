@@ -100,4 +100,22 @@ describe("Gemini meeting matching", () => {
       ),
     ).toBeUndefined();
   });
+
+  it("never links a recurring title outside the 72-hour safety window", () => {
+    expect(
+      matchGeminiNoteToMeeting(
+        {
+          occurredAt: "2026-08-06T15:15:23.000Z",
+          title: "Weekly product review",
+        },
+        [
+          {
+            id: "stale-recurring-meeting",
+            startsAt: "2026-02-06T15:00:00.000Z",
+            title: "Weekly product review",
+          },
+        ],
+      ),
+    ).toBeUndefined();
+  });
 });
