@@ -10,6 +10,8 @@ import {
 // Must match the cookie name checked by the sibling callback route. Route
 // files may only export HTTP handlers, hence the local constant.
 const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
+const GOOGLE_OAUTH_USER_INTENT = "user";
+const GOOGLE_OAUTH_MEETING_INTENT = "meeting-notes";
 
 // Secondary connect/reconnect flow, kept for users signed in via magic link.
 // The primary path captures Google tokens directly at "Sign in with Google".
@@ -49,17 +51,22 @@ export async function GET(request?: NextRequest) {
     ).join(" "),
   );
   googleAuthUrl.searchParams.set("access_type", "offline");
+  googleAuthUrl.searchParams.set("include_granted_scopes", "true");
   googleAuthUrl.searchParams.set("prompt", "consent");
   googleAuthUrl.searchParams.set("state", state);
 
   const response = NextResponse.redirect(googleAuthUrl.toString());
-  response.cookies.set(GOOGLE_OAUTH_STATE_COOKIE, state, {
-    httpOnly: true,
-    maxAge: 600,
-    path: "/api/integrations/google",
-    sameSite: "lax",
-    secure: process.env.NODE_ENV === "production",
-  });
+  response.cookies.set(
+    GOOGLE_OAUTH_STATE_COOKIE,
+    `${state}:${intent === "meeting-notes" ? GOOGLE_OAUTH_MEETING_INTENT : GOOGLE_OAUTH_USER_INTENT}`,
+    {
+      httpOnly: true,
+      maxAge: 600,
+      path: "/api/integrations/google",
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    },
+  );
 
   return response;
 }

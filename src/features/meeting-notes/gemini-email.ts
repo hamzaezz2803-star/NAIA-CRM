@@ -97,13 +97,12 @@ function scoreMeetingMatch(
   const meetingTime = meeting.startsAt
     ? new Date(meeting.startsAt).getTime()
     : Number.NaN;
-  if (Number.isFinite(noteTime) && Number.isFinite(meetingTime)) {
-    const hours = Math.abs(noteTime - meetingTime) / 3_600_000;
-    if (hours <= 8) score += 20;
-    else if (hours <= 30) score += 12;
-    else if (hours <= 72) score += 4;
-    else score = 0;
-  }
+  if (!Number.isFinite(noteTime) || !Number.isFinite(meetingTime)) return 0;
+  const hours = Math.abs(noteTime - meetingTime) / 3_600_000;
+  if (hours <= 8) score += 20;
+  else if (hours <= 30) score += 12;
+  else if (hours <= 72) score += 4;
+  else score = 0;
 
   return score;
 }

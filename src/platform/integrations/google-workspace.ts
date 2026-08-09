@@ -718,13 +718,21 @@ function isAuthenticatedGeminiSender(
     .map((header) => header.value?.replace(/\s+/g, " ").trim() ?? "")
     .find((value) => /^mx\.google\.com\s*;/iu.test(value));
 
-  return Boolean(
-    authenticationResult &&
-    /(?:^|[;\s])dkim=pass(?:[;\s]|$)/iu.test(authenticationResult) &&
-    /header\.(?:d|from|i)\s*=\s*@?google\.com(?:[;\s]|$)/iu.test(
-      authenticationResult,
-    ),
+  if (!authenticationResult) return false;
+  const authenticationClauses = authenticationResult
+    .split(";")
+    .map((clause) => clause.trim());
+  const alignedDkim = authenticationClauses.some(
+    (clause) =>
+      /^dkim=pass(?:\s|$)/iu.test(clause) &&
+      /header\.(?:d|i)\s*=\s*@?google\.com(?:\s|$)/iu.test(clause),
   );
+  const alignedDmarc = authenticationClauses.some(
+    (clause) =>
+      /^dmarc=pass(?:\s|$)/iu.test(clause) &&
+      /header\.from\s*=\s*google\.com(?:\s|$)/iu.test(clause),
+  );
+  return alignedDkim && alignedDmarc;
 }
 
 async function mapWithConcurrency<T, R>(

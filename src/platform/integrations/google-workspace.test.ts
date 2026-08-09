@@ -102,7 +102,7 @@ describe("Gemini meeting-note mailbox isolation", () => {
                 {
                   name: "Authentication-Results",
                   value:
-                    "mx.google.com; dkim=fail header.i=@google.com; dmarc=fail header.from=google.com",
+                    "mx.google.com; dkim=pass header.i=@attacker.example; dmarc=fail header.from=google.com",
                 },
                 { name: "Subject", value: 'Notes : "Projet Atlas"' },
                 // A later sender-controlled result must never override the
@@ -217,7 +217,8 @@ describe("Gemini meeting-note mailbox isolation", () => {
               { name: "From", value: "Gemini <gemini-notes@google.com>" },
               {
                 name: "Authentication-Results",
-                value: "mx.google.com; dkim=pass header.i=@google.com",
+                value:
+                  "mx.google.com; dkim=pass header.i=@google.com; dmarc=pass header.from=google.com",
               },
               { name: "Subject", value: 'Notes : "Projet Atlas"' },
             ],

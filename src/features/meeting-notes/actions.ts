@@ -36,6 +36,10 @@ import {
   matchGeminiNoteToMeeting,
   parseGeminiMeetingNoteMessage,
 } from "./gemini-email";
+import {
+  type MeetingKnowledgeOutputRow,
+  selectLatestMeetingOutputRows,
+} from "./knowledge";
 
 const queueInputSchema = z.object({
   meetingId: z.string().uuid(),
@@ -492,15 +496,14 @@ export async function askMeetingKnowledgeAction(
     }
 
     const outputFields =
-      "id,meeting_id,notes_markdown,reviewed_notes_markdown,transcript_text,created_at";
+      "id,meeting_id,version,notes_markdown,reviewed_notes_markdown,transcript_text,created_at";
     const [outputsResult, geminiResult] = await Promise.all([
       supabase
         .from("meeting_outputs")
         .select(outputFields)
         .eq("organization_id", organizationId)
         .in("meeting_id", meetingIds)
-        .order("created_at", { ascending: false })
-        .limit(input.scope === "meeting" ? 5 : 50),
+        .order("version", { ascending: false }),
       supabase
         .from("meeting_external_artifacts")
         .select("id,meeting_id,title,notes_markdown,document_text,occurred_at")
@@ -522,8 +525,10 @@ export async function askMeetingKnowledgeAction(
       ]),
     );
     const documents: MeetingKnowledgeDocument[] = [];
-    for (const rawOutput of outputsResult.data ?? []) {
-      const output = rawOutput as unknown as MeetingKnowledgeOutputRow;
+    const latestOutputs = selectLatestMeetingOutputRows(
+      (outputsResult.data ?? []) as unknown as MeetingKnowledgeOutputRow[],
+    );
+    for (const output of latestOutputs) {
       const meeting = meetingById.get(output.meeting_id as string);
       const label = knowledgeSourceLabel(
         meeting?.title ?? "Meeting",
@@ -1793,15 +1798,6 @@ type MeetingKnowledgeDocument = {
   sourceLabel: string;
   sourceType: MeetingKnowledgeAnswer["sources"][number]["sourceType"];
   text: string;
-};
-
-type MeetingKnowledgeOutputRow = {
-  created_at?: string;
-  id: string;
-  meeting_id: string;
-  notes_markdown: string;
-  reviewed_notes_markdown?: string | null;
-  transcript_text?: string | null;
 };
 
 function rankMeetingKnowledge(

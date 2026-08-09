@@ -33,6 +33,7 @@ describe("Google integration auth route", () => {
     const authUrl = new URL(location ?? "");
     const scopes = authUrl.searchParams.get("scope")?.split(" ") ?? [];
 
+    expect(authUrl.searchParams.get("include_granted_scopes")).toBe("true");
     expect(scopes).toEqual([
       "https://www.googleapis.com/auth/calendar.events",
       "https://www.googleapis.com/auth/calendar.freebusy",
@@ -95,7 +96,23 @@ describe("Google integration auth route", () => {
     const stateCookie = response.cookies.get("google_oauth_state");
 
     expect(state).toBeTruthy();
-    expect(stateCookie?.value).toBe(state);
+    expect(stateCookie?.value).toBe(`${state}:user`);
     expect(stateCookie?.httpOnly).toBe(true);
+  });
+
+  it("binds the founder intent to the state cookie", async () => {
+    vi.stubEnv("GOOGLE_CLIENT_ID", "google-client-id");
+    const response = await GET(
+      new NextRequest(
+        "https://os.qarizmi.com/api/integrations/google/auth?intent=meeting-notes",
+      ),
+    );
+    const state = new URL(
+      response.headers.get("location") ?? "",
+    ).searchParams.get("state");
+
+    expect(response.cookies.get("google_oauth_state")?.value).toBe(
+      `${state}:meeting-notes`,
+    );
   });
 });

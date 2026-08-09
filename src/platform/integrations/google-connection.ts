@@ -2,7 +2,12 @@ import "server-only";
 
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 
-import { GOOGLE_USER_SCOPES } from "./google-workspace-scopes";
+import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
+
+import {
+  GOOGLE_MEETING_NOTE_SCOPE,
+  GOOGLE_USER_SCOPES,
+} from "./google-workspace-scopes";
 
 // Persists the Google provider tokens returned by Supabase Auth at sign-in as
 // the user's own integration connection. Supabase does not store Google
@@ -20,7 +25,7 @@ export async function saveGoogleConnectionFromLogin({
 }): Promise<{ error?: string; saved: boolean }> {
   const { data: membership } = await supabase
     .from("organization_memberships")
-    .select("organization_id")
+    .select("organization_id,role")
     .eq("profile_id", user.id)
     .limit(1)
     .maybeSingle();
@@ -29,24 +34,40 @@ export async function saveGoogleConnectionFromLogin({
     return { error: "No organization membership for user.", saved: false };
   }
 
+  const { data: existing } = await supabase
+    .from("integration_connections")
+    .select("encrypted_token_reference,scopes")
+    .eq("organization_id", membership.organization_id)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", user.id)
+    .maybeSingle();
+
   // Google only returns a refresh token on explicit consent. Keep the one we
   // already have when this sign-in did not mint a new one.
-  let effectiveRefreshToken = refreshToken ?? null;
-  if (!effectiveRefreshToken) {
-    const { data: existing } = await supabase
-      .from("integration_connections")
-      .select("encrypted_token_reference")
-      .eq("organization_id", membership.organization_id)
-      .eq("provider", "google")
-      .eq("connected_by_profile_id", user.id)
-      .maybeSingle();
-
-    effectiveRefreshToken = parseRefreshToken(
-      existing?.encrypted_token_reference ?? null,
-    );
-  }
+  const effectiveRefreshToken =
+    refreshToken ??
+    parseRefreshToken(existing?.encrypted_token_reference ?? null);
 
   const grantedScopes = await resolveGrantedScopes(accessToken);
+  const existingScopes = Array.isArray(existing?.scopes)
+    ? (existing.scopes as string[])
+    : [];
+  const mayKeepExistingMeetGrant =
+    membership.role === "owner" &&
+    canUseMeetingNotesEmail(user.email) &&
+    existingScopes.includes(GOOGLE_MEETING_NOTE_SCOPE);
+  // The ordinary Supabase login never creates a new Drive grant. It may only
+  // retain the narrow Meet grant that a founder previously obtained through
+  // the state-bound incremental flow. Broad Drive scopes are never persisted.
+  const persistedScopes = [
+    ...new Set(
+      grantedScopes.filter(
+        (scope) =>
+          !scope.startsWith("https://www.googleapis.com/auth/drive") ||
+          (scope === GOOGLE_MEETING_NOTE_SCOPE && mayKeepExistingMeetGrant),
+      ),
+    ),
+  ];
 
   const { error } = await supabase.from("integration_connections").upsert(
     {
@@ -60,7 +81,7 @@ export async function saveGoogleConnectionFromLogin({
       external_account_label: user.email ?? "Google Workspace Connection",
       organization_id: membership.organization_id,
       provider: "google",
-      scopes: grantedScopes,
+      scopes: persistedScopes,
       status: "connected",
       updated_at: new Date().toISOString(),
     },

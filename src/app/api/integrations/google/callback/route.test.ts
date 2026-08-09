@@ -18,15 +18,19 @@ import { GET } from "./route";
 
 type ClientOptions = {
   databaseError?: { message: string } | null;
-  membership?: { organization_id: string } | null;
+  existingConnection?: {
+    encrypted_token_reference: string | null;
+    scopes: string[] | null;
+  } | null;
+  membership?: { organization_id: string; role: string } | null;
   membershipError?: { message: string } | null;
-  user?: { id: string } | null;
+  user?: { email?: string; id: string } | null;
   userError?: { message: string } | null;
 };
 
 function createRequest({
   code = "google-code",
-  cookieState = "expected-state",
+  cookieState = "expected-state:user",
   queryState = "expected-state",
 }: {
   code?: string;
@@ -43,9 +47,10 @@ function createRequest({
 
 function createClient({
   databaseError = null,
-  membership = { organization_id: "org-1" },
+  existingConnection = null,
+  membership = { organization_id: "org-1", role: "owner" },
   membershipError = null,
-  user = { id: "user-1" },
+  user = { email: "ali@qarizmi.com", id: "user-1" },
   userError = null,
 }: ClientOptions = {}) {
   const upsert = vi.fn().mockResolvedValue({ error: databaseError });
@@ -59,12 +64,23 @@ function createClient({
   const membershipEq = vi.fn().mockReturnValue({ limit: membershipLimit });
   const membershipSelect = vi.fn().mockReturnValue({ eq: membershipEq });
 
+  const connectionQuery: Record<string, unknown> = {
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: existingConnection,
+      error: null,
+    }),
+    upsert,
+  };
+  for (const method of ["eq", "select"]) {
+    connectionQuery[method] = vi.fn(() => connectionQuery);
+  }
+
   const from = vi.fn((table: string) => {
     if (table === "organization_memberships") {
       return { select: membershipSelect };
     }
     if (table === "integration_connections") {
-      return { upsert };
+      return connectionQuery;
     }
     throw new Error(`Unexpected table: ${table}`);
   });
@@ -174,6 +190,7 @@ describe("GET /api/integrations/google/callback", () => {
     );
     expect(html).toContain("GOOGLE_AUTH_SUCCESS");
     expect(html).toContain("ali@qarizmi.com");
+    expect(html).toContain("/integrations");
     expect(response.cookies.get("google_oauth_state")?.value).toBe("");
   });
 
@@ -205,6 +222,112 @@ describe("GET /api/integrations/google/callback", () => {
           "https://www.googleapis.com/auth/gmail.readonly",
           "https://www.googleapis.com/auth/gmail.send",
         ],
+      }),
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    );
+  });
+
+  it("revalidates founder access before exchanging a meeting-notes code", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createClient({
+        membership: { organization_id: "org-1", role: "member" },
+        user: { email: "stagiaire@qarizmi.com", id: "user-2" },
+      }),
+    );
+
+    const response = await GET(
+      createRequest({ cookieState: "expected-state:meeting-notes" }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts the narrow Meet scope only for a bound founder intent", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(
+      createRequest({ cookieState: "expected-state:meeting-notes" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.meet.readonly",
+        ],
+      }),
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    );
+    expect(await response.text()).toContain("/meetings");
+  });
+
+  it("rejects a Meet scope added to an ordinary OAuth URL", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(403);
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects every broader Drive scope even for a founder intent", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: "https://www.googleapis.com/auth/drive.readonly",
+    });
+
+    const response = await GET(
+      createRequest({ cookieState: "expected-state:meeting-notes" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("preserves an existing founder Meet grant on an ordinary reconnect", async () => {
+    const client = createClient({
+      existingConnection: {
+        encrypted_token_reference: JSON.stringify({
+          refresh_token: "existing-refresh-token",
+        }),
+        scopes: ["https://www.googleapis.com/auth/drive.meet.readonly"],
+      },
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: expect.arrayContaining([
+          "https://www.googleapis.com/auth/drive.meet.readonly",
+        ]),
       }),
       { onConflict: "organization_id,provider,connected_by_profile_id" },
     );

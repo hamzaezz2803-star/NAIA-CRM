@@ -118,4 +118,30 @@ describe("Gemini meeting matching", () => {
       ),
     ).toBeUndefined();
   });
+
+  it("leaves an exact title unassigned when either timestamp is missing", () => {
+    expect(
+      matchGeminiNoteToMeeting(
+        {
+          occurredAt: "2026-08-06T15:15:23.000Z",
+          title: "Weekly product review",
+        },
+        [
+          {
+            id: "undated-meeting",
+            title: "Weekly product review",
+          },
+        ],
+      ),
+    ).toBeUndefined();
+    expect(
+      matchGeminiNoteToMeeting({ title: "Weekly product review" }, [
+        {
+          id: "dated-meeting",
+          startsAt: "2026-08-06T15:00:00.000Z",
+          title: "Weekly product review",
+        },
+      ]),
+    ).toBeUndefined();
+  });
 });
