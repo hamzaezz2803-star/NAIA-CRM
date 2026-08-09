@@ -8,8 +8,10 @@ const mocks = vi.hoisted(() => ({
   fetchMeetingIntelligenceAction: vi.fn(),
   fetchMeetingTranscriptAction: vi.fn(),
   queueMeetingProcessingAction: vi.fn(),
+  registerMeetingSupportAction: vi.fn(),
   retryMeetingDriveArchiveAction: vi.fn(),
   retryMeetingProcessingAction: vi.fn(),
+  saveMeetingCaptureDraftAction: vi.fn(),
   remove: vi.fn(),
   storageFrom: vi.fn(),
   upload: vi.fn(),
@@ -20,8 +22,10 @@ vi.mock("./actions", () => ({
   fetchMeetingIntelligenceAction: mocks.fetchMeetingIntelligenceAction,
   fetchMeetingTranscriptAction: mocks.fetchMeetingTranscriptAction,
   queueMeetingProcessingAction: mocks.queueMeetingProcessingAction,
+  registerMeetingSupportAction: mocks.registerMeetingSupportAction,
   retryMeetingDriveArchiveAction: mocks.retryMeetingDriveArchiveAction,
   retryMeetingProcessingAction: mocks.retryMeetingProcessingAction,
+  saveMeetingCaptureDraftAction: mocks.saveMeetingCaptureDraftAction,
 }));
 
 vi.mock("@/platform/auth/supabase-client", () => ({
@@ -40,10 +44,12 @@ const baseState: MeetingIntelligenceState = {
   configured: true,
   meetings: [
     {
+      attendees: [],
       companyName: "HPS",
       contactName: "Abdeslam Alaoui",
       id: meetingId,
       leadId: "55555555-5555-4555-8555-555555555555",
+      liveNotesMarkdown: "",
       organizationId,
       startsAt: "2026-07-18T10:00:00.000Z",
       status: "scheduled",
@@ -56,6 +62,11 @@ const baseState: MeetingIntelligenceState = {
 describe("MeetingIntelligenceWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    try {
+      window.localStorage.clear();
+    } catch {
+      // Node can run jsdom without a persisted localStorage file.
+    }
     mocks.upload.mockResolvedValue({ error: null });
     mocks.remove.mockResolvedValue({ error: null });
     mocks.storageFrom.mockReturnValue({
@@ -63,6 +74,8 @@ describe("MeetingIntelligenceWorkspace", () => {
       upload: mocks.upload,
     });
     mocks.queueMeetingProcessingAction.mockResolvedValue({ success: true });
+    mocks.registerMeetingSupportAction.mockResolvedValue({ success: true });
+    mocks.saveMeetingCaptureDraftAction.mockResolvedValue({ success: true });
     mocks.fetchMeetingTranscriptAction.mockResolvedValue({
       success: true,
       transcriptSrt:
@@ -88,8 +101,9 @@ describe("MeetingIntelligenceWorkspace", () => {
       "meeting.m4a",
       { type: "audio/mp4" },
     );
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     expect(input).not.toBeNull();
 
     fireEvent.change(input as HTMLInputElement, {
@@ -136,7 +150,7 @@ describe("MeetingIntelligenceWorkspace", () => {
     );
   });
 
-  it("removes uploaded chunks when a later chunk fails", async () => {
+  it("preserves uploaded chunks when a later chunk fails", async () => {
     mocks.upload
       .mockResolvedValueOnce({ error: null })
       .mockResolvedValueOnce({ error: { message: "network down" } });
@@ -147,19 +161,18 @@ describe("MeetingIntelligenceWorkspace", () => {
       "meeting.m4a",
       { type: "audio/mp4" },
     );
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
 
     await waitFor(() => {
-      expect(mocks.remove).toHaveBeenCalledWith([
-        `${organizationId}/${meetingId}/${sessionId}/chunk-0000.m4a`,
-      ]);
+      expect(screen.getByText(/Envoi audio interrompu/)).toBeInTheDocument();
     });
     expect(mocks.queueMeetingProcessingAction).not.toHaveBeenCalled();
-    expect(screen.getByText(/Envoi audio interrompu/)).toBeInTheDocument();
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it("does not upload a chunk when hashing fails", async () => {
@@ -171,8 +184,9 @@ describe("MeetingIntelligenceWorkspace", () => {
     const audio = new File([new Uint8Array([1])], "meeting.m4a", {
       type: "audio/mp4",
     });
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
@@ -194,8 +208,9 @@ describe("MeetingIntelligenceWorkspace", () => {
     const audio = new File([new Uint8Array([1])], "meeting.m4a", {
       type: "audio/mp4",
     });
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
@@ -209,7 +224,7 @@ describe("MeetingIntelligenceWorkspace", () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
-  it("removes uploaded chunks after an explicit pre-commit queue rejection", async () => {
+  it("preserves uploaded chunks after an explicit pre-commit queue rejection", async () => {
     mocks.queueMeetingProcessingAction.mockResolvedValueOnce({
       discardUploadedAudio: true,
       error: "Un traitement est déjà en cours pour ce meeting.",
@@ -220,18 +235,123 @@ describe("MeetingIntelligenceWorkspace", () => {
     const audio = new File([new Uint8Array([1])], "meeting.m4a", {
       type: "audio/mp4",
     });
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
 
     await waitFor(() => {
-      expect(mocks.remove).toHaveBeenCalledWith([
-        `${organizationId}/${meetingId}/${sessionId}/chunk-0000.m4a`,
-      ]);
+      expect(screen.getByText(/déjà en cours/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/déjà en cours/)).toBeInTheDocument();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit informed consent before recording", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Démarrer l'enregistrement" }),
+    );
+
+    expect(
+      await screen.findByText(
+        /^Confirme que les participants ont été informés/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("prefills participants and exposes the matched Google Meet safely", async () => {
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            attendees: [
+              { email: "ali@qarizmi.com", self: true },
+              {
+                displayName: "Sara Benali",
+                email: "sara@hps.com",
+                responseStatus: "accepted",
+              },
+            ],
+            conferenceUrl: "https://meet.google.com/abc-defg-hij",
+            htmlLink: "https://calendar.google.com/event?eid=private",
+            id: "calendar-event-1",
+            start: "2026-07-18T10:00:00.000Z",
+            title: "Meeting HPS",
+          },
+        ]}
+        initialState={baseState}
+      />,
+    );
+
+    expect(screen.getByLabelText("Participants")).toHaveValue(
+      "Sara Benali <sara@hps.com>",
+    );
+    expect(
+      screen.getByRole("link", { name: "Rejoindre Meet" }),
+    ).toHaveAttribute("href", "https://meet.google.com/abc-defg-hij");
+    expect(
+      screen.getByText(/aucun enregistrement automatique/i),
+    ).toBeInTheDocument();
+  });
+
+  it("autosaves live notes and participants to the founder-only draft", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.change(screen.getByLabelText("Participants"), {
+      target: { value: "Sara Benali, sara@hps.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/Notes en direct/), {
+      target: { value: "Le client confirme un pilote en septembre." },
+    });
+
+    await waitFor(
+      () => {
+        expect(mocks.saveMeetingCaptureDraftAction).toHaveBeenLastCalledWith({
+          attendees: [{ name: "Sara Benali" }, { email: "sara@hps.com" }],
+          consentConfirmed: false,
+          liveNotesMarkdown: "Le client confirme un pilote en septembre.",
+          meetingId,
+          title: "Meeting HPS",
+        });
+      },
+      { timeout: 2_500 },
+    );
+    expect(screen.getByText("Sauvegardé")).toBeInTheDocument();
+  });
+
+  it("registers an optional PDF support without deleting the uploaded file", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    const support = new File([new Uint8Array([1, 2, 3])], "pitch-hps.pdf", {
+      type: "application/pdf",
+    });
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="application/pdf"]',
+    );
+    fireEvent.change(input as HTMLInputElement, {
+      target: { files: [support] },
+    });
+
+    await waitFor(() => {
+      expect(mocks.registerMeetingSupportAction).toHaveBeenCalledWith({
+        meetingId,
+        support: expect.objectContaining({
+          chunks: [
+            expect.objectContaining({
+              path: `${organizationId}/${meetingId}/${sessionId}/chunk-0000.pdf`,
+              sizeBytes: 3,
+            }),
+          ],
+          mimeType: "application/pdf",
+          originalFileName: "pitch-hps.pdf",
+          totalBytes: 3,
+        }),
+      });
+    });
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it("submits edited notes with only the recommendations selected by the founder", async () => {

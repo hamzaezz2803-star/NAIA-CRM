@@ -3,8 +3,8 @@
 ## Product flow
 
 1. A CRM lead in `meeting-booked` is synchronized into the first-class `meetings` table.
-2. Ali or Nabil records the discussion in Qarizmi OS or imports an existing audio file.
-3. The browser uploads small chunks directly to the private Supabase Storage bucket `meeting-recordings`; audio never crosses a Vercel request body.
+2. Ali or Nabil opens the one-step capture: Calendar/Meet can prefill the title and attendees, but never starts a recording automatically. The founder confirms informed consent, takes live notes, and may attach one PDF/TXT/MD support.
+3. During capture, the browser autosaves the draft to the founder-only meeting row and stores one-second audio chunks in IndexedDB for crash recovery. The final button uploads small chunks directly to the private Supabase Storage bucket `meeting-recordings`; audio never crosses a Vercel request body.
 4. The Mac companion claims the queued job over outbound HTTPS, runs the existing local Whisper engine, then uses Claude CLI under the founders' Claude Max account.
 5. The transcript is the source of truth. The pitch deck and CRM history are context only and may never override what was actually said.
 6. Notes, transcript, and structured analysis are stored in the cofounders-only `02_Meeting Notes` Drive folder and shown in Qarizmi OS for review.
@@ -12,7 +12,10 @@
 
 ## One-time production setup
 
-Apply `supabase/migrations/20260717090000_meeting_intelligence.sql` to the production Supabase project. It creates the private tables, RLS policies, durable job claim, CRM meeting synchronization, and private recording bucket.
+Apply these migrations to the production Supabase project, in order:
+
+- `supabase/migrations/20260717090000_meeting_intelligence.sql` creates the private tables, RLS policies, durable job claim, CRM meeting synchronization, and private recording bucket.
+- `supabase/migrations/20260809231500_meeting_one_step_capture.sql` adds bounded live notes, informed-consent/capture timestamps, and idempotent private support registration. It adds no broader RLS policy.
 
 Generate a shared secret locally:
 
@@ -52,12 +55,15 @@ MEETING_NOTES_WHISPER_BACKEND=mlx
 
 The Mac must be awake with Claude CLI authenticated while processing. If it is offline, jobs stay safely queued and the web cockpit says that it is waiting for the companion. There is no inbound port, public tunnel, service-account credential, or Supabase key on the Mac.
 
-The companion refuses an API-backed Claude mode unless `MEETING_NOTES_COMPANION_ALLOW_API=true` is set deliberately. If delivery fails after local processing, the result stays on the Mac and the next claim retries only the delivery. Failed analyses and delayed Drive archives can also be retried from the cockpit without uploading the audio again.
+The companion refuses an API-backed Claude mode unless both `MEETING_NOTES_CLAUDE_MODE=api` and `MEETING_NOTES_COMPANION_ALLOW_API=true` are set deliberately. If delivery fails after local processing, the result stays on the Mac and the next claim retries only the delivery. Failed analyses and delayed Drive archives can also be retried from the cockpit without uploading the audio again.
 
 ## Data boundaries
 
 - Tables, recording objects, transcripts, notes, and outputs are restricted to `ali@qarizmi.com` and `nabil@qarizmi.com` through RLS plus server-side checks.
 - Raw audio stays in private Supabase Storage in V1. Every chunk is ordered, size-bounded, and verified with SHA-256 before Whisper reads it. Human-readable outputs are archived in the private cofounder Drive.
+- Browser crash recovery stays on the Mac in IndexedDB. A recoverable recording is surfaced to the founder before a new capture and is marked processed only after NAIA acknowledges the queued job. No meeting file is deleted automatically.
+- Live notes and the explicit informed-consent timestamp remain on the founder-only `meetings` row. Google Calendar attendees are a prefill aid; Calendar/Meet access does not imply consent and cannot auto-start the microphone.
+- An uploaded support is limited to one PDF/TXT/MD file of 25 MB, stored in the same private bucket and hash-checked by the companion. Export PPTX/Keynote slides to text-bearing PDF first.
 - Pitch slide text is fetched only while a job is claimed and sent to the local Claude process as context. It is not copied into general CRM rows.
 - A selected `crm-note` or `proposal-input` recommendation becomes visible to normal CRM members. The review UI makes that boundary explicit before approval.
 - No recommendation is selected automatically. Every effect, proposed CRM status, due date, and transcript evidence is shown before validation. An action without a real matching timestamp and quote in the transcript is rejected. A durable execution record prevents duplicate writes after retries or concurrent clicks.

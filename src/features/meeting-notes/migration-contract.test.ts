@@ -10,6 +10,13 @@ const migration = readFileSync(
   ),
   "utf8",
 );
+const oneStepCaptureMigration = readFileSync(
+  path.join(
+    process.cwd(),
+    "supabase/migrations/20260809231500_meeting_one_step_capture.sql",
+  ),
+  "utf8",
+);
 
 describe("meeting intelligence migration contract", () => {
   it("queues recording assets, jobs, and meeting state atomically", () => {
@@ -49,5 +56,22 @@ describe("meeting intelligence migration contract", () => {
     expect(migration).not.toContain(
       'create policy "cofounders can manage meetings"',
     );
+  });
+
+  it("adds bounded founder notes and consent metadata without new policies", () => {
+    expect(oneStepCaptureMigration).toContain(
+      "live_notes_markdown text not null default ''",
+    );
+    expect(oneStepCaptureMigration).toContain(
+      "consent_confirmed_at timestamptz",
+    );
+    expect(oneStepCaptureMigration).toContain(
+      "check (char_length(live_notes_markdown) <= 500000)",
+    );
+    expect(oneStepCaptureMigration).toContain(
+      "meeting_assets_storage_path_unique_idx",
+    );
+    expect(oneStepCaptureMigration).not.toContain("create policy");
+    expect(oneStepCaptureMigration).not.toContain("delete from");
   });
 });

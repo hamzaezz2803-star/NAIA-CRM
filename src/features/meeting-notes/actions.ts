@@ -13,6 +13,7 @@ import { createGoogleCalendarReminder } from "@/platform/integrations/google-wor
 
 import { requireMeetingNotesAccess } from "./access";
 import {
+  MAX_SUPPORT_BYTES,
   MEETING_RECORDINGS_BUCKET,
   type MeetingIntelligenceState,
   type MeetingJobSummary,
@@ -20,6 +21,7 @@ import {
   type MeetingStructuredOutput,
   type MeetingTranscript,
   type MeetingWorkspace,
+  meetingAttendeeSchema,
   meetingStructuredOutputSchema,
   recordingManifestSchema,
 } from "./contracts";
@@ -28,6 +30,20 @@ import { archiveMeetingOutput } from "./drive";
 const queueInputSchema = z.object({
   meetingId: z.string().uuid(),
   recording: recordingManifestSchema,
+});
+
+const saveCaptureDraftSchema = z.object({
+  attendees: z.array(meetingAttendeeSchema).max(40),
+  consentConfirmed: z.boolean().optional(),
+  liveNotesMarkdown: z.string().max(500_000),
+  meetingId: z.string().uuid(),
+  recordingState: z.enum(["idle", "recording", "stopped"]).optional(),
+  title: z.string().trim().min(1).max(300),
+});
+
+const registerSupportSchema = z.object({
+  meetingId: z.string().uuid(),
+  support: recordingManifestSchema,
 });
 
 const approvalInputSchema = z.object({
@@ -141,23 +157,32 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
     const shaped = (meetings ?? []).map((row) => {
       const company = firstRelation(row.company) as { name?: string } | null;
       const contact = firstRelation(row.contact) as { name?: string } | null;
+      const attendees = z
+        .array(meetingAttendeeSchema)
+        .safeParse(row.attendees ?? []);
       const output = latestOutputByMeeting.get(row.id as string);
       if (output && row.drive_folder_url) {
         output.driveFolderUrl = row.drive_folder_url as string;
       }
 
       return {
+        attendees: attendees.success ? attendees.data : [],
+        calendarEventId: row.calendar_event_id ?? undefined,
+        calendarEventUrl: row.calendar_event_url ?? undefined,
         companyName: company?.name,
+        consentConfirmedAt: row.consent_confirmed_at ?? undefined,
         contactName: contact?.name,
         id: row.id as string,
         job: latestJobByMeeting.get(row.id as string),
         leadId: row.lead_id ?? undefined,
+        liveNotesMarkdown: (row.live_notes_markdown as string | null) ?? "",
         organizationId,
         output,
         startsAt: row.starts_at ?? undefined,
         status: row.status as string,
         supportFileName: row.support_file_name ?? undefined,
         title: row.title as string,
+        updatedAt: row.updated_at ?? undefined,
       } satisfies MeetingWorkspace;
     });
 
@@ -207,6 +232,139 @@ export async function fetchMeetingTranscriptAction(
   }
 }
 
+export async function saveMeetingCaptureDraftAction(rawInput: unknown) {
+  try {
+    const input = saveCaptureDraftSchema.parse(rawInput);
+    const { organizationId, supabase } = await requireMeetingNotesAccess();
+    const now = new Date().toISOString();
+    const updates: Record<string, unknown> = {
+      attendees: input.attendees,
+      live_notes_markdown: input.liveNotesMarkdown,
+      title: input.title,
+      updated_at: now,
+    };
+    if (input.consentConfirmed) updates.consent_confirmed_at = now;
+    if (input.recordingState === "recording") {
+      updates.recording_started_at = now;
+      updates.recording_ended_at = null;
+      updates.status = "recording";
+    } else if (input.recordingState === "stopped") {
+      updates.recording_ended_at = now;
+      updates.status = "uploaded";
+    }
+
+    const { data, error } = await supabase
+      .from("meetings")
+      .update(updates)
+      .eq("id", input.meetingId)
+      .eq("organization_id", organizationId)
+      .select("id")
+      .maybeSingle();
+    if (error) throw error;
+    if (!data) throw new Error("Meeting introuvable.");
+    return { savedAt: now, success: true };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Impossible d'enregistrer le brouillon du meeting.",
+      success: false,
+    };
+  }
+}
+
+export async function registerMeetingSupportAction(rawInput: unknown) {
+  try {
+    const input = registerSupportSchema.parse(rawInput);
+    if (
+      input.support.chunks.length !== 1 ||
+      input.support.totalBytes > MAX_SUPPORT_BYTES
+    ) {
+      throw new Error(
+        "Le support doit être un fichier unique de 25 Mo maximum.",
+      );
+    }
+    if (!/\.(md|pdf|txt)$/i.test(input.support.originalFileName)) {
+      throw new Error("Le support doit être un PDF, TXT ou Markdown.");
+    }
+
+    const { organizationId, supabase, user } =
+      await requireMeetingNotesAccess();
+    const { data: meeting, error: meetingError } = await supabase
+      .from("meetings")
+      .select("id")
+      .eq("id", input.meetingId)
+      .eq("organization_id", organizationId)
+      .single();
+    if (meetingError || !meeting) throw new Error("Meeting introuvable.");
+
+    const chunk = input.support.chunks[0];
+    const expectedPrefix = `${organizationId}/${input.meetingId}/`;
+    if (!chunk.path.startsWith(expectedPrefix)) {
+      throw new Error("Chemin du support invalide.");
+    }
+    const folder = chunk.path.split("/").slice(0, -1).join("/");
+    const { data: storageObjects, error: storageError } = await supabase.storage
+      .from(MEETING_RECORDINGS_BUCKET)
+      .list(folder, { limit: 5 });
+    if (storageError) throw storageError;
+    const fileName = chunk.path.split("/").at(-1);
+    if (!storageObjects?.some((entry) => entry.name === fileName)) {
+      throw new Error(
+        "Le support n'est pas encore disponible dans le stockage privé.",
+      );
+    }
+
+    const { data: existing, error: existingError } = await supabase
+      .from("meeting_assets")
+      .select("id")
+      .eq("organization_id", organizationId)
+      .eq("meeting_id", input.meetingId)
+      .eq("provider", "supabase-storage")
+      .eq("storage_path", chunk.path)
+      .maybeSingle();
+    if (existingError) throw existingError;
+
+    if (!existing) {
+      const { error: insertError } = await supabase
+        .from("meeting_assets")
+        .insert({
+          created_by_profile_id: user.id,
+          display_name: input.support.originalFileName,
+          kind: "support",
+          meeting_id: input.meetingId,
+          metadata: { manifest: input.support },
+          mime_type: input.support.mimeType,
+          organization_id: organizationId,
+          provider: "supabase-storage",
+          size_bytes: input.support.totalBytes,
+          storage_path: chunk.path,
+        });
+      if (insertError && insertError.code !== "23505") throw insertError;
+    }
+
+    const { error: updateError } = await supabase
+      .from("meetings")
+      .update({
+        support_file_name: input.support.originalFileName,
+        updated_at: new Date().toISOString(),
+      })
+      .eq("id", input.meetingId)
+      .eq("organization_id", organizationId);
+    if (updateError) throw updateError;
+    return { success: true };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Impossible d'attacher le support au meeting.",
+      success: false,
+    };
+  }
+}
+
 export async function queueMeetingProcessingAction(
   meetingId: string,
   rawRecording: unknown,
@@ -225,7 +383,6 @@ export async function queueMeetingProcessingAction(
       .single();
     if (meetingError || !meeting) {
       return {
-        discardUploadedAudio: true,
         error: "Meeting introuvable.",
         success: false,
       };
@@ -238,7 +395,6 @@ export async function queueMeetingProcessingAction(
       )
     ) {
       return {
-        discardUploadedAudio: true,
         error: "Chemin d'upload invalide.",
         success: false,
       };
@@ -260,7 +416,6 @@ export async function queueMeetingProcessingAction(
       )
     ) {
       return {
-        discardUploadedAudio: true,
         error: "Certains morceaux audio ne sont pas encore disponibles.",
         success: false,
       };
@@ -283,7 +438,6 @@ export async function queueMeetingProcessingAction(
     if (activeJobError) throw activeJobError;
     if (activeJob) {
       return {
-        discardUploadedAudio: true,
         error: "Un traitement est déjà en cours pour ce meeting.",
         jobId: activeJob.id,
         success: false,
@@ -343,12 +497,9 @@ export async function queueMeetingProcessingAction(
         }
       }
 
-      await supabase.storage
-        .from(MEETING_RECORDINGS_BUCKET)
-        .remove(paths)
-        .catch(() => undefined);
+      // Preserve every uploaded chunk. A founder can retry the queue safely,
+      // and no background path deletes meeting material without approval.
       return {
-        discardUploadedAudio: true,
         error: getMeetingNotesErrorMessage(
           queueFailure,
           "Impossible de lancer le traitement.",
@@ -368,7 +519,6 @@ export async function queueMeetingProcessingAction(
     }
   } catch (error) {
     return {
-      discardUploadedAudio: true,
       error:
         error instanceof Error
           ? error.message

@@ -31,11 +31,22 @@ type MeetingRow = {
   contact_id?: string | null;
   id: string;
   lead_id?: string | null;
+  live_notes_markdown?: string | null;
   organization_id: string;
   starts_at?: string | null;
   support_drive_file_id?: string | null;
   support_file_name?: string | null;
   title: string;
+};
+
+type ClaimedMeetingSupport = MeetingSupportContext & {
+  file?: {
+    mimeType: string;
+    name: string;
+    sha256: string;
+    signedUrl: string;
+    sizeBytes: number;
+  };
 };
 
 export class MeetingJobLeaseError extends Error {
@@ -64,6 +75,7 @@ export async function claimNextMeetingJob(workerId: string) {
     const [
       { data: meeting, error: meetingError },
       { data: asset, error: assetError },
+      { data: uploadedSupport, error: uploadedSupportError },
     ] = await Promise.all([
       supabase
         .from("meetings")
@@ -77,9 +89,20 @@ export async function claimNextMeetingJob(workerId: string) {
         .eq("id", job.audio_asset_id)
         .eq("organization_id", job.organization_id)
         .single(),
+      supabase
+        .from("meeting_assets")
+        .select("metadata, mime_type, display_name, storage_path")
+        .eq("meeting_id", job.meeting_id)
+        .eq("organization_id", job.organization_id)
+        .eq("kind", "support")
+        .eq("provider", "supabase-storage")
+        .order("created_at", { ascending: false })
+        .limit(1)
+        .maybeSingle(),
     ]);
     if (meetingError) throw meetingError;
     if (assetError) throw assetError;
+    if (uploadedSupportError) throw uploadedSupportError;
 
     if (!job.lease_token) {
       throw new Error("Le job réclamé n'a pas de jeton de bail.");
@@ -111,21 +134,55 @@ export async function claimNextMeetingJob(workerId: string) {
     });
 
     const context = await loadMeetingContext(supabase, meeting as MeetingRow);
-    const support: MeetingSupportContext = context.companyName
-      ? await loadMeetingSupportContext({
-          companyName: context.companyName,
-          preferredFileId: meeting.support_drive_file_id,
-          preferredFileName: meeting.support_file_name,
-        }).catch((error: unknown) => ({
-          warning:
-            error instanceof Error
-              ? `Support non chargé: ${error.message}`
-              : "Support non chargé.",
-        }))
-      : {
-          warning:
-            "Support non chargé: renseigne d'abord l'entreprise du lead CRM.",
-        };
+    let support: ClaimedMeetingSupport;
+    if (uploadedSupport) {
+      const uploadedManifest = recordingManifestSchema.parse(
+        (uploadedSupport.metadata as { manifest?: unknown } | null)?.manifest,
+      );
+      if (
+        uploadedManifest.chunks.length !== 1 ||
+        !uploadedManifest.chunks[0].path.startsWith(expectedPrefix)
+      ) {
+        throw new Error("Le manifeste du support meeting est invalide.");
+      }
+      const supportChunk = uploadedManifest.chunks[0];
+      const { data: signedSupport, error: signedSupportError } =
+        await supabase.storage
+          .from(MEETING_RECORDINGS_BUCKET)
+          .createSignedUrl(supportChunk.path, 3600);
+      if (signedSupportError || !signedSupport?.signedUrl) {
+        throw (
+          signedSupportError ??
+          new Error("Impossible de signer le support meeting.")
+        );
+      }
+      support = {
+        file: {
+          mimeType: uploadedManifest.mimeType,
+          name: uploadedManifest.originalFileName,
+          sha256: supportChunk.sha256,
+          signedUrl: signedSupport.signedUrl,
+          sizeBytes: supportChunk.sizeBytes,
+        },
+        fileName: uploadedManifest.originalFileName,
+      };
+    } else {
+      support = context.companyName
+        ? await loadMeetingSupportContext({
+            companyName: context.companyName,
+            preferredFileId: meeting.support_drive_file_id,
+            preferredFileName: meeting.support_file_name,
+          }).catch((error: unknown) => ({
+            warning:
+              error instanceof Error
+                ? `Support non chargé: ${error.message}`
+                : "Support non chargé.",
+          }))
+        : {
+            warning:
+              "Support non chargé: renseigne d'abord l'entreprise du lead CRM.",
+          };
+    }
 
     if (support.fileId) {
       await Promise.all([
@@ -160,6 +217,7 @@ export async function claimNextMeetingJob(workerId: string) {
         companyName: context.companyName,
         contactName: context.contactName,
         crmContext: context.crmContext,
+        liveNotesMarkdown: meeting.live_notes_markdown ?? "",
         startsAt: meeting.starts_at ?? undefined,
         title: meeting.title,
       },
@@ -167,6 +225,7 @@ export async function claimNextMeetingJob(workerId: string) {
       leaseToken: job.lease_token,
       meetingId: job.meeting_id,
       support: {
+        file: support.file,
         fileName: support.fileName,
         slideText: support.slideText,
         warning: support.warning,

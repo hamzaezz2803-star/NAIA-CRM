@@ -3,6 +3,14 @@ import { z } from "zod";
 export const MEETING_RECORDINGS_BUCKET = "meeting-recordings";
 export const MAX_RECORDING_CHUNKS = 500;
 export const MAX_RECORDING_BYTES = 1024 * 1024 * 1024;
+export const MAX_SUPPORT_BYTES = 25 * 1024 * 1024;
+
+export const meetingAttendeeSchema = z.object({
+  displayName: z.string().trim().min(1).max(200).optional(),
+  email: z.string().trim().email().max(320).optional(),
+  name: z.string().trim().min(1).max(200).optional(),
+  responseStatus: z.string().trim().max(80).optional(),
+});
 
 export const meetingRecommendationKinds = [
   "crm-note",
@@ -200,6 +208,7 @@ function normalizedEvidenceText(value: string) {
 }
 
 export type RecordingManifest = z.infer<typeof recordingManifestSchema>;
+export type MeetingAttendee = z.infer<typeof meetingAttendeeSchema>;
 
 export type MeetingJobSummary = {
   error?: string;
@@ -232,17 +241,23 @@ export type MeetingTranscript = {
 };
 
 export type MeetingWorkspace = {
+  attendees: MeetingAttendee[];
+  calendarEventId?: string;
+  calendarEventUrl?: string;
   companyName?: string;
+  consentConfirmedAt?: string;
   contactName?: string;
   id: string;
   job?: MeetingJobSummary;
   leadId?: string;
+  liveNotesMarkdown: string;
   organizationId: string;
   output?: MeetingOutputSummary;
   startsAt?: string;
   status: string;
   supportFileName?: string;
   title: string;
+  updatedAt?: string;
 };
 
 export type MeetingIntelligenceState = {

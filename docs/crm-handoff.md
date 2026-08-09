@@ -224,6 +224,8 @@ Safe defaults:
 
 - `meeting-booked` leads with a date are synchronized into `meetings` by the database trigger in `20260717090000_meeting_intelligence.sql`; do not add channel-specific meeting creation code.
 - Recording and transcript data are founder-only. Intern/member CRM screens must not query `meeting_outputs`, `meeting_assets`, or `meeting-recordings`.
+- The capture UI may prefill attendees and the Meet link from the acting founder's Calendar event, but it must not interpret Calendar access as recording consent or start the microphone automatically.
+- Live notes, consent timestamps, crash-recovery audio, and uploaded supports stay private. Do not copy them into normal CRM rows; only a recommendation explicitly selected during founder review may cross that boundary.
 - The transcript is authoritative. Deck slides and historical CRM notes are supporting context and must never be presented as statements made during the meeting without timestamped transcript evidence.
 - Recommendations are typed (`crm-note`, `crm-next-action`, `crm-status`, `task`, `calendar-follow-up`, `proposal-input`) and are inert until Ali or Nabil reviews and selects them.
 - A selected CRM recommendation intentionally crosses from the private meeting workspace into the organization-visible CRM. Keep this explicit in UI wording and do not auto-copy full private notes.

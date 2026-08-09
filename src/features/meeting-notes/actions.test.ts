@@ -13,7 +13,11 @@ vi.mock("./access", () => ({
   requireMeetingNotesAccess: mocks.requireMeetingNotesAccess,
 }));
 
-import { queueMeetingProcessingAction } from "./actions";
+import {
+  queueMeetingProcessingAction,
+  registerMeetingSupportAction,
+  saveMeetingCaptureDraftAction,
+} from "./actions";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
 const meetingId = "22222222-2222-4222-8222-222222222222";
@@ -31,7 +35,7 @@ describe("meeting intelligence queue action", () => {
     vi.clearAllMocks();
   });
 
-  it("removes uploaded audio after an atomic queue rejection", async () => {
+  it("preserves uploaded audio after an atomic queue rejection", async () => {
     const fixture = makeSupabaseFixture({
       assetRecovery: null,
       rpcResult: {
@@ -44,11 +48,10 @@ describe("meeting intelligence queue action", () => {
     const result = await queueMeetingProcessingAction(meetingId, manifest);
 
     expect(result).toMatchObject({
-      discardUploadedAudio: true,
       error: "processing job insert failed",
       success: false,
     });
-    expect(fixture.remove).toHaveBeenCalledWith([chunkPath]);
+    expect(fixture.remove).not.toHaveBeenCalled();
   });
 
   it("recovers a committed job when the RPC response is lost", async () => {
@@ -67,6 +70,49 @@ describe("meeting intelligence queue action", () => {
     });
     expect(fixture.remove).not.toHaveBeenCalled();
     expect(mocks.revalidatePath).toHaveBeenCalledWith("/meetings");
+  });
+});
+
+describe("one-step meeting capture validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects an empty title before accessing founder data", async () => {
+    const result = await saveMeetingCaptureDraftAction({
+      attendees: [],
+      liveNotesMarkdown: "notes",
+      meetingId,
+      title: "   ",
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mocks.requireMeetingNotesAccess).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported presentation formats before storage access", async () => {
+    const result = await registerMeetingSupportAction({
+      meetingId,
+      support: {
+        chunks: [
+          {
+            path: `${organizationId}/${meetingId}/${sessionId}/chunk-0000.pptx`,
+            sha256: "a".repeat(64),
+            sizeBytes: 1,
+          },
+        ],
+        mimeType:
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        originalFileName: "pitch.pptx",
+        totalBytes: 1,
+      },
+    });
+
+    expect(result).toMatchObject({
+      error: "Le support doit être un PDF, TXT ou Markdown.",
+      success: false,
+    });
+    expect(mocks.requireMeetingNotesAccess).not.toHaveBeenCalled();
   });
 });
 

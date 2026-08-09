@@ -34,9 +34,18 @@ type GoogleConnectionRow = {
 };
 
 export type GoogleCalendarEventSummary = {
+  attendees?: Array<{
+    displayName?: string;
+    email?: string;
+    responseStatus?: string;
+    self?: boolean;
+  }>;
+  conferenceUrl?: string;
   end?: string;
   htmlLink?: string;
   id: string;
+  location?: string;
+  organizer?: { displayName?: string; email?: string; self?: boolean };
   start?: string;
   title: string;
 };
@@ -285,18 +294,38 @@ export async function listGoogleCalendarEvents(
 
   const payload = (await response.json()) as {
     items?: Array<{
+      attendees?: Array<{
+        displayName?: string;
+        email?: string;
+        responseStatus?: string;
+        self?: boolean;
+      }>;
+      conferenceData?: {
+        entryPoints?: Array<{ entryPointType?: string; uri?: string }>;
+      };
       end?: { date?: string; dateTime?: string };
+      hangoutLink?: string;
       htmlLink?: string;
       id?: string;
+      location?: string;
+      organizer?: { displayName?: string; email?: string; self?: boolean };
       start?: { date?: string; dateTime?: string };
       summary?: string;
     }>;
   };
 
   return (payload.items ?? []).map((event) => ({
+    attendees: event.attendees,
+    conferenceUrl:
+      event.hangoutLink ??
+      event.conferenceData?.entryPoints?.find(
+        (entryPoint) => entryPoint.entryPointType === "video",
+      )?.uri,
     end: event.end?.dateTime ?? event.end?.date,
     htmlLink: event.htmlLink,
     id: event.id ?? crypto.randomUUID(),
+    location: event.location,
+    organizer: event.organizer,
     start: event.start?.dateTime ?? event.start?.date,
     title: event.summary ?? "Evenement sans titre",
   }));
