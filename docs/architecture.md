@@ -99,6 +99,19 @@ integrations page therefore reports server readiness but does not offer a fake
 self-service disconnect: removing or rotating the Vercel credentials and the
 Slack app installation is the actual administrative disconnect path.
 
+## Brief privé NAIA à 09:30
+
+`GET /api/cron/naia-daily-brief` construit un brief en lecture seule à partir
+des tâches et relances CRM, du Calendar principal et des messages Gmail récents
+du destinataire. La route Vercel Cron est protégée par `CRON_SECRET`, valide la
+fenêtre locale `Africa/Casablanca`, refuse tout destinataire qui n'est pas Ali
+ou Nabil avec le rôle `owner`, et envoie uniquement un DM Slack résolu par
+email. La table service-role-only `naia_daily_brief_runs` assure l'idempotence
+par profil et date locale : les échecs prouvés sans livraison sont reclaimables
+atomiquement, tandis qu'un résultat Slack ambigu est verrouillé sans replay.
+Aucun mail, événement ou changement CRM n'est créé.
+Voir `docs/naia-daily-brief.md`.
+
 ## NAIA on Slack
 
 Team members can talk to NAIA from Slack (DM to the bot or `@NAIA` mention) without opening the site. The flow keeps the exact same human-approval contract as the web cockpit:
