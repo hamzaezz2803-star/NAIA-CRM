@@ -11,7 +11,10 @@ import {
 } from "lucide-react";
 
 import { cn } from "@/lib/cn";
-import { GOOGLE_REVOCATION_CONFIRMATION } from "@/platform/integrations/google-revocation-contract";
+import {
+  GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
+  GOOGLE_REVOCATION_CONFIRMATION,
+} from "@/platform/integrations/google-revocation-contract";
 
 type GoogleConnectButtonProps = {
   className?: string;
@@ -42,6 +45,8 @@ export function GoogleConnectButton({
   >(null);
   const [showRevocationConfirmation, setShowRevocationConfirmation] =
     useState(false);
+  const [manualReviewRequired, setManualReviewRequired] = useState(false);
+  const [showManualConfirmation, setShowManualConfirmation] = useState(false);
 
   const isConnected = connectedState ?? initialConnected;
   const accountLabel = accountLabelState ?? connectedAccount;
@@ -144,9 +149,11 @@ export function GoogleConnectButton({
       });
       const payload = (await response.json().catch(() => null)) as {
         error?: string;
+        manualReviewRequired?: boolean;
         ok?: boolean;
       } | null;
       if (!response.ok || !payload?.ok) {
+        setManualReviewRequired(Boolean(payload?.manualReviewRequired));
         setMessage(
           payload?.error ??
             "La révocation Google n’a pas pu être confirmée. Réessayez.",
@@ -158,8 +165,49 @@ export function GoogleConnectButton({
       setConnectedState(false);
       setAccountLabelState(undefined);
       setShowRevocationConfirmation(false);
+      setManualReviewRequired(false);
+      setShowManualConfirmation(false);
       setMessage(
         "Ancienne autorisation révoquée. Reconnectez maintenant Google avec les droits minimaux.",
+      );
+      router.refresh();
+    } catch {
+      setMessage("Échec de la communication avec le serveur.");
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  const confirmManualRevocation = async () => {
+    setIsConnecting(true);
+    setMessage("Finalisation locale en cours...");
+    try {
+      const response = await fetch("/api/integrations/google/revoke", {
+        body: JSON.stringify({
+          confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        ok?: boolean;
+      } | null;
+      if (!response.ok || !payload?.ok) {
+        setMessage(
+          payload?.error ?? "NAIA n’a pas pu finaliser la révocation manuelle.",
+        );
+        return;
+      }
+
+      setRequiresRevocationState(false);
+      setConnectedState(false);
+      setAccountLabelState(undefined);
+      setShowRevocationConfirmation(false);
+      setManualReviewRequired(false);
+      setShowManualConfirmation(false);
+      setMessage(
+        "Révocation manuelle confirmée. Reconnectez maintenant Google avec les droits minimaux.",
       );
       router.refresh();
     } catch {
@@ -221,6 +269,8 @@ export function GoogleConnectButton({
             className="inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-xl bg-[var(--maison-sidebar)] px-4 text-xs font-semibold uppercase tracking-wider text-white shadow-2xs transition hover:opacity-90"
             onClick={() => {
               setShowRevocationConfirmation(true);
+              setManualReviewRequired(false);
+              setShowManualConfirmation(false);
               setMessage("");
             }}
             type="button"
@@ -233,6 +283,67 @@ export function GoogleConnectButton({
           <p className="text-xs leading-5 text-stone-500" aria-live="polite">
             {message}
           </p>
+        ) : null}
+        {manualReviewRequired ? (
+          <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+            <p className="text-xs font-semibold text-stone-800 dark:text-stone-200">
+              Révocation manuelle requise
+            </p>
+            <ol className="mt-1 list-decimal space-y-1 pl-4 text-xs leading-5 text-stone-600 dark:text-stone-400">
+              <li>Ouvrez les connexions de votre compte Google.</li>
+              <li>Retirez l’accès accordé à NAIA / Qarizmi OS.</li>
+              <li>Revenez ici et confirmez cette action.</li>
+            </ol>
+            <a
+              className="mt-2 inline-flex text-xs font-semibold text-amber-800 underline underline-offset-2 dark:text-amber-300"
+              href="https://myaccount.google.com/connections"
+              rel="noreferrer"
+              target="_blank"
+            >
+              Ouvrir les connexions Google
+            </a>
+            {showManualConfirmation ? (
+              <div className="mt-3 rounded-md border border-rose-500/25 p-2">
+                <p className="text-xs leading-5 text-stone-700 dark:text-stone-300">
+                  Je confirme avoir retiré moi-même l’accès NAIA dans mon compte
+                  Google. NAIA peut maintenant neutraliser uniquement le
+                  credential local.
+                </p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <button
+                    className="inline-flex min-h-8 items-center justify-center rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 text-xs font-semibold text-rose-700 disabled:opacity-50 dark:text-rose-300"
+                    disabled={isConnecting}
+                    onClick={() => void confirmManualRevocation()}
+                    type="button"
+                  >
+                    {isConnecting ? (
+                      <Loader2
+                        className="mr-1.5 h-3.5 w-3.5 animate-spin"
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                    Confirmer que j’ai révoqué dans Google
+                  </button>
+                  <button
+                    className="inline-flex min-h-8 items-center justify-center rounded-lg border border-stone-300 px-3 text-xs font-medium dark:border-stone-700"
+                    disabled={isConnecting}
+                    onClick={() => setShowManualConfirmation(false)}
+                    type="button"
+                  >
+                    Annuler
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                className="mt-3 inline-flex min-h-8 items-center justify-center rounded-lg border border-stone-300 px-3 text-xs font-semibold text-stone-700 dark:border-stone-700 dark:text-stone-300"
+                onClick={() => setShowManualConfirmation(true)}
+                type="button"
+              >
+                J’ai révoqué l’accès dans Google
+              </button>
+            )}
+          </div>
         ) : null}
       </div>
     );

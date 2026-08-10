@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { GOOGLE_REVOCATION_CONFIRMATION } from "@/platform/integrations/google-revocation-contract";
+import {
+  GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
+  GOOGLE_REVOCATION_CONFIRMATION,
+} from "@/platform/integrations/google-revocation-contract";
 
 const mocks = vi.hoisted(() => ({
   createServerSupabaseClient: vi.fn(),
@@ -42,6 +45,7 @@ function createClient({
       refresh_token: "synthetic-refresh-token",
     }),
     id: "connection-1",
+    scopes: ["https://www.googleapis.com/auth/drive.file"],
     status: "connected",
   },
   connectionError = null,
@@ -52,6 +56,7 @@ function createClient({
   connection?: {
     encrypted_token_reference: string | null;
     id: string;
+    scopes?: string[] | null;
     status: string;
   } | null;
   connectionError?: { message: string } | null;
@@ -226,8 +231,17 @@ describe("POST /api/integrations/google/revoke", () => {
     expect(fixture.update).not.toHaveBeenCalled();
   });
 
-  it("treats Google's invalid_token response as an idempotent remote revocation", async () => {
-    const fixture = createClient();
+  it("never treats invalid_token from an expired access token as proof of revocation", async () => {
+    const fixture = createClient({
+      connection: {
+        encrypted_token_reference: JSON.stringify({
+          access_token: "synthetic-expired-access-token",
+        }),
+        id: "connection-1",
+        scopes: ["https://www.googleapis.com/auth/drive.file"],
+        status: "connected",
+      },
+    });
     mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
     vi.stubGlobal(
       "fetch",
@@ -239,12 +253,49 @@ describe("POST /api/integrations/google/revoke", () => {
     );
 
     const response = await POST(createRequest());
+    const payload = (await response.json()) as {
+      manualReviewRequired?: boolean;
+      ok?: boolean;
+    };
+
+    expect(response.status).toBe(502);
+    expect(payload).toMatchObject({ manualReviewRequired: true });
+    expect(payload.ok).not.toBe(true);
+    expect(fixture.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: "needs-review",
+      }),
+    );
+    expect(fixture.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ encrypted_token_reference: null }),
+    );
+  });
+
+  it("neutralizes only the local credential after a second explicit manual confirmation", async () => {
+    const fixture = createClient({
+      connection: {
+        encrypted_token_reference: JSON.stringify({
+          access_token: "synthetic-expired-access-token",
+        }),
+        id: "connection-1",
+        scopes: ["https://www.googleapis.com/auth/drive.file"],
+        status: "needs-review",
+      },
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      createRequest({ confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION }),
+    );
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({
-      alreadyRevoked: true,
+      manualConfirmed: true,
       ok: true,
     });
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(fixture.update).toHaveBeenCalledWith(
       expect.objectContaining({
         encrypted_token_reference: null,
@@ -253,11 +304,27 @@ describe("POST /api/integrations/google/revoke", () => {
     );
   });
 
+  it("rejects manual neutralization before the remote failure state", async () => {
+    const fixture = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      createRequest({ confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fixture.update).not.toHaveBeenCalled();
+  });
+
   it("keeps an unrevocable local credential in needs-review", async () => {
     const fixture = createClient({
       connection: {
         encrypted_token_reference: "{}",
         id: "connection-1",
+        scopes: ["https://www.googleapis.com/auth/drive.file"],
         status: "connected",
       },
     });

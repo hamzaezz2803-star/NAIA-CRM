@@ -4,11 +4,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-import { GOOGLE_REVOCATION_CONFIRMATION } from "@/platform/integrations/google-revocation-contract";
+import {
+  GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
+  GOOGLE_REVOCATION_CONFIRMATION,
+} from "@/platform/integrations/google-revocation-contract";
+import { hasForbiddenGoogleDriveScope } from "@/platform/integrations/google-workspace-scopes";
 
 type GoogleConnection = {
   encrypted_token_reference: string | null;
   id: string;
+  scopes: string[] | null;
   status: string;
 };
 
@@ -28,7 +33,11 @@ export async function POST(request: NextRequest) {
   const body = (await request.json().catch(() => null)) as {
     confirmation?: unknown;
   } | null;
-  if (body?.confirmation !== GOOGLE_REVOCATION_CONFIRMATION) {
+  const confirmation = body?.confirmation;
+  if (
+    confirmation !== GOOGLE_REVOCATION_CONFIRMATION &&
+    confirmation !== GOOGLE_MANUAL_REVOCATION_CONFIRMATION
+  ) {
     return NextResponse.json(
       { error: "Confirmation explicite requise." },
       { status: 400 },
@@ -69,7 +78,7 @@ export async function POST(request: NextRequest) {
 
   const { data, error: connectionError } = await supabase
     .from("integration_connections")
-    .select("id,status,encrypted_token_reference")
+    .select("id,status,scopes,encrypted_token_reference")
     .eq("organization_id", membership.organization_id)
     .eq("provider", "google")
     .eq("connected_by_profile_id", user.id)
@@ -87,6 +96,37 @@ export async function POST(request: NextRequest) {
   }
 
   const connection = data as GoogleConnection;
+  if (confirmation === GOOGLE_MANUAL_REVOCATION_CONFIRMATION) {
+    if (
+      connection.status !== "needs-review" ||
+      !hasForbiddenGoogleDriveScope(connection.scopes)
+    ) {
+      return NextResponse.json(
+        {
+          error:
+            "La confirmation manuelle est disponible uniquement après un échec de révocation vérifié.",
+        },
+        { status: 409 },
+      );
+    }
+
+    const manualResult = await markConnection(
+      supabase,
+      connection.id,
+      membership.organization_id,
+      user.id,
+      "revoked",
+      true,
+    );
+    if (manualResult.error) {
+      return NextResponse.json(
+        { error: "NAIA n’a pas pu finaliser la révocation manuelle." },
+        { status: 500 },
+      );
+    }
+    return NextResponse.json({ manualConfirmed: true, ok: true });
+  }
+
   const tokenReference = parseTokenReference(
     connection.encrypted_token_reference,
   );
@@ -102,7 +142,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Aucun jeton révocable n’est disponible. Vérifiez les accès Google du compte, puis reconnectez NAIA.",
+          "Aucun jeton révocable n’est disponible. Ouvrez les connexions de votre compte Google, retirez NAIA, puis confirmez cette révocation manuelle.",
+        manualReviewRequired: true,
       },
       { status: 409 },
     );
@@ -126,17 +167,16 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Google n’a pas pu confirmer la révocation. Réessayez avant de reconnecter.",
+          "Google n’a pas confirmé la révocation. Ouvrez les connexions de votre compte Google, retirez NAIA, puis confirmez cette révocation manuelle.",
+        manualReviewRequired: true,
       },
       { status: 502 },
     );
   }
 
-  const responseBody = revokeResponse.ok ? "" : await revokeResponse.text();
-  const alreadyInvalid =
-    revokeResponse.status === 400 &&
-    /(?:invalid_token|invalid token)/iu.test(responseBody.slice(0, 2_000));
-  if (!revokeResponse.ok && !alreadyInvalid) {
+  // A 400 invalid_token can be an expired access token while the grant still
+  // exists. Only Google's documented 200 response proves remote revocation.
+  if (revokeResponse.status !== 200) {
     await markConnection(
       supabase,
       connection.id,
@@ -147,7 +187,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error:
-          "Google n’a pas confirmé la révocation. Réessayez avant de reconnecter.",
+          "Google n’a pas confirmé la révocation. Ouvrez les connexions de votre compte Google, retirez NAIA, puis confirmez cette révocation manuelle.",
+        manualReviewRequired: true,
       },
       { status: 502 },
     );
@@ -171,7 +212,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  return NextResponse.json({ alreadyRevoked: alreadyInvalid, ok: true });
+  return NextResponse.json({ alreadyRevoked: false, ok: true });
 }
 
 function isSameOriginJsonRequest(request: NextRequest) {
