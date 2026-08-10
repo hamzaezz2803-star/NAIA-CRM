@@ -110,10 +110,11 @@ The WhatsApp surface is private and fail-closed. `WHATSAPP_BUSINESS_ACCOUNT_ID` 
 
 ## Google Drive Folder Structure
 
-One folder per client company (not per lead), created by the organization
-service account inside the cofounders shared-drive `clients` folder
-(`MAYA_DRIVE_OUTPUT_FOLDER_ID`). If a folder with the client's name already
-exists there, it is reused instead of duplicated.
+One folder per client company (not per lead) lives inside the cofounders
+shared-drive `clients` folder (`MAYA_DRIVE_OUTPUT_FOLDER_ID`). The CRM stores
+the authoritative URL on the company and/or lead. Docs Generator must use that
+stored URL, verify the folder's parent and require one existing `01_Pitch`; it
+must never search, create, repair, or deduplicate folders by client name.
 
 ```text
 Company Name
@@ -224,6 +225,11 @@ Safe defaults:
 
 - `meeting-booked` leads with a date are synchronized into `meetings` by the database trigger in `20260717090000_meeting_intelligence.sql`; do not add channel-specific meeting creation code.
 - Recording and transcript data are founder-only. Intern/member CRM screens must not query `meeting_outputs`, `meeting_assets`, or `meeting-recordings`.
+- The capture UI may prefill attendees and the Meet link from the acting founder's Calendar event, but it must not interpret Calendar access as recording consent or start the microphone automatically.
+- The capture follows `Mockup Notes Taking app`: title/date/subject/supports are visible before capture, attendees are split between Qarizmi and client, live notes dominate the page, and the small two-color control only starts/pauses/resumes. Ending and processing remains a separate explicit action.
+- Gmail/Gemini import is founder-only and read-only. Accept only exact Google notification senders, deduplicate on `(organization_id, provider, external_message_id)`, keep ambiguous matches unassigned, and require a founder action to associate them. Never label, archive, mark read, draft or send mail from this flow.
+- `meeting_external_artifacts` stores bounded Gemini email notes and optional bounded text exported from the exact linked Google Doc. It is protected by the existing Ali/Nabil cofounder gate, has a tenant-consistency trigger, and grants no authenticated delete. Gemini documents are supporting context; they do not override local timestamped transcript evidence.
+- Live notes, consent timestamps, crash-recovery audio, and uploaded supports stay private. Do not copy them into normal CRM rows; only a recommendation explicitly selected during founder review may cross that boundary.
 - The transcript is authoritative. Deck slides and historical CRM notes are supporting context and must never be presented as statements made during the meeting without timestamped transcript evidence.
 - Recommendations are typed (`crm-note`, `crm-next-action`, `crm-status`, `task`, `calendar-follow-up`, `proposal-input`) and are inert until Ali or Nabil reviews and selects them.
 - A selected CRM recommendation intentionally crosses from the private meeting workspace into the organization-visible CRM. Keep this explicit in UI wording and do not auto-copy full private notes.
@@ -234,15 +240,39 @@ through Maya / Docs Generator. When a lead moves to `proposal-sent`, Maya
 prepares the proposal next action. The CRM action itself remains
 organization-scoped through the existing CRM server actions.
 
-Maya pitch generation is implemented in `src/features/maya` and should stay
-outside CRM ownership. CRM provides the lead, company/contact fields, notes,
-status, and meeting context; Maya owns the private pitch library, PPTX deck
-planning, OpenAI-enhanced draft generation, and Nabil final-version learning
-loop. Do not copy pitch source decks into a stagiaire-visible folder, broaden
-Drive sharing for debugging, or reuse `MAYA_OPENAI_API_KEY` outside Maya's
-cofounder-gated draft generation action. If a lead is missing
-website/objective/contact details, Maya should surface smart follow-up questions
-instead of guessing silently.
+Maya pitch generation is implemented in `src/features/maya` and stays outside
+CRM ownership. CRM provides the organization-scoped lead, company/contact and
+the authoritative client Drive URL. The `pitch` family clones the audited
+native PPTX pinned by exact filename, `MAYA_PITCH_TEMPLATE_FILE_ID`, and the
+mandatory `MAYA_PITCH_TEMPLATE_SHA256` byte-for-byte, changes only the output
+filename, scans all textual OOXML parts for client residue, and writes one PPTX
+after explicit founder confirmation. Production must remain blocked until the
+digest of the independently reviewed binary is configured. A transactional
+Supabase claim globally keyed by destination `01_Pitch` and filename allows one
+active upload and reconciles retries by reading and hashing the existing Drive
+file. The claim persists a pre-generated Drive file ID: a retry after an
+indeterminate create response reuses that ID instead of creating a duplicate.
+Its lease is renewed transactionally immediately before the external write, so
+a reclaimed stale worker cannot upload; reconciliation requires the expected
+name and parent and fails closed on duplicate names. It never deletes or
+deduplicates Drive content. It does not
+call OpenAI or Groq and does not upload `maya-generation-manifest.json`. The
+audited Teaser contains no client or industry placeholder; its sector labels
+are generic credential headings and must not be presented as substitutions.
+The `commercial-proposal` family remains manual because commercial scope, pricing,
+dates and legal terms require human review. Do not copy pitch source decks into
+a stagiaire-visible folder, broaden Drive sharing for debugging, or bypass the
+stored CRM URL when resolving a destination.
+
+To activate pitch copying, independently review and download the native Teaser
+without editing it, calculate its digest locally with
+`shasum -a 256 <approved-teaser.pptx>`, then set the lowercase result as the
+server-only `MAYA_PITCH_TEMPLATE_SHA256`. The read-only Drive capture verified
+on 2026-08-09 is
+`7e499cb1dcfb92167cf223f6e1ef91a5bb3167c62c3524998b7354f32a5f03ab`.
+Never derive or update that value from an automatic generation request. Changing
+the Drive file requires a fresh human review and a deliberate digest rotation;
+leaving the variable blank keeps both the queue and the write action blocked.
 
 NAIA action approvals are signed server-side in `/api/naia/orchestrate`; the
 client sends only the original command, action id, and approval token. Do not
@@ -263,6 +293,25 @@ The official NAIA voice is configured only through the server-side
 `ELEVENLABS_FALLBACK_VOICE_ID` is a distinct rescue voice; browser speech
 synthesis remains the final explicit fallback when provider audio is
 unavailable.
+
+## NAIA Daily Brief Integration
+
+The private daily brief reads organization-scoped active CRM tasks and leads,
+then combines them with the configured founder's own Calendar and Gmail read
+results. Only Ali or Nabil with the `owner` role can be configured, and the
+output is sent to the exact Slack account resolved by email. No CRM, Gmail, or
+Calendar mutation is part of this workflow.
+
+Production activation has two prerequisites that are not performed by a Vercel
+Preview or by repository CI: apply
+`supabase/migrations/20260809221355_naia_daily_brief_runs.sql`, then configure a
+high-entropy `CRON_SECRET` in the Vercel Production environment before the
+production deployment registers `vercel.json`. The migration creates the
+service-role-only ledger and the atomic `reclaim_naia_daily_brief_run` RPC.
+Only rows in the explicit `failed` state can be reclaimed; `sending`, `sent`,
+and `delivery_uncertain` remain non-retryable to prevent duplicate Slack DMs.
+See `docs/naia-daily-brief.md` for the full release sequence and acceptance
+checks.
 
 ## GitHub Issue Body
 

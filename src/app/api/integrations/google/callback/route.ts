@@ -1,10 +1,16 @@
 import { NextResponse, type NextRequest } from "next/server";
 
+import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
 import { getAppBaseUrl } from "@/platform/auth/config";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-import { GOOGLE_USER_SCOPES } from "@/platform/integrations/google-workspace-scopes";
+import {
+  GOOGLE_MEETING_NOTE_SCOPE,
+  hasForbiddenGoogleDriveScope,
+} from "@/platform/integrations/google-workspace-scopes";
 
 const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
+const GOOGLE_OAUTH_USER_INTENT = "user";
+const GOOGLE_OAUTH_MEETING_INTENT = "meeting-notes";
 
 type GoogleTokenResponse = {
   access_token?: string;
@@ -26,12 +32,16 @@ export async function GET(request: NextRequest) {
   }
 
   const state = requestUrl.searchParams.get("state");
-  const expectedState = request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE)?.value;
-  if (!state || !expectedState || state !== expectedState) {
+  const stateBinding = parseStateBinding(
+    request.cookies.get(GOOGLE_OAUTH_STATE_COOKIE)?.value,
+  );
+  if (!state || !stateBinding || state !== stateBinding.state) {
     return new NextResponse("Google OAuth Error: invalid state", {
       status: 400,
     });
   }
+  const meetingNotesIntent =
+    stateBinding.intent === GOOGLE_OAUTH_MEETING_INTENT;
 
   const clientId = process.env.GOOGLE_CLIENT_ID;
   const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
@@ -57,13 +67,20 @@ export async function GET(request: NextRequest) {
 
   const { data: membership, error: membershipError } = await supabase
     .from("organization_memberships")
-    .select("organization_id")
+    .select("organization_id,role")
     .eq("profile_id", user.id)
     .limit(1)
     .maybeSingle();
 
   if (membershipError || !membership?.organization_id) {
     return new NextResponse("No organization found for current user", {
+      status: 403,
+    });
+  }
+  const isMeetingNotesFounder =
+    membership.role === "owner" && canUseMeetingNotesEmail(user.email);
+  if (meetingNotesIntent && !isMeetingNotesFounder) {
+    return new NextResponse("Meeting Intelligence access required", {
       status: 403,
     });
   }
@@ -99,16 +116,50 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    let refreshToken = tokens.refresh_token;
-    if (!refreshToken) {
-      const { data: existing } = await supabase
-        .from("integration_connections")
-        .select("encrypted_token_reference")
-        .eq("organization_id", membership.organization_id)
-        .eq("provider", "google")
-        .eq("connected_by_profile_id", user.id)
-        .maybeSingle();
+    const { data: existing } = await supabase
+      .from("integration_connections")
+      .select("encrypted_token_reference,scopes")
+      .eq("organization_id", membership.organization_id)
+      .eq("provider", "google")
+      .eq("connected_by_profile_id", user.id)
+      .maybeSingle();
 
+    const returnedScopes = parseScopes(tokens.scope);
+    const existingScopes = Array.isArray(existing?.scopes)
+      ? (existing.scopes as string[])
+      : [];
+    const candidateScopes = returnedScopes.length
+      ? returnedScopes
+      : await resolveScopesFromTokenInfo(tokens.access_token);
+    if (!candidateScopes?.length) {
+      return new NextResponse("Google token scopes could not be verified", {
+        status: 400,
+      });
+    }
+    const hasUnexpectedDriveScope =
+      hasForbiddenGoogleDriveScope(candidateScopes);
+    if (hasUnexpectedDriveScope) {
+      return new NextResponse("Google returned an unauthorized Drive scope", {
+        status: 400,
+      });
+    }
+    const existingMeetGrant = existingScopes.includes(
+      GOOGLE_MEETING_NOTE_SCOPE,
+    );
+    const canPersistMeetGrant =
+      isMeetingNotesFounder && (meetingNotesIntent || existingMeetGrant);
+    if (
+      candidateScopes.includes(GOOGLE_MEETING_NOTE_SCOPE) &&
+      !canPersistMeetGrant
+    ) {
+      return new NextResponse("Google Meet scope escalation rejected", {
+        status: 403,
+      });
+    }
+    const existingCredentialMayBeBroad =
+      hasForbiddenGoogleDriveScope(existingScopes);
+    let refreshToken = tokens.refresh_token;
+    if (!refreshToken && !existingCredentialMayBeBroad) {
       try {
         refreshToken = JSON.parse(
           existing?.encrypted_token_reference ?? "{}",
@@ -117,6 +168,8 @@ export async function GET(request: NextRequest) {
         refreshToken = undefined;
       }
     }
+
+    const persistedScopes = [...new Set(candidateScopes)];
 
     const tokenData = {
       access_token: tokens.access_token,
@@ -147,10 +200,7 @@ export async function GET(request: NextRequest) {
           external_account_label: externalAccountLabel,
           organization_id: membership.organization_id,
           provider: "google",
-          scopes:
-            typeof tokens.scope === "string"
-              ? tokens.scope.split(" ")
-              : [...GOOGLE_USER_SCOPES],
+          scopes: persistedScopes,
           status: "connected",
           updated_at: new Date().toISOString(),
         },
@@ -178,8 +228,12 @@ export async function GET(request: NextRequest) {
                 { type: 'GOOGLE_AUTH_SUCCESS', email: ${JSON.stringify(externalAccountLabel)} },
                 ${JSON.stringify(appBaseUrl)}
               );
+              window.close();
+            } else {
+              window.location.replace(
+                ${JSON.stringify(`${appBaseUrl}${meetingNotesIntent ? "/meetings" : "/integrations"}`)}
+              );
             }
-            window.close();
           </script>
         </body>
       </html>`,
@@ -196,5 +250,46 @@ export async function GET(request: NextRequest) {
     return new NextResponse(`OAuth Callback exception: ${message}`, {
       status: 500,
     });
+  }
+}
+
+function parseStateBinding(value?: string) {
+  if (!value) return undefined;
+  const separator = value.lastIndexOf(":");
+  if (separator <= 0) return undefined;
+  const state = value.slice(0, separator);
+  const intent = value.slice(separator + 1);
+  if (
+    !state ||
+    ![GOOGLE_OAUTH_USER_INTENT, GOOGLE_OAUTH_MEETING_INTENT].includes(intent)
+  ) {
+    return undefined;
+  }
+  return { intent, state };
+}
+
+function parseScopes(value?: string) {
+  return [
+    ...new Set(
+      (value ?? "")
+        .split(/\s+/u)
+        .map((scope) => scope.trim())
+        .filter(Boolean),
+    ),
+  ];
+}
+
+async function resolveScopesFromTokenInfo(accessToken: string) {
+  try {
+    const response = await fetch(
+      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+    );
+    if (!response.ok) return undefined;
+
+    const payload = (await response.json()) as { scope?: string };
+    const scopes = parseScopes(payload.scope);
+    return scopes.length ? scopes : undefined;
+  } catch {
+    return undefined;
   }
 }

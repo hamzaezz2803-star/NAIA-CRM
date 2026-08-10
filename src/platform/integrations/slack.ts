@@ -7,6 +7,24 @@ export type SlackPreparedMessage = {
   threadTs?: string;
 };
 
+// Slack normally answers application-level rejections with HTTP 200 and
+// `ok: false`. That response proves the message was not accepted and is safe
+// to retry; known local preflight failures use the same classification. Network
+// failures and malformed/non-2xx responses remain ambiguous: callers must
+// assume Slack may have accepted the message and avoid replaying.
+export class SlackMessageRejectedError extends Error {
+  constructor(errorCode: string) {
+    super(`Slack rejected the message: ${errorCode}`);
+    this.name = "SlackMessageRejectedError";
+  }
+}
+
+export function isSlackMessageRejectedError(
+  error: unknown,
+): error is SlackMessageRejectedError {
+  return error instanceof SlackMessageRejectedError;
+}
+
 // Slack signs every request with `v0=HMAC_SHA256(secret, "v0:{ts}:{body}")`.
 // Requests older than five minutes are rejected to block replay attacks.
 const SLACK_SIGNATURE_TOLERANCE_MS = 5 * 60 * 1000;
@@ -50,6 +68,12 @@ export type SlackUserProfile = {
   displayName?: string;
   email?: string;
   isBot: boolean;
+};
+
+export type SlackUserLookup = {
+  displayName?: string;
+  email?: string;
+  id: string;
 };
 
 export type SlackConversationMessage = {
@@ -188,16 +212,61 @@ export async function fetchSlackUserProfile(
   return profile;
 }
 
+export async function findSlackUserByEmail(
+  email: string,
+): Promise<SlackUserLookup | null> {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return null;
+
+  const url = new URL("https://slack.com/api/users.lookupByEmail");
+  url.searchParams.set("email", normalizedEmail);
+
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${getSlackBotToken()}` },
+  });
+  const payload = (await response.json()) as {
+    error?: string;
+    ok?: boolean;
+    user?: {
+      id?: string;
+      profile?: { display_name?: string; email?: string };
+      real_name?: string;
+    };
+  };
+
+  if (!response.ok || !payload.ok || !payload.user?.id) {
+    if (payload.error !== "users_not_found") {
+      console.error(
+        "Slack users.lookupByEmail failed:",
+        payload.error ?? `HTTP ${response.status}`,
+      );
+    }
+    return null;
+  }
+
+  return {
+    displayName:
+      payload.user.profile?.display_name || payload.user.real_name || undefined,
+    email: payload.user.profile?.email,
+    id: payload.user.id,
+  };
+}
+
 export async function postSlackMessage({
   blocks,
   channel,
   text,
   threadTs,
 }: SlackPreparedMessage) {
-  const token = getSlackBotToken();
+  let token: string;
+  try {
+    token = getSlackBotToken();
+  } catch {
+    throw new SlackMessageRejectedError("bot_token_missing");
+  }
 
   if (!channel) {
-    throw new Error("A Slack channel is required before sending.");
+    throw new SlackMessageRejectedError("channel_missing");
   }
 
   const response = await fetch("https://slack.com/api/chat.postMessage", {
@@ -221,9 +290,12 @@ export async function postSlackMessage({
     ts?: string;
   };
 
+  if (response.ok && payload.ok === false) {
+    throw new SlackMessageRejectedError(payload.error ?? "unknown_error");
+  }
   if (!response.ok || !payload.ok) {
     throw new Error(
-      `Slack rejected the message: ${payload.error ?? "unknown error"}`,
+      `Slack delivery result is uncertain (HTTP ${response.status}).`,
     );
   }
 

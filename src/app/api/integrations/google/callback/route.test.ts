@@ -18,15 +18,19 @@ import { GET } from "./route";
 
 type ClientOptions = {
   databaseError?: { message: string } | null;
-  membership?: { organization_id: string } | null;
+  existingConnection?: {
+    encrypted_token_reference: string | null;
+    scopes: string[] | null;
+  } | null;
+  membership?: { organization_id: string; role: string } | null;
   membershipError?: { message: string } | null;
-  user?: { id: string } | null;
+  user?: { email?: string; id: string } | null;
   userError?: { message: string } | null;
 };
 
 function createRequest({
   code = "google-code",
-  cookieState = "expected-state",
+  cookieState = "expected-state:user",
   queryState = "expected-state",
 }: {
   code?: string;
@@ -43,9 +47,10 @@ function createRequest({
 
 function createClient({
   databaseError = null,
-  membership = { organization_id: "org-1" },
+  existingConnection = null,
+  membership = { organization_id: "org-1", role: "owner" },
   membershipError = null,
-  user = { id: "user-1" },
+  user = { email: "ali@qarizmi.com", id: "user-1" },
   userError = null,
 }: ClientOptions = {}) {
   const upsert = vi.fn().mockResolvedValue({ error: databaseError });
@@ -59,12 +64,23 @@ function createClient({
   const membershipEq = vi.fn().mockReturnValue({ limit: membershipLimit });
   const membershipSelect = vi.fn().mockReturnValue({ eq: membershipEq });
 
+  const connectionQuery: Record<string, unknown> = {
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: existingConnection,
+      error: null,
+    }),
+    upsert,
+  };
+  for (const method of ["eq", "select"]) {
+    connectionQuery[method] = vi.fn(() => connectionQuery);
+  }
+
   const from = vi.fn((table: string) => {
     if (table === "organization_memberships") {
       return { select: membershipSelect };
     }
     if (table === "integration_connections") {
-      return { upsert };
+      return connectionQuery;
     }
     throw new Error(`Unexpected table: ${table}`);
   });
@@ -81,26 +97,61 @@ function createClient({
   };
 }
 
-function stubSuccessfulGoogleExchange() {
-  const fetchMock = vi
-    .fn()
-    .mockResolvedValueOnce(
-      new Response(
-        JSON.stringify({
-          access_token: "access-token",
-          expires_in: 3600,
-          refresh_token: "refresh-token",
-          scope: "openid email https://www.googleapis.com/auth/calendar",
+function stubSuccessfulGoogleExchange({
+  omitRefreshToken = false,
+  omitScope = false,
+  scope = "openid email https://www.googleapis.com/auth/calendar",
+  tokenInfoOk = true,
+  tokenInfoScope = scope,
+}: {
+  omitRefreshToken?: boolean;
+  omitScope?: boolean;
+  scope?: string;
+  tokenInfoOk?: boolean;
+  tokenInfoScope?: string;
+} = {}) {
+  const tokenPayload: Record<string, unknown> = {
+    access_token: "access-token",
+    expires_in: 3600,
+  };
+  if (!omitRefreshToken) tokenPayload.refresh_token = "refresh-token";
+  if (!omitScope) tokenPayload.scope = scope;
+  const fetchMock = vi.fn((input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url === "https://oauth2.googleapis.com/token") {
+      return Promise.resolve(
+        new Response(JSON.stringify(tokenPayload), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
         }),
-        { headers: { "Content-Type": "application/json" }, status: 200 },
-      ),
-    )
-    .mockResolvedValueOnce(
-      new Response(JSON.stringify({ email: "ali@qarizmi.com" }), {
+      );
+    }
+    if (url.startsWith("https://www.googleapis.com/oauth2/v3/tokeninfo")) {
+      return Promise.resolve(
+        tokenInfoOk
+          ? new Response(JSON.stringify({ scope: tokenInfoScope }), {
+              headers: { "Content-Type": "application/json" },
+              status: 200,
+            })
+          : new Response(null, { status: 503 }),
+      );
+    }
+    if (url === "https://www.googleapis.com/oauth2/v2/userinfo") {
+      return Promise.resolve(
+        new Response(JSON.stringify({ email: "ali@qarizmi.com" }), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        }),
+      );
+    }
+
+    return Promise.resolve(
+      new Response(JSON.stringify(tokenPayload), {
         headers: { "Content-Type": "application/json" },
-        status: 200,
+        status: 404,
       }),
     );
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -170,6 +221,7 @@ describe("GET /api/integrations/google/callback", () => {
     );
     expect(html).toContain("GOOGLE_AUTH_SUCCESS");
     expect(html).toContain("ali@qarizmi.com");
+    expect(html).toContain("/integrations");
     expect(response.cookies.get("google_oauth_state")?.value).toBe("");
   });
 
@@ -183,5 +235,204 @@ describe("GET /api/integrations/google/callback", () => {
 
     expect(response.status).toBe(500);
     expect(await response.text()).toContain("database unavailable");
+  });
+
+  it("attests current scopes with tokeninfo when the token response omits them", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    const fetchMock = stubSuccessfulGoogleExchange({
+      omitScope: true,
+      tokenInfoScope: [
+        "openid",
+        "email",
+        "https://www.googleapis.com/auth/gmail.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=access-token",
+    );
+    expect(client.spies.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: [
+          "openid",
+          "email",
+          "https://www.googleapis.com/auth/gmail.readonly",
+        ],
+      }),
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    );
+  });
+
+  it("fails closed when omitted scopes cannot be attested with tokeninfo", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    const fetchMock = stubSuccessfulGoogleExchange({
+      omitScope: true,
+      tokenInfoOk: false,
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("scopes could not be verified");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects a broad Drive scope discovered through tokeninfo", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      omitScope: true,
+      tokenInfoScope: "https://www.googleapis.com/auth/drive.readonly",
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("unauthorized Drive scope");
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("revalidates founder access before exchanging a meeting-notes code", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createClient({
+        membership: { organization_id: "org-1", role: "member" },
+        user: { email: "stagiaire@qarizmi.com", id: "user-2" },
+      }),
+    );
+
+    const response = await GET(
+      createRequest({ cookieState: "expected-state:meeting-notes" }),
+    );
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("accepts the narrow Meet scope only for a bound founder intent", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(
+      createRequest({ cookieState: "expected-state:meeting-notes" }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.meet.readonly",
+        ],
+      }),
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    );
+    expect(await response.text()).toContain("/meetings");
+  });
+
+  it("rejects a Meet scope added to an ordinary OAuth URL", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(403);
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("rejects every broader Drive scope even for a founder intent", async () => {
+    const client = createClient();
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: "https://www.googleapis.com/auth/drive.readonly",
+    });
+
+    const response = await GET(
+      createRequest({ cookieState: "expected-state:meeting-notes" }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(client.spies.upsert).not.toHaveBeenCalled();
+  });
+
+  it("preserves an existing founder Meet grant on an ordinary reconnect", async () => {
+    const client = createClient({
+      existingConnection: {
+        encrypted_token_reference: JSON.stringify({
+          refresh_token: "existing-refresh-token",
+        }),
+        scopes: ["https://www.googleapis.com/auth/drive.meet.readonly"],
+      },
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      scope: [
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/drive.meet.readonly",
+      ].join(" "),
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopes: expect.arrayContaining([
+          "https://www.googleapis.com/auth/drive.meet.readonly",
+        ]),
+      }),
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    );
+  });
+
+  it("does not reuse a stored refresh token attested with a broad Drive scope", async () => {
+    const client = createClient({
+      existingConnection: {
+        encrypted_token_reference: JSON.stringify({
+          refresh_token: "broad-existing-refresh-token",
+        }),
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.readonly",
+        ],
+      },
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(client);
+    stubSuccessfulGoogleExchange({
+      omitRefreshToken: true,
+      scope: "https://www.googleapis.com/auth/gmail.readonly",
+    });
+
+    const response = await GET(createRequest());
+
+    expect(response.status).toBe(200);
+    expect(client.spies.upsert).toHaveBeenCalledOnce();
+    const [payload] = client.spies.upsert.mock.calls[0] as [
+      { encrypted_token_reference: string },
+    ];
+    expect(JSON.parse(payload.encrypted_token_reference)).toEqual({
+      access_token: "access-token",
+      expiry_date: expect.any(Number),
+    });
   });
 });

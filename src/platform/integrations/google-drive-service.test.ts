@@ -4,9 +4,12 @@ import {
   CLIENT_DRIVE_SUBFOLDERS,
   downloadDriveFile,
   ensureClientDriveFolder,
+  generateDriveFileId,
   getClientsRootFolderId,
+  getDriveFileMetadata,
   getPitchSourceFolderId,
   isDriveServiceConfigured,
+  uploadDriveFile,
   updateDriveFileContent,
 } from "./google-drive-service";
 
@@ -154,6 +157,88 @@ describe("google-drive-service", () => {
     expect(driveUrls[0]).toContain("alt=media");
     expect(driveUrls[0]).toContain("supportsAllDrives=true");
     expect(driveUrls[0]).not.toContain("/export");
+  });
+
+  it("reads file parents for fail-closed destination validation", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+        }
+        return jsonResponse({
+          id: "client-folder",
+          mimeType: "application/vnd.google-apps.folder",
+          name: "HPS",
+          parents: ["clients-folder-id"],
+        });
+      });
+
+    await expect(getDriveFileMetadata("client-folder")).resolves.toMatchObject({
+      id: "client-folder",
+      parents: ["clients-folder-id"],
+    });
+    const metadataCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/drive/v3/files/client-folder"),
+    );
+    expect(String(metadataCall?.[0])).toContain("supportsAllDrives=true");
+    expect(String(metadataCall?.[0])).toContain("parents");
+  });
+
+  it("pre-generates a stable Drive file id for safely retried uploads", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+        }
+        return jsonResponse({ ids: ["reserved-drive-id"] });
+      });
+
+    await expect(generateDriveFileId()).resolves.toBe("reserved-drive-id");
+    const generateCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/files/generateIds"),
+    );
+    const generateUrl = new URL(String(generateCall?.[0]));
+    expect(generateUrl.searchParams.get("count")).toBe("1");
+    expect(generateUrl.searchParams.get("space")).toBe("drive");
+    expect(generateUrl.searchParams.get("type")).toBe("files");
+  });
+
+  it("creates a binary upload with its pre-generated id", async () => {
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        const url = String(input);
+        if (url.startsWith("https://oauth2.googleapis.com/token")) {
+          return jsonResponse({ access_token: "sa-token", expires_in: 3600 });
+        }
+        return jsonResponse({
+          id: "reserved-drive-id",
+          mimeType: "application/octet-stream",
+          name: "draft.pptx",
+        });
+      });
+
+    await expect(
+      uploadDriveFile({
+        content: Buffer.from([1, 2, 3]),
+        fileId: "reserved-drive-id",
+        mimeType: "application/octet-stream",
+        name: "draft.pptx",
+        parentFolderId: "pitch-folder-id",
+      }),
+    ).resolves.toMatchObject({ id: "reserved-drive-id" });
+
+    const uploadCall = fetchMock.mock.calls.find(([input]) =>
+      String(input).includes("/upload/drive/v3/files"),
+    );
+    expect(uploadCall?.[1]?.method).toBe("POST");
+    expect(Buffer.from(uploadCall?.[1]?.body as Buffer).toString()).toContain(
+      '"id":"reserved-drive-id"',
+    );
   });
 
   it("exports Google Slides files to pptx instead of alt=media", async () => {

@@ -100,8 +100,8 @@ describe("NAIA orchestrate route", () => {
       draftFileName:
         "20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
       draftFilePath:
-        "/tmp/HPS/Pitch/20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
-      manifestPath: "/tmp/HPS/Pitch/maya-generation-manifest.json",
+        "/tmp/HPS/01_Pitch/20260708_Qarizmi_Introduction_Service as a software_HPS_vDraft.pptx",
+      sourceFileName: "Qarizmi_Introduction_Service as a software_Teaser.pptx",
       success: true,
     });
     mocks.createTagAction.mockImplementation(async (name: string) => ({
@@ -769,6 +769,7 @@ describe("NAIA orchestrate route", () => {
 
     expect(mocks.generateMayaPitchDraftForLeadAction).toHaveBeenCalledWith(
       "lead-hps",
+      { confirmed: true, family: "pitch" },
     );
     expect(executeBody.execution).toBe("applied");
     expect(executeBody.message).toContain("Pitch Maya généré");

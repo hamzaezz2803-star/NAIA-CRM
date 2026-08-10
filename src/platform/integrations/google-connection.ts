@@ -2,7 +2,12 @@ import "server-only";
 
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 
-import { GOOGLE_USER_SCOPES } from "./google-workspace-scopes";
+import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
+
+import {
+  GOOGLE_MEETING_NOTE_SCOPE,
+  hasForbiddenGoogleDriveScope,
+} from "./google-workspace-scopes";
 
 // Persists the Google provider tokens returned by Supabase Auth at sign-in as
 // the user's own integration connection. Supabase does not store Google
@@ -20,7 +25,7 @@ export async function saveGoogleConnectionFromLogin({
 }): Promise<{ error?: string; saved: boolean }> {
   const { data: membership } = await supabase
     .from("organization_memberships")
-    .select("organization_id")
+    .select("organization_id,role")
     .eq("profile_id", user.id)
     .limit(1)
     .maybeSingle();
@@ -29,24 +34,49 @@ export async function saveGoogleConnectionFromLogin({
     return { error: "No organization membership for user.", saved: false };
   }
 
-  // Google only returns a refresh token on explicit consent. Keep the one we
-  // already have when this sign-in did not mint a new one.
-  let effectiveRefreshToken = refreshToken ?? null;
-  if (!effectiveRefreshToken) {
-    const { data: existing } = await supabase
-      .from("integration_connections")
-      .select("encrypted_token_reference")
-      .eq("organization_id", membership.organization_id)
-      .eq("provider", "google")
-      .eq("connected_by_profile_id", user.id)
-      .maybeSingle();
-
-    effectiveRefreshToken = parseRefreshToken(
-      existing?.encrypted_token_reference ?? null,
-    );
-  }
+  const { data: existing } = await supabase
+    .from("integration_connections")
+    .select("encrypted_token_reference,scopes")
+    .eq("organization_id", membership.organization_id)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", user.id)
+    .maybeSingle();
 
   const grantedScopes = await resolveGrantedScopes(accessToken);
+  if (!grantedScopes) {
+    return {
+      error: "Google token scopes could not be verified.",
+      saved: false,
+    };
+  }
+  const existingScopes = Array.isArray(existing?.scopes)
+    ? (existing.scopes as string[])
+    : [];
+  const mayKeepExistingMeetGrant =
+    membership.role === "owner" &&
+    canUseMeetingNotesEmail(user.email) &&
+    existingScopes.includes(GOOGLE_MEETING_NOTE_SCOPE);
+  const hasForbiddenCurrentGrant =
+    hasForbiddenGoogleDriveScope(grantedScopes) ||
+    (grantedScopes.includes(GOOGLE_MEETING_NOTE_SCOPE) &&
+      !mayKeepExistingMeetGrant);
+  if (hasForbiddenCurrentGrant) {
+    return {
+      error: "Google returned an unauthorized Drive scope.",
+      saved: false,
+    };
+  }
+
+  const existingCredentialMayBeBroad =
+    hasForbiddenGoogleDriveScope(existingScopes);
+  // Google only returns a refresh token on explicit consent. Keep an older
+  // one only when its stored scope attestation is already narrow; otherwise
+  // persisting it could re-mint a broader access token after expiry.
+  const effectiveRefreshToken =
+    refreshToken ??
+    (existingCredentialMayBeBroad
+      ? null
+      : parseRefreshToken(existing?.encrypted_token_reference ?? null));
 
   const { error } = await supabase.from("integration_connections").upsert(
     {
@@ -60,7 +90,7 @@ export async function saveGoogleConnectionFromLogin({
       external_account_label: user.email ?? "Google Workspace Connection",
       organization_id: membership.organization_id,
       provider: "google",
-      scopes: grantedScopes,
+      scopes: [...new Set(grantedScopes)],
       status: "connected",
       updated_at: new Date().toISOString(),
     },
@@ -76,7 +106,9 @@ export async function saveGoogleConnectionFromLogin({
 
 // The user can deny individual scopes on the consent screen; readiness must
 // see what was actually granted, not what was requested.
-async function resolveGrantedScopes(accessToken: string): Promise<string[]> {
+async function resolveGrantedScopes(
+  accessToken: string,
+): Promise<string[] | undefined> {
   try {
     const response = await fetch(
       `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
@@ -88,10 +120,9 @@ async function resolveGrantedScopes(accessToken: string): Promise<string[]> {
       }
     }
   } catch {
-    // fall through to the requested list
+    return undefined;
   }
-
-  return [...GOOGLE_USER_SCOPES];
+  return undefined;
 }
 
 function parseRefreshToken(tokenReference: string | null) {

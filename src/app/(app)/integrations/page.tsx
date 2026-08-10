@@ -196,6 +196,12 @@ function IntegrationCard({ integration }: { integration: IntegrationHealth }) {
           <GoogleConnectButton
             connectedAccount={integration.externalAccountLabel}
             initialConnected={integration.status === "connected"}
+            label={
+              integration.status === "needs-review"
+                ? "Reconnecter Google"
+                : undefined
+            }
+            requiresRevocation={integration.requiresRevocation}
           />
         </div>
       ) : null}
