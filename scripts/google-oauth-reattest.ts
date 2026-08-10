@@ -6,6 +6,11 @@ import { createClient } from "@supabase/supabase-js";
 
 import { canUseMeetingNotesEmail } from "../src/features/meeting-notes/access-policy";
 import {
+  createFilesystemDependencies,
+  SafeImportError,
+  verifyReviewedProductionTarget,
+} from "../src/features/crm/trello-import-runner";
+import {
   GoogleReattestSafeError,
   runGoogleOAuthReattestation,
   type GoogleReattestCandidate,
@@ -31,6 +36,18 @@ async function main() {
       "CONFIGURATION_REQUIRED",
       "Les variables serveur Supabase et Google OAuth sont requises.",
     );
+  }
+
+  try {
+    verifyReviewedProductionTarget({
+      dependencies: createFilesystemDependencies(process.cwd()),
+      supabaseUrl,
+    });
+  } catch (error) {
+    if (error instanceof SafeImportError) {
+      throw new GoogleReattestSafeError(error.code, error.message);
+    }
+    throw error;
   }
 
   const supabase = createClient(supabaseUrl, serviceRoleKey, {

@@ -20,6 +20,11 @@ npm run google:oauth-reattest -- dry-run
 npm run google:oauth-reattest -- apply --confirm-apply
 ```
 
+Before any candidate lookup or Google refresh, the operator now verifies the
+physical checkout, the linked Supabase project, the exact production URL, the
+reviewed organization hash, and the presence of both cofounders. A mismatched
+environment or project link fails closed without calling Google.
+
 The operator requires server-only Supabase service-role and Google OAuth
 variables. It refreshes the credential, asks Google tokeninfo to attest the
 exact audience and least-privilege scopes, and verifies the Google account via

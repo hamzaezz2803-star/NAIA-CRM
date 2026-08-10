@@ -60,7 +60,7 @@ export type TrelloImportTargetContract = {
   projectRefSha256: string;
 };
 
-const PRODUCTION_SUPABASE_PROJECT_REF_SHA256 =
+export const PRODUCTION_SUPABASE_PROJECT_REF_SHA256 =
   "afde75cbef68512550adedf94df1452f069248f98ed15874d0628c5994b12232";
 
 type DatabaseOperation =
@@ -309,6 +309,48 @@ function verifyTargetAttestation(value: unknown) {
     "TARGET_COFUNDERS_MISSING",
     "La cible Supabase n'a pas les deux cofondateurs attendus.",
   );
+}
+
+export function verifyReviewedProductionTarget({
+  dependencies,
+  supabaseUrl,
+}: {
+  dependencies: Pick<RunnerDependencies, "attestTarget">;
+  supabaseUrl: string;
+}) {
+  let projectRef: string;
+  try {
+    const url = new URL(supabaseUrl);
+    const parts = url.hostname.split(".");
+    assertGate(
+      url.protocol === "https:" &&
+        parts.length === 3 &&
+        parts[1] === "supabase" &&
+        parts[2] === "co" &&
+        /^[a-z0-9]{20}$/u.test(parts[0]),
+      "TARGET_URL_INVALID",
+      "L'URL Supabase ne correspond pas à une cible hébergée revue.",
+    );
+    projectRef = parts[0];
+  } catch (error) {
+    if (error instanceof SafeImportError) throw error;
+    throw new SafeImportError(
+      "TARGET_URL_INVALID",
+      "L'URL Supabase ne correspond pas à une cible hébergée revue.",
+    );
+  }
+
+  const targetContract = {
+    organizationIdSha256:
+      COMMERCIAL_TRELLO_SOURCE_CONTRACT.organizationIdSha256,
+    projectRefSha256: PRODUCTION_SUPABASE_PROJECT_REF_SHA256,
+  } satisfies TrelloImportTargetContract;
+  assertGate(
+    sha256(Buffer.from(projectRef, "utf8")) === targetContract.projectRefSha256,
+    "TARGET_URL_MISMATCH",
+    "L'URL Supabase ne correspond pas à la cible de production revue.",
+  );
+  verifyTargetAttestation(dependencies.attestTarget(targetContract));
 }
 
 function base64Text(value: string) {

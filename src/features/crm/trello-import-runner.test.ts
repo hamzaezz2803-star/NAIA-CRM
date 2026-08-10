@@ -17,6 +17,7 @@ import {
   createFilesystemDependencies,
   runCrmTrelloImport,
   SupabaseStdinDatabase,
+  verifyReviewedProductionTarget,
   type DatabasePort,
   type RunnerFilesystem,
   type RunnerDependencies,
@@ -510,6 +511,36 @@ describe("CRM Trello import runner", () => {
 });
 
 describe("production target filesystem boundary", () => {
+  it("rejects a mismatched environment URL before target attestation", () => {
+    const attestTarget = vi.fn();
+
+    expect(() =>
+      verifyReviewedProductionTarget({
+        dependencies: { attestTarget },
+        supabaseUrl: "https://aaaaaaaaaaaaaaaaaaaa.supabase.co",
+      }),
+    ).toThrowError(expect.objectContaining({ code: "TARGET_URL_MISMATCH" }));
+    expect(attestTarget).not.toHaveBeenCalled();
+  });
+
+  it("attests the reviewed URL, linked project, organization, and cofounders", () => {
+    const attestTarget = vi.fn(() => targetReady);
+    const reviewedProjectRef = "juqhonvapkrlylvseolu";
+
+    expect(() =>
+      verifyReviewedProductionTarget({
+        dependencies: { attestTarget },
+        supabaseUrl: `https://${reviewedProjectRef}.supabase.co`,
+      }),
+    ).not.toThrow();
+    expect(attestTarget).toHaveBeenCalledWith({
+      organizationIdSha256:
+        "3a4a564659d65572eb77be0e02c3b6d61ecd659761802e0b521486bddb9ba461",
+      projectRefSha256:
+        "afde75cbef68512550adedf94df1452f069248f98ed15874d0628c5994b12232",
+    });
+  });
+
   it("rejects a different database workdir before invoking Supabase", () => {
     const spawn = providerMustNotRun();
     const dependencies = createFilesystemDependencies("/other", {
