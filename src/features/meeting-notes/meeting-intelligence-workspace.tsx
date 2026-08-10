@@ -1222,8 +1222,8 @@ export function MeetingIntelligenceWorkspace({
                   style={{ color: "var(--maison-text-muted)" }}
                 >
                   Une ancienne autorisation Drive trop large a été bloquée.
-                  Reconnectez Google depuis Intégrations avec les droits
-                  minimaux.
+                  Révoquez cet accès depuis Intégrations, puis reconnectez
+                  Google avec les droits minimaux.
                 </p>
               </div>
             </div>
@@ -1235,7 +1235,7 @@ export function MeetingIntelligenceWorkspace({
               href="/integrations"
             >
               <ExternalLink className="h-4 w-4" aria-hidden="true" />
-              Revoir la connexion Google
+              Révoquer et reconnecter Google
             </a>
           </>
         ) : (

@@ -201,6 +201,7 @@ function IntegrationCard({ integration }: { integration: IntegrationHealth }) {
                 ? "Reconnecter Google"
                 : undefined
             }
+            requiresRevocation={integration.requiresRevocation}
           />
         </div>
       ) : null}

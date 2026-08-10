@@ -2,15 +2,23 @@
 
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CalendarCheck, CheckCircle2, Loader2, LogOut } from "lucide-react";
+import {
+  CalendarCheck,
+  CheckCircle2,
+  Loader2,
+  LogOut,
+  ShieldAlert,
+} from "lucide-react";
 
 import { cn } from "@/lib/cn";
+import { GOOGLE_REVOCATION_CONFIRMATION } from "@/platform/integrations/google-revocation-contract";
 
 type GoogleConnectButtonProps = {
   className?: string;
   connectedAccount?: string;
   initialConnected?: boolean;
   label?: string;
+  requiresRevocation?: boolean;
 };
 
 export function GoogleConnectButton({
@@ -18,6 +26,7 @@ export function GoogleConnectButton({
   connectedAccount,
   initialConnected = false,
   label = "Login with Gmail",
+  requiresRevocation: initialRequiresRevocation = false,
 }: GoogleConnectButtonProps) {
   const router = useRouter();
   const popupRef = useRef<Window | null>(null);
@@ -28,9 +37,16 @@ export function GoogleConnectButton({
     string | undefined
   >(undefined);
   const [message, setMessage] = useState("");
+  const [requiresRevocationState, setRequiresRevocationState] = useState<
+    boolean | null
+  >(null);
+  const [showRevocationConfirmation, setShowRevocationConfirmation] =
+    useState(false);
 
   const isConnected = connectedState ?? initialConnected;
   const accountLabel = accountLabelState ?? connectedAccount;
+  const requiresRevocation =
+    requiresRevocationState ?? initialRequiresRevocation;
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
@@ -114,6 +130,113 @@ export function GoogleConnectButton({
       setIsConnecting(false);
     }
   };
+
+  const revokeLegacyGrant = async () => {
+    setIsConnecting(true);
+    setMessage("Révocation Google en cours...");
+    try {
+      const response = await fetch("/api/integrations/google/revoke", {
+        body: JSON.stringify({
+          confirmation: GOOGLE_REVOCATION_CONFIRMATION,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        ok?: boolean;
+      } | null;
+      if (!response.ok || !payload?.ok) {
+        setMessage(
+          payload?.error ??
+            "La révocation Google n’a pas pu être confirmée. Réessayez.",
+        );
+        return;
+      }
+
+      setRequiresRevocationState(false);
+      setConnectedState(false);
+      setAccountLabelState(undefined);
+      setShowRevocationConfirmation(false);
+      setMessage(
+        "Ancienne autorisation révoquée. Reconnectez maintenant Google avec les droits minimaux.",
+      );
+      router.refresh();
+    } catch {
+      setMessage("Échec de la communication avec le serveur.");
+    } finally {
+      setIsConnecting(false);
+    }
+  };
+
+  if (requiresRevocation) {
+    return (
+      <div className={cn("flex w-full flex-col gap-2", className)}>
+        <div className="inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 text-xs font-semibold tracking-wide text-amber-800 dark:text-amber-300">
+          <ShieldAlert className="h-4 w-4 flex-none" aria-hidden="true" />
+          <span>Ancienne autorisation Google bloquée</span>
+        </div>
+        {showRevocationConfirmation ? (
+          <div
+            className="rounded-lg border border-amber-500/30 bg-amber-500/5 p-3"
+            role="alert"
+          >
+            <p className="text-xs leading-5 text-stone-700 dark:text-stone-300">
+              Confirmez la révocation de l’accès Google accordé à NAIA. Aucun
+              fichier, e-mail ou événement ne sera supprimé. Vous devrez ensuite
+              reconnecter Google avec les droits minimaux.
+            </p>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                className="inline-flex min-h-8 items-center justify-center gap-1.5 rounded-lg border border-rose-500/25 bg-rose-500/10 px-3 text-xs font-semibold text-rose-700 transition hover:bg-rose-500/20 disabled:opacity-50 dark:text-rose-300"
+                disabled={isConnecting}
+                onClick={() => void revokeLegacyGrant()}
+                type="button"
+              >
+                {isConnecting ? (
+                  <Loader2
+                    className="h-3.5 w-3.5 animate-spin"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <ShieldAlert className="h-3.5 w-3.5" aria-hidden="true" />
+                )}
+                Confirmer la révocation
+              </button>
+              <button
+                className="inline-flex min-h-8 items-center justify-center rounded-lg border border-stone-300 px-3 text-xs font-medium text-stone-700 transition hover:bg-stone-100 disabled:opacity-50 dark:border-stone-700 dark:text-stone-300 dark:hover:bg-stone-900"
+                disabled={isConnecting}
+                onClick={() => {
+                  setShowRevocationConfirmation(false);
+                  setMessage("");
+                }}
+                type="button"
+              >
+                Annuler
+              </button>
+            </div>
+          </div>
+        ) : (
+          <button
+            className="inline-flex min-h-9 w-full items-center justify-center gap-2 rounded-xl bg-[var(--maison-sidebar)] px-4 text-xs font-semibold uppercase tracking-wider text-white shadow-2xs transition hover:opacity-90"
+            onClick={() => {
+              setShowRevocationConfirmation(true);
+              setMessage("");
+            }}
+            type="button"
+          >
+            <ShieldAlert className="h-4 w-4" aria-hidden="true" />
+            Révoquer l’ancien accès
+          </button>
+        )}
+        {message ? (
+          <p className="text-xs leading-5 text-stone-500" aria-live="polite">
+            {message}
+          </p>
+        ) : null}
+      </div>
+    );
+  }
 
   if (isConnected) {
     return (

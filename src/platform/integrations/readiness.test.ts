@@ -50,53 +50,9 @@ describe("integration readiness", () => {
   it("reports a connected legacy broad Drive credential as needs-review", async () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "client-id");
     vi.stubEnv("GOOGLE_CLIENT_SECRET", "client-secret");
-    const membershipQuery: Record<string, unknown> = {
-      maybeSingle: vi.fn().mockResolvedValue({
-        data: { organization_id: "organization-1" },
-        error: null,
-      }),
-    };
-    for (const method of ["eq", "limit", "select"]) {
-      membershipQuery[method] = vi.fn(() => membershipQuery);
-    }
-    const connectionResult = {
-      data: [
-        {
-          encrypted_token_reference: "sealed-token-reference",
-          external_account_label: "ali@qarizmi.com",
-          provider: "google",
-          scopes: [
-            "https://www.googleapis.com/auth/calendar.events",
-            "https://www.googleapis.com/auth/calendar.freebusy",
-            "https://www.googleapis.com/auth/gmail.readonly",
-            "https://www.googleapis.com/auth/gmail.send",
-            "https://www.googleapis.com/auth/drive.file",
-          ],
-          status: "connected",
-        },
-      ],
-      error: null,
-    };
-    const connectionQuery: Record<string, unknown> = {
-      then: (resolve: (value: typeof connectionResult) => unknown) =>
-        Promise.resolve(resolve(connectionResult)),
-    };
-    for (const method of ["eq", "select"]) {
-      connectionQuery[method] = vi.fn(() => connectionQuery);
-    }
-    mocks.createServerSupabaseClient.mockResolvedValue({
-      auth: {
-        getUser: vi.fn().mockResolvedValue({
-          data: { user: { id: "profile-1" } },
-          error: null,
-        }),
-      },
-      from: vi.fn((table: string) =>
-        table === "organization_memberships"
-          ? membershipQuery
-          : connectionQuery,
-      ),
-    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createGoogleReadinessClient("connected"),
+    );
 
     const readiness = await getIntegrationReadiness();
     const google = readiness.find((item) => item.provider === "google");
@@ -104,7 +60,80 @@ describe("integration readiness", () => {
     expect(google).toMatchObject({
       detail: expect.stringMatching(/autorisation Drive trop large/iu),
       externalAccountLabel: "ali@qarizmi.com",
+      requiresRevocation: true,
       status: "needs-review",
     });
   });
+
+  it("keeps failed legacy revocations actionable but considers a revoked row ready to reconnect", async () => {
+    vi.stubEnv("GOOGLE_CLIENT_ID", "client-id");
+    vi.stubEnv("GOOGLE_CLIENT_SECRET", "client-secret");
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createGoogleReadinessClient("needs-review"),
+    );
+
+    const failedReadiness = await getIntegrationReadiness();
+    expect(
+      failedReadiness.find((item) => item.provider === "google"),
+    ).toMatchObject({ requiresRevocation: true, status: "needs-review" });
+
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createGoogleReadinessClient("revoked"),
+    );
+    const revokedReadiness = await getIntegrationReadiness();
+    expect(
+      revokedReadiness.find((item) => item.provider === "google"),
+    ).toMatchObject({ status: "ready-to-connect" });
+    expect(
+      revokedReadiness.find((item) => item.provider === "google"),
+    ).not.toHaveProperty("requiresRevocation", true);
+  });
 });
+
+function createGoogleReadinessClient(status: string) {
+  const membershipQuery: Record<string, unknown> = {
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: { organization_id: "organization-1" },
+      error: null,
+    }),
+  };
+  for (const method of ["eq", "limit", "select"]) {
+    membershipQuery[method] = vi.fn(() => membershipQuery);
+  }
+  const connectionResult = {
+    data: [
+      {
+        encrypted_token_reference: "sealed-token-reference",
+        external_account_label: "ali@qarizmi.com",
+        provider: "google",
+        scopes: [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/gmail.send",
+          "https://www.googleapis.com/auth/drive.file",
+        ],
+        status,
+      },
+    ],
+    error: null,
+  };
+  const connectionQuery: Record<string, unknown> = {
+    then: (resolve: (value: typeof connectionResult) => unknown) =>
+      Promise.resolve(resolve(connectionResult)),
+  };
+  for (const method of ["eq", "select"]) {
+    connectionQuery[method] = vi.fn(() => connectionQuery);
+  }
+  return {
+    auth: {
+      getUser: vi.fn().mockResolvedValue({
+        data: { user: { id: "profile-1" } },
+        error: null,
+      }),
+    },
+    from: vi.fn((table: string) =>
+      table === "organization_memberships" ? membershipQuery : connectionQuery,
+    ),
+  };
+}

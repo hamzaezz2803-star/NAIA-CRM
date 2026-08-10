@@ -531,7 +531,7 @@ describe("MeetingIntelligenceWorkspace", () => {
       screen.getByText(/ancienne autorisation Drive trop large a été bloquée/i),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("link", { name: "Revoir la connexion Google" }),
+      screen.getByRole("link", { name: "Révoquer et reconnecter Google" }),
     ).toHaveAttribute("href", "/integrations");
     expect(
       screen.queryByRole("button", {

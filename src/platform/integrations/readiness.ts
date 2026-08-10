@@ -57,25 +57,30 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       };
     }
 
+    if (
+      connection &&
+      connection.status !== "revoked" &&
+      legacyDrivePermission
+    ) {
+      return {
+        capabilities: [...provider.capabilities],
+        detail:
+          "Cette connexion utilise une ancienne autorisation Drive trop large. Révoque explicitement cet accès, puis reconnecte Google Workspace avec les autorisations minimales.",
+        envVars: [...provider.envVars],
+        externalAccountLabel: connection.external_account_label ?? undefined,
+        isImplemented: true,
+        label: provider.label,
+        missingEnvVars,
+        plannedScopes: [...provider.plannedScopes],
+        provider: provider.provider,
+        requiresRevocation: true,
+        scopes,
+        status: "needs-review",
+      };
+    }
+
     if (connection?.status === "connected") {
       const hasTokenReference = Boolean(connection.encrypted_token_reference);
-
-      if (legacyDrivePermission) {
-        return {
-          capabilities: [...provider.capabilities],
-          detail:
-            "Cette connexion utilise une ancienne autorisation Drive trop large. Reconnecte Google Workspace avec les autorisations minimales.",
-          envVars: [...provider.envVars],
-          externalAccountLabel: connection.external_account_label ?? undefined,
-          isImplemented: true,
-          label: provider.label,
-          missingEnvVars,
-          plannedScopes: [...provider.plannedScopes],
-          provider: provider.provider,
-          scopes,
-          status: "needs-review",
-        };
-      }
 
       if (
         missingEnvVars.length === 0 &&
