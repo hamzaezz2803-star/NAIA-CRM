@@ -106,12 +106,7 @@ export async function planNaiaAssistant({
     crmReadLeads,
     selectedLeadId: selectedLead?.id,
   });
-  if (
-    !allowPersonalData &&
-    localResult.agent.id === "crm" &&
-    localResult.actions.length === 0 &&
-    localResult.responseType === "answer"
-  ) {
+  if (!allowPersonalData && localResult.agent.id === "crm") {
     return {
       mode: "local-orchestrated",
       result: createDirectAnswer({

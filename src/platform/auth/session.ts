@@ -20,11 +20,13 @@ export type AppSession = {
   authMode: "supabase";
   isSupabaseConfigured: boolean;
   user: {
+    id: string;
     name: string;
     email: string;
     role: OrganizationRole;
   };
   organization: {
+    id: string;
     name: string;
     slug: string;
   };
@@ -43,11 +45,13 @@ export async function getAppSession(): Promise<AppSession> {
         authMode: "supabase",
         isSupabaseConfigured: configured,
         user: {
+          id: "development-user",
           name: "Hamza (Dev Bypass)",
           email: "hamza@qarizmi.com",
           role: "owner",
         },
         organization: {
+          id: "development-organization",
           name: "NAIA-os Dev",
           slug: "naia-os",
         },
@@ -65,11 +69,13 @@ export async function getAppSession(): Promise<AppSession> {
         authMode: "supabase",
         isSupabaseConfigured: configured,
         user: {
+          id: user.id,
           name: getDisplayName(user),
           email: user.email ?? "unknown@qarizmi.com",
           role: "owner",
         },
         organization: {
+          id: "development-organization",
           name: "NAIA-os Dev",
           slug: "naia-os",
         },
@@ -84,12 +90,14 @@ export async function getAppSession(): Promise<AppSession> {
     authMode: "supabase",
     isSupabaseConfigured: configured,
     user: {
+      id: user.id,
       name: getDisplayName(user),
       email: user.email ?? "unknown@qarizmi.com",
       // Real role from organization_memberships; unknown users are viewers.
       role: membership?.role ?? "viewer",
     },
     organization: membership?.organization ?? {
+      id: "00000000-0000-0000-0000-000000000000",
       name: "NAIA-os",
       slug: "naia-os",
     },
@@ -97,7 +105,7 @@ export async function getAppSession(): Promise<AppSession> {
 }
 
 async function getMembershipContext(profileId: string): Promise<{
-  organization: { name: string; slug: string };
+  organization: { id: string; name: string; slug: string };
   role: OrganizationRole;
 } | null> {
   const supabase = await createServerSupabaseClient();
@@ -105,7 +113,7 @@ async function getMembershipContext(profileId: string): Promise<{
 
   const { data } = await supabase
     .from("organization_memberships")
-    .select("role, organization:organizations(name, slug)")
+    .select("role, organization:organizations(id, name, slug)")
     .eq("profile_id", profileId)
     .limit(1)
     .maybeSingle();
@@ -121,6 +129,7 @@ async function getMembershipContext(profileId: string): Promise<{
 
   return {
     organization: {
+      id: organization?.id ?? "00000000-0000-0000-0000-000000000000",
       name: organization?.name ?? "NAIA-os",
       slug: organization?.slug ?? "naia-os",
     },

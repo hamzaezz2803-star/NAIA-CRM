@@ -503,6 +503,49 @@ describe("NAIA personal context answers", () => {
     expect(result.response).not.toContain("Abdeslam");
   });
 
+  it("does not expose or prepare CRM lead creation in a shared channel", async () => {
+    const { result } = await planNaiaAssistant({
+      actor,
+      allowPersonalData: false,
+      command:
+        "crée un lead candidat pour Jane Doe, jane.doe@example.com, 0600000000",
+      crmLeads,
+      googleContext,
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("message privé");
+    expect(result.response).not.toContain("Jane Doe");
+    expect(result.response).not.toContain("jane.doe@example.com");
+    expect(result.response).not.toContain("0600000000");
+  });
+
+  it("does not expose or prepare a confidential CRM status update in a shared channel", async () => {
+    const confidentialLead: CrmLeadSummary = {
+      companyName: "Private Candidate Pool",
+      contactName: "Jane Doe",
+      createdAt: "2026-08-10T08:00:00.000Z",
+      id: "lead-private-candidate",
+      organizationId: "org-1",
+      status: "lead-to-contact",
+      topic: "Candidat Jane Doe - RH",
+      updatedAt: "2026-08-10T08:00:00.000Z",
+    };
+    const { result } = await planNaiaAssistant({
+      actor,
+      allowPersonalData: false,
+      command: "passe le lead Candidat Jane Doe - RH en contacted",
+      crmLeads: [...crmLeads, confidentialLead],
+      googleContext,
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("message privé");
+    expect(result.response).not.toContain("Jane Doe");
+    expect(result.response).not.toContain("Private Candidate Pool");
+    expect(result.response).not.toContain("lead-private-candidate");
+  });
+
   it("does not send CRM or Calendar context to Groq from a shared channel", async () => {
     vi.stubEnv("GROQ_API_KEY", "test-groq-key");
     const fetchMock = vi.fn().mockResolvedValue({

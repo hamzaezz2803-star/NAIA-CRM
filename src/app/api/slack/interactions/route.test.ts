@@ -239,11 +239,32 @@ describe("Slack interactions route", () => {
   });
 
   it("marks a dismissed action without executing anything", async () => {
+    const action: NaiaActionDraft = {
+      agentId: "integrations",
+      approvalRequired: true,
+      description: "Lire Gmail",
+      id: draftActionId,
+      kind: "google.gmail.listMessages",
+      label: "Lire Gmail",
+      payload: { maxResults: 10, unreadOnly: true },
+      risk: "low",
+    };
+    const signed = signAction(action, approvalDraft.command, {
+      actorProfileId: bridgeUser.profileId,
+      organizationId: bridgeUser.organizationId,
+    });
     const response = await POST(
       interactionRequest(
         buildInteractionPayload({
           actionId: `naia_dismiss:${draftActionId}`,
-          value: JSON.stringify({ actionId: draftActionId }),
+          value: JSON.stringify({
+            d: {
+              actionId: draftActionId,
+              approvalToken: signed.approvalToken,
+              command: approvalDraft.command,
+            },
+            v: 2,
+          }),
         }),
       ),
     );
@@ -282,7 +303,10 @@ describe("Slack interactions route", () => {
       },
       risk: "medium",
     };
-    const signed = signAction(action, command);
+    const signed = signAction(action, command, {
+      actorProfileId: bridgeUser.profileId,
+      organizationId: bridgeUser.organizationId,
+    });
     const value = JSON.stringify({
       d: {
         actionId: signed.id,
@@ -334,7 +358,10 @@ describe("Slack interactions route", () => {
       },
       risk: "medium",
     };
-    const signed = signAction(action, command);
+    const signed = signAction(action, command, {
+      actorProfileId: bridgeUser.profileId,
+      organizationId: bridgeUser.organizationId,
+    });
     const privateMetadata = JSON.stringify({
       approvalDraft: {
         actionId: signed.id,

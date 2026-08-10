@@ -7,7 +7,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createLeadAction,
   extractLeadFromNaturalTextAction,
-  updateLeadStatusAction,
   type CrmActionContext,
 } from "@/features/crm/actions";
 import {
@@ -62,8 +61,6 @@ import {
 // and channels that store drafts server-side (WhatsApp) pass their own
 // maxLength to planBridgeCommand instead of inheriting the Slack constraint.
 export const SLACK_COMMAND_MAX_LENGTH = 500;
-
-const CONSUMED_TOKEN_RETENTION_MS = 10 * 60 * 1000;
 
 export type NaiaBridgeUser = {
   email: string;
@@ -173,7 +170,12 @@ export async function planBridgeCommand(
   const actions = await prepareBridgeActions(cleanCommand, result.actions);
 
   return {
-    actions: actions.map((action) => signAction(action, cleanCommand)),
+    actions: actions.map((action) =>
+      signAction(action, cleanCommand, {
+        actorProfileId: user.profileId,
+        organizationId: user.organizationId,
+      }),
+    ),
     agentName: result.agent.name,
     command: cleanCommand,
     mode,
@@ -196,7 +198,10 @@ export async function executeBridgeAction(
 ): Promise<NaiaBridgeExecution> {
   // The token is the source of truth: it embeds the exact action the user
   // approved, so execution runs the decoded action, never a re-derived one.
-  const action = verifyApprovalToken(approvalToken, actionId, command);
+  const action = verifyApprovalToken(approvalToken, actionId, command, {
+    actorProfileId: user.profileId,
+    organizationId: user.organizationId,
+  });
   if (!action) {
     return {
       message:
@@ -213,25 +218,37 @@ export async function executeBridgeAction(
     };
   }
 
+  if (action.kind === "crm.updateLeadStatus") {
+    const status = coerceStatus(action.payload.status);
+    if (!status) {
+      return { message: "Statut CRM invalide.", success: false };
+    }
+
+    return executeBridgeLeadStatusAction({
+      action,
+      approvalToken,
+      status,
+      supabase,
+      user,
+    });
+  }
+
   // Single-use claim BEFORE any side effect: the first click inserts the
   // token hash, any concurrent or repeated click fails on the primary key.
-  const claim = await claimApprovalToken(
-    supabase,
-    approvalToken,
-    user.organizationId,
-  );
+  const claim = await claimApprovalToken(supabase, approvalToken, user);
   if (!claim.claimed) {
     return { message: claim.message, success: false };
   }
 
+  const executionUser = claim.user;
   const crmContext: CrmActionContext = {
-    actorProfileId: user.profileId,
-    organizationId: user.organizationId,
+    actorProfileId: executionUser.profileId,
+    organizationId: executionUser.organizationId,
     supabase,
   };
   const googleContext = {
-    organizationId: user.organizationId,
-    profileId: user.profileId,
+    organizationId: executionUser.organizationId,
+    profileId: executionUser.profileId,
     supabase,
   };
 
@@ -288,31 +305,8 @@ export async function executeBridgeAction(
     }
   }
 
-  if (action.kind === "crm.updateLeadStatus") {
-    const denied = requireCrmPermission(user, "update");
-    if (denied) return denied;
-
-    const status = coerceStatus(action.payload.status);
-    if (!status) {
-      return { message: "Statut CRM invalide.", success: false };
-    }
-
-    const response = await updateLeadStatusAction(
-      action.payload.leadId,
-      status,
-      crmContext,
-    );
-
-    return {
-      message: response.success
-        ? `Statut CRM appliqué pour "${action.payload.leadLabel}".`
-        : (response.error ?? "Action CRM impossible."),
-      success: response.success,
-    };
-  }
-
   if (action.kind === "crm.createLead") {
-    const denied = requireCrmPermission(user, "create");
+    const denied = requireCrmPermission(executionUser, "create");
     if (denied) return denied;
 
     const draft = action.payload;
@@ -335,6 +329,7 @@ export async function executeBridgeAction(
         notes: draft.notes,
         source: draft.source || "NAIA",
         status,
+        tagNames: draft.tags,
         topic,
       },
       crmContext,
@@ -409,39 +404,87 @@ export async function executeBridgeAction(
 async function claimApprovalToken(
   supabase: SupabaseClient,
   approvalToken: string,
-  organizationId: string,
-): Promise<{ claimed: true } | { claimed: false; message: string }> {
+  user: NaiaBridgeUser,
+): Promise<
+  { claimed: true; user: NaiaBridgeUser } | { claimed: false; message: string }
+> {
   const tokenHash = createHash("sha256").update(approvalToken).digest("hex");
 
-  // Opportunistic purge: consumed rows are useless once the 5 minute token
-  // TTL has passed; 10 minutes keeps a safety margin for clock skew.
-  await supabase
-    .from("naia_consumed_action_tokens")
-    .delete()
-    .lt(
-      "consumed_at",
-      new Date(Date.now() - CONSUMED_TOKEN_RETENTION_MS).toISOString(),
-    );
-
-  const { error } = await supabase.from("naia_consumed_action_tokens").insert({
-    organization_id: organizationId,
-    token_hash: tokenHash,
+  // This RPC re-reads auth.users, membership role, organization, and the
+  // optional CRM lead's current scope/archived state in the same transaction
+  // that claims the token. Service-role execution therefore never trusts the
+  // actor or CRM snapshot captured during planning.
+  const { data, error } = await supabase.rpc("claim_crm_bridge_action", {
+    requested_actor_email: user.email,
+    requested_actor_profile_id: user.profileId,
+    requested_crm_lead_id: null,
+    requested_organization_id: user.organizationId,
+    requested_token_hash: tokenHash,
   });
 
-  if (!error) {
-    return { claimed: true };
+  const claimRow = Array.isArray(data) ? data[0] : data;
+  const freshRole = claimRow?.actor_role as OrganizationRole | undefined;
+
+  if (!error && freshRole && organizationRoles.includes(freshRole)) {
+    return { claimed: true, user: { ...user, role: freshRole } };
   }
 
-  if (error.code === "23505") {
+  if (error?.code === "23505") {
     return { claimed: false, message: "Cette action a déjà été validée." };
   }
 
-  // Fail closed: without a registered claim the action must not run.
-  console.error("NAIA bridge approval token claim failed:", error);
+  // Fail closed: stale identity, membership, confidentiality, archive state,
+  // or an unavailable claim ledger all prevent execution.
+  console.error("NAIA bridge approval token validation/claim failed:", error);
   return {
     claimed: false,
     message:
       "Validation impossible pour le moment (enregistrement du jeton). Réessaie dans un instant.",
+  };
+}
+
+async function executeBridgeLeadStatusAction({
+  action,
+  approvalToken,
+  status,
+  supabase,
+  user,
+}: {
+  action: Extract<NaiaActionDraft, { kind: "crm.updateLeadStatus" }>;
+  approvalToken: string;
+  status: CrmLeadStatus;
+  supabase: SupabaseClient;
+  user: NaiaBridgeUser;
+}): Promise<NaiaBridgeExecution> {
+  const tokenHash = createHash("sha256").update(approvalToken).digest("hex");
+  const { data, error } = await supabase.rpc(
+    "execute_crm_bridge_lead_status_action",
+    {
+      requested_actor_email: user.email,
+      requested_actor_profile_id: user.profileId,
+      requested_crm_lead_id: action.payload.leadId,
+      requested_organization_id: user.organizationId,
+      requested_status: status,
+      requested_token_hash: tokenHash,
+    },
+  );
+
+  if (!error && data) {
+    return {
+      message: `Statut CRM appliqué pour "${action.payload.leadLabel}".`,
+      success: true,
+    };
+  }
+
+  if (error?.code === "23505") {
+    return { message: "Cette action a déjà été validée.", success: false };
+  }
+
+  console.error("NAIA bridge atomic CRM status execution failed:", error);
+  return {
+    message:
+      "Action CRM refusée : le compte, le rôle, le périmètre ou le lead a changé depuis la préparation.",
+    success: false,
   };
 }
 
