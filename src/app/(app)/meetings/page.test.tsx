@@ -2,138 +2,130 @@ import { render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  fetchLeadsAction: vi.fn(),
+  fetchMeetingIntelligenceAction: vi.fn(),
   getAppSession: vi.fn(),
-  getIntegrationReadiness: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
 }));
 
-vi.mock("@/features/crm/actions", () => ({
-  fetchLeadsAction: mocks.fetchLeadsAction,
-  generateFollowUpDraftAction: vi.fn(),
-  syncLeadToGoogleCalendarAction: vi.fn(),
-  updateLeadStatusAction: vi.fn(),
+vi.mock("@/features/meeting-notes/actions", () => ({
+  fetchMeetingIntelligenceAction: mocks.fetchMeetingIntelligenceAction,
 }));
 
 vi.mock("@/platform/auth/session", () => ({
   getAppSession: mocks.getAppSession,
 }));
 
-vi.mock("@/platform/integrations/readiness", () => ({
-  getIntegrationReadiness: mocks.getIntegrationReadiness,
-}));
-
 vi.mock("@/platform/integrations/google-workspace", () => ({
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
 
-vi.mock("@/components/integrations/google-connect-button", () => ({
-  GoogleConnectButton: () => <button type="button">Login with Gmail</button>,
-}));
-
-vi.mock("next/link", () => ({
-  default: ({
-    children,
-    href,
+vi.mock("@/features/meeting-notes/meeting-intelligence-workspace", () => ({
+  MeetingIntelligenceWorkspace: ({
+    calendarEvents,
+    calendarUnavailable,
+    variant,
   }: {
-    children: React.ReactNode;
-    href: string;
-  }) => <a href={href}>{children}</a>,
+    calendarEvents: Array<{ id: string; title: string }>;
+    calendarUnavailable: boolean;
+    variant: string;
+  }) => (
+    <div
+      data-calendar-unavailable={String(calendarUnavailable)}
+      data-testid="meeting-workspace"
+      data-variant={variant}
+    >
+      {calendarEvents.map((event) => (
+        <span key={event.id}>{event.title}</span>
+      ))}
+    </div>
+  ),
 }));
 
 import MeetingsPage from "./page";
 
-const crmLeadBase = {
-  createdAt: "2026-07-01T10:00:00.000Z",
-  organizationId: "org-1",
-  updatedAt: "2026-07-01T10:00:00.000Z",
-};
-
 describe("Meetings page", () => {
   beforeEach(() => {
-    mocks.fetchLeadsAction.mockResolvedValue([]);
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-10T08:30:00.000Z"));
     mocks.getAppSession.mockResolvedValue({
       authMode: "supabase",
       isSupabaseConfigured: true,
       organization: { name: "Qarizmi", slug: "qarizmi" },
-      user: { email: "ali@qarizmi.com", name: "Ali El Abbassy", role: "owner" },
+      user: { email: "ali@qarizmi.com", name: "Ali", role: "owner" },
     });
-    mocks.getIntegrationReadiness.mockResolvedValue([
-      {
-        externalAccountLabel: "ali@qarizmi.com",
-        provider: "google",
-        status: "connected",
-      },
-    ]);
+    mocks.fetchMeetingIntelligenceAction.mockResolvedValue({
+      configured: true,
+      meetings: [],
+      organizationId: "org-1",
+    });
     mocks.listGoogleCalendarEvents.mockResolvedValue([]);
   });
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.useRealTimers();
   });
 
-  it("renders normally when the user has no Google connection", async () => {
-    mocks.getIntegrationReadiness.mockResolvedValue([
-      { provider: "google", status: "disconnected" },
-    ]);
+  it("keeps manual note taking available when Google Calendar is unavailable", async () => {
     mocks.listGoogleCalendarEvents.mockRejectedValue(
       new Error("Google Workspace is not connected for this user."),
     );
 
     render(await MeetingsPage());
 
-    expect(screen.getByText("Meetings")).toBeInTheDocument();
-    expect(screen.getByText("Planning des réunions")).toBeInTheDocument();
-    expect(screen.queryByText("Mon agenda Google")).not.toBeInTheDocument();
+    expect(screen.getByTestId("meeting-workspace")).toHaveAttribute(
+      "data-variant",
+      "focus",
+    );
+    expect(screen.getByTestId("meeting-workspace")).toHaveAttribute(
+      "data-calendar-unavailable",
+      "true",
+    );
   });
 
-  it("lists Google agenda events and hides those already synced from a CRM lead", async () => {
-    mocks.fetchLeadsAction.mockResolvedValue([
-      {
-        ...crmLeadBase,
-        id: "lead-hps",
-        leadDate: "2026-07-10T09:00:00.000Z",
-        notes:
-          "Entreprise: HPS\n[Google Calendar Event ID: evt-synced]\n[Google Calendar Event Link: https://calendar.google.com/event?eid=synced]",
-        status: "meeting-booked",
-        topic: "Meeting HPS",
-      },
-    ]);
+  it("loads the complete Casablanca day and passes only that agenda to focus mode", async () => {
     mocks.listGoogleCalendarEvents.mockResolvedValue([
       {
-        htmlLink: "https://calendar.google.com/event?eid=synced",
-        id: "evt-synced",
-        start: "2026-07-10T09:00:00.000Z",
-        title: "Meeting HPS - Abdeslam",
-      },
-      {
-        htmlLink: "https://calendar.google.com/event?eid=personal",
-        id: "evt-personal",
-        start: "2026-07-11T14:30:00.000Z",
-        title: "Point interne Qarizmi",
+        id: "evt-oracle",
+        start: "2026-08-10T10:30:00+01:00",
+        title: "Oracle: AI & Data management Q/A",
       },
     ]);
 
     render(await MeetingsPage());
 
     expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith({
-      daysAhead: 14,
-      maxResults: 25,
+      maxResults: 50,
+      timeMax: "2026-08-10T23:00:00.000Z",
+      timeMin: "2026-08-09T23:00:00.000Z",
     });
-    expect(screen.getByText("Mon agenda Google")).toBeInTheDocument();
-    expect(screen.getByText("Google Agenda")).toBeInTheDocument();
-    expect(screen.getByText("Point interne Qarizmi")).toBeInTheDocument();
     expect(
-      screen.queryByText("Meeting HPS - Abdeslam"),
-    ).not.toBeInTheDocument();
-
-    const agendaLink = screen.getByRole("link", {
-      name: /Ouvrir dans Agenda/,
-    });
-    expect(agendaLink).toHaveAttribute(
-      "href",
-      "https://calendar.google.com/event?eid=personal",
+      screen.getByText("Oracle: AI & Data management Q/A"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("meeting-workspace")).toHaveAttribute(
+      "data-calendar-unavailable",
+      "false",
     );
-    expect(agendaLink).toHaveAttribute("target", "_blank");
+  });
+
+  it("does not load private meeting data for another account", async () => {
+    mocks.getAppSession.mockResolvedValue({
+      authMode: "supabase",
+      isSupabaseConfigured: true,
+      organization: { name: "Qarizmi", slug: "qarizmi" },
+      user: {
+        email: "stagiaire@qarizmi.com",
+        name: "Stagiaire",
+        role: "member",
+      },
+    });
+
+    render(await MeetingsPage());
+
+    expect(
+      screen.getByText("Les notes de meeting sont réservées à Ali et Nabil."),
+    ).toBeInTheDocument();
+    expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
+    expect(mocks.fetchMeetingIntelligenceAction).not.toHaveBeenCalled();
   });
 });

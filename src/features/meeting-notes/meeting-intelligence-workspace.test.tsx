@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   fetchMeetingIntelligenceAction: vi.fn(),
   fetchMeetingTranscriptAction: vi.fn(),
   linkGeminiArtifactToMeetingAction: vi.fn(),
+  openMeetingWorkspaceAction: vi.fn(),
   queueMeetingProcessingAction: vi.fn(),
   registerMeetingSupportAction: vi.fn(),
   retryMeetingDriveArchiveAction: vi.fn(),
@@ -26,12 +27,17 @@ vi.mock("./actions", () => ({
   fetchMeetingIntelligenceAction: mocks.fetchMeetingIntelligenceAction,
   fetchMeetingTranscriptAction: mocks.fetchMeetingTranscriptAction,
   linkGeminiArtifactToMeetingAction: mocks.linkGeminiArtifactToMeetingAction,
+  openMeetingWorkspaceAction: mocks.openMeetingWorkspaceAction,
   queueMeetingProcessingAction: mocks.queueMeetingProcessingAction,
   registerMeetingSupportAction: mocks.registerMeetingSupportAction,
   retryMeetingDriveArchiveAction: mocks.retryMeetingDriveArchiveAction,
   retryMeetingProcessingAction: mocks.retryMeetingProcessingAction,
   saveMeetingCaptureDraftAction: mocks.saveMeetingCaptureDraftAction,
   syncGeminiMeetingNotesAction: mocks.syncGeminiMeetingNotesAction,
+}));
+
+vi.mock("./calendar-day", () => ({
+  isMeetingOnDay: () => true,
 }));
 
 vi.mock("@/platform/auth/supabase-client", () => ({
@@ -91,6 +97,19 @@ describe("MeetingIntelligenceWorkspace", () => {
       total: 0,
     });
     mocks.linkGeminiArtifactToMeetingAction.mockResolvedValue({
+      success: true,
+    });
+    mocks.openMeetingWorkspaceAction.mockResolvedValue({
+      meeting: {
+        attendees: [],
+        calendarEventId: "calendar-event-focus",
+        id: "77777777-7777-4777-8777-777777777777",
+        liveNotesMarkdown: "",
+        organizationId,
+        startsAt: "2026-08-10T10:00:00.000Z",
+        status: "scheduled",
+        title: "Point client du jour",
+      },
       success: true,
     });
     mocks.askMeetingKnowledgeAction.mockResolvedValue({
@@ -684,6 +703,369 @@ describe("MeetingIntelligenceWorkspace", () => {
       });
     });
     expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("shows only today's Calendar choices in focus mode and removes the recording chrome", async () => {
+    mocks.openMeetingWorkspaceAction.mockResolvedValueOnce({
+      meeting: {
+        attendees: [{ displayName: "Sara Benali", email: "sara@client.com" }],
+        calendarEventId: "calendar-event-focus",
+        id: "77777777-7777-4777-8777-777777777777",
+        liveNotesMarkdown: "",
+        organizationId,
+        startsAt: "2026-08-10T10:00:00.000Z",
+        status: "scheduled",
+        title: "Point client du jour",
+      },
+      success: true,
+    });
+
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            attendees: [
+              { displayName: "Sara Benali", email: "sara@client.com" },
+            ],
+            id: "calendar-event-focus",
+            start: "2026-08-10T10:00:00.000Z",
+            title: "Point client du jour",
+          },
+        ]}
+        initialState={baseState}
+        variant="focus"
+      />,
+    );
+
+    expect(
+      screen.queryByRole("option", { name: /Meeting HPS/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: /Point client du jour/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "Nouveau meeting" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Ouvrir les comptes rendus" }),
+    ).toHaveAttribute("href", "/meetings/history");
+
+    fireEvent.change(screen.getByLabelText("Meeting du jour"), {
+      target: { value: "calendar-event-focus" },
+    });
+
+    await waitFor(() =>
+      expect(mocks.openMeetingWorkspaceAction).toHaveBeenCalledWith({
+        calendarEventId: "calendar-event-focus",
+        source: "google-calendar",
+      }),
+    );
+    expect(await screen.findByLabelText("Titre du meeting")).toHaveValue(
+      "Point client du jour",
+    );
+    expect(screen.getByLabelText("Participants")).toHaveValue(
+      "Sara Benali <sara@client.com>",
+    );
+    expect(screen.getByLabelText("Notes")).toBeInTheDocument();
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Capture en cours/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Aucun compte rendu pour ce meeting/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(/Enregistre le meeting ou importe son audio/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /pause|reprendre/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("creates a manual meeting only after the founder fills its details", async () => {
+    mocks.openMeetingWorkspaceAction.mockResolvedValueOnce({
+      meeting: {
+        attendees: [{ name: "Nabil" }],
+        id: "88888888-8888-4888-8888-888888888888",
+        liveNotesMarkdown: "",
+        organizationId,
+        startsAt: "2026-08-10T11:00:00.000Z",
+        status: "scheduled",
+        title: "Point Qarizmi",
+      },
+      success: true,
+    });
+
+    render(
+      <MeetingIntelligenceWorkspace initialState={baseState} variant="focus" />,
+    );
+    fireEvent.change(screen.getByLabelText("Meeting du jour"), {
+      target: { value: "manual" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("Titre du meeting"), {
+      target: { value: "Point Qarizmi" },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/Participants \(noms/i), {
+      target: { value: "Nabil" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Commencer" }));
+
+    await waitFor(() =>
+      expect(mocks.openMeetingWorkspaceAction).toHaveBeenCalledWith({
+        attendees: [{ name: "Nabil" }],
+        source: "manual",
+        title: "Point Qarizmi",
+      }),
+    );
+    expect(await screen.findByLabelText("Notes")).toBeInTheDocument();
+  });
+
+  it("lets the founder retry the same Calendar meeting after an open failure", async () => {
+    mocks.openMeetingWorkspaceAction
+      .mockResolvedValueOnce({
+        error: "Google temporairement indisponible",
+        success: false,
+      })
+      .mockResolvedValueOnce({
+        meeting: {
+          attendees: [],
+          calendarEventId: "calendar-event-retry",
+          id: "99999999-9999-4999-8999-999999999999",
+          liveNotesMarkdown: "",
+          organizationId,
+          startsAt: "2026-08-10T10:00:00.000Z",
+          status: "scheduled",
+          title: "Meeting à réessayer",
+        },
+        success: true,
+      });
+
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            id: "calendar-event-retry",
+            start: "2026-08-10T10:00:00.000Z",
+            title: "Meeting à réessayer",
+          },
+        ]}
+        initialState={baseState}
+        variant="focus"
+      />,
+    );
+
+    const selector = screen.getByLabelText("Meeting du jour");
+    fireEvent.change(selector, { target: { value: "calendar-event-retry" } });
+    expect(
+      await screen.findByText("Google temporairement indisponible"),
+    ).toBeInTheDocument();
+    expect(selector).toHaveValue("");
+
+    fireEvent.change(selector, { target: { value: "calendar-event-retry" } });
+    expect(await screen.findByLabelText("Notes")).toBeInTheDocument();
+    expect(mocks.openMeetingWorkspaceAction).toHaveBeenCalledTimes(2);
+  });
+
+  it("detaches the previous draft before awaiting another Calendar meeting", async () => {
+    const localDrafts = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      clear: () => localDrafts.clear(),
+      getItem: (key: string) => localDrafts.get(key) ?? null,
+      removeItem: (key: string) => localDrafts.delete(key),
+      setItem: (key: string, value: string) => localDrafts.set(key, value),
+    });
+    mocks.openMeetingWorkspaceAction
+      .mockResolvedValueOnce({
+        meeting: {
+          attendees: [],
+          calendarEventId: "calendar-event-one",
+          id: "77777777-7777-4777-8777-777777777777",
+          liveNotesMarkdown: "Notes du premier meeting",
+          organizationId,
+          startsAt: "2026-08-10T09:00:00.000Z",
+          status: "scheduled",
+          title: "Premier meeting",
+        },
+        success: true,
+      })
+      .mockImplementationOnce(() => new Promise(() => undefined));
+
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            id: "calendar-event-one",
+            start: "2026-08-10T09:00:00.000Z",
+            title: "Premier meeting",
+          },
+          {
+            id: "calendar-event-two",
+            start: "2026-08-10T11:00:00.000Z",
+            title: "Deuxième meeting",
+          },
+        ]}
+        initialState={baseState}
+        variant="focus"
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Meeting du jour"), {
+      target: { value: "calendar-event-one" },
+    });
+    await screen.findByLabelText("Notes");
+    mocks.saveMeetingCaptureDraftAction.mockClear();
+    fireEvent.change(screen.getByLabelText("Notes"), {
+      target: { value: "Dernières notes juste avant le changement" },
+    });
+
+    fireEvent.change(screen.getByLabelText("Meeting du jour"), {
+      target: { value: "calendar-event-two" },
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 1_350));
+
+    expect(mocks.saveMeetingCaptureDraftAction).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        meetingId: "77777777-7777-4777-8777-777777777777",
+        title: "Deuxième meeting",
+      }),
+    );
+    expect(
+      JSON.parse(
+        window.localStorage.getItem(
+          "naia:meeting-draft:77777777-7777-4777-8777-777777777777",
+        ) ?? "{}",
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        liveNotesMarkdown: "Dernières notes juste avant le changement",
+        title: "Premier meeting",
+      }),
+    );
+  });
+
+  it("starts without a consent checkbox and exposes only the neutral Traiter action", async () => {
+    const stop = vi.fn();
+    class FocusMediaRecorder {
+      static isTypeSupported() {
+        return true;
+      }
+
+      mimeType = "audio/webm";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      state: "inactive" | "recording" = "inactive";
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+        stop();
+      }
+    }
+    vi.stubGlobal("MediaRecorder", FocusMediaRecorder);
+    vi.stubGlobal("navigator", {
+      ...window.navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: vi.fn() }],
+        }),
+      },
+    });
+
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            id: "calendar-event-focus",
+            start: "2026-08-10T10:00:00.000Z",
+            title: "Point client du jour",
+          },
+        ]}
+        initialState={baseState}
+        variant="focus"
+      />,
+    );
+    fireEvent.change(screen.getByLabelText("Meeting du jour"), {
+      target: { value: "calendar-event-focus" },
+    });
+    await screen.findByLabelText("Notes");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Démarrer la capture du meeting",
+      }),
+    );
+    const processButton = await screen.findByRole("button", {
+      name: "Traiter le meeting",
+    });
+    expect(processButton).toHaveTextContent("Traiter");
+    expect(processButton).not.toHaveTextContent(/\d{2}:\d{2}/);
+    expect(screen.queryByRole("checkbox")).not.toBeInTheDocument();
+
+    fireEvent.click(processButton);
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps an active processing job when reopening its Calendar meeting", async () => {
+    const focusedMeetingId = "77777777-7777-4777-8777-777777777777";
+    mocks.openMeetingWorkspaceAction.mockResolvedValueOnce({
+      meeting: {
+        attendees: [],
+        calendarEventId: "calendar-event-processing",
+        id: focusedMeetingId,
+        liveNotesMarkdown: "",
+        organizationId,
+        startsAt: "2026-08-10T10:00:00.000Z",
+        status: "processing",
+        title: "Point client en traitement",
+      },
+      success: true,
+    });
+
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            id: "calendar-event-processing",
+            start: "2026-08-10T10:00:00.000Z",
+            title: "Point client en traitement",
+          },
+        ]}
+        initialState={{
+          ...baseState,
+          meetings: [
+            {
+              attendees: [],
+              calendarEventId: "calendar-event-processing",
+              id: focusedMeetingId,
+              job: {
+                id: "job-processing",
+                message: "Transcription en cours",
+                progress: 42,
+                status: "processing",
+                updatedAt: "2026-08-10T10:05:00.000Z",
+              },
+              liveNotesMarkdown: "",
+              organizationId,
+              startsAt: "2026-08-10T10:00:00.000Z",
+              status: "processing",
+              title: "Point client en traitement",
+            },
+          ],
+        }}
+        variant="focus"
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Meeting du jour"), {
+      target: { value: "calendar-event-processing" },
+    });
+    await screen.findByLabelText("Notes");
+
+    expect(
+      screen.getByRole("button", {
+        name: "Démarrer la capture du meeting",
+      }),
+    ).toBeDisabled();
   });
 
   it("submits edited notes with only the recommendations selected by the founder", async () => {

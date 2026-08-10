@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  listGoogleCalendarEvents: vi.fn(),
   requireMeetingNotesAccess: vi.fn(),
   revalidatePath: vi.fn(),
 }));
@@ -13,8 +14,15 @@ vi.mock("./access", () => ({
   requireMeetingNotesAccess: mocks.requireMeetingNotesAccess,
 }));
 
+vi.mock("@/platform/integrations/google-workspace", () => ({
+  createGoogleCalendarReminder: vi.fn(),
+  listGeminiMeetingNoteMessages: vi.fn(),
+  listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
+}));
+
 import {
   fetchMeetingIntelligenceAction,
+  openMeetingWorkspaceAction,
   queueMeetingProcessingAction,
   registerMeetingSupportAction,
   saveMeetingCaptureDraftAction,
@@ -114,6 +122,165 @@ describe("one-step meeting capture validation", () => {
       success: false,
     });
     expect(mocks.requireMeetingNotesAccess).not.toHaveBeenCalled();
+  });
+});
+
+describe("focused meeting workspace action", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("re-reads today's Calendar event server-side before creating its workspace", async () => {
+    const existingQuery = makeActionQuery({ data: null, error: null });
+    const createdRow = {
+      attendees: [{ displayName: "Sara", email: "sara@client.com" }],
+      calendar_event_id: "evt-client",
+      calendar_event_url: "https://calendar.google.com/event?eid=client",
+      id: meetingId,
+      live_notes_markdown: "",
+      organization_id: organizationId,
+      starts_at: "2026-08-10T09:00:00.000Z",
+      status: "scheduled",
+      title: "Point client",
+      updated_at: "2026-08-10T08:00:00.000Z",
+    };
+    const insertQuery = makeActionQuery({ data: createdRow, error: null });
+    const supabase = {
+      from: vi
+        .fn()
+        .mockReturnValueOnce(existingQuery)
+        .mockReturnValueOnce(insertQuery),
+    };
+    grantAccess(supabase);
+    mocks.listGoogleCalendarEvents.mockResolvedValue([
+      {
+        attendees: [{ displayName: "Sara", email: "sara@client.com" }],
+        htmlLink: "https://calendar.google.com/event?eid=client",
+        id: "evt-client",
+        start: "2026-08-10T10:00:00+01:00",
+        title: "Point client",
+      },
+    ]);
+
+    const result = await openMeetingWorkspaceAction({
+      calendarEventId: "evt-client",
+      source: "google-calendar",
+    });
+
+    expect(result).toMatchObject({
+      meeting: {
+        calendarEventId: "evt-client",
+        id: meetingId,
+        title: "Point client",
+      },
+      success: true,
+    });
+    expect(mocks.listGoogleCalendarEvents).toHaveBeenCalledWith(
+      expect.objectContaining({ maxResults: 50 }),
+      {
+        organizationId,
+        profileId: "66666666-6666-4666-8666-666666666666",
+        supabase,
+      },
+    );
+    expect(insertQuery.insert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        calendar_event_id: "evt-client",
+        organization_id: organizationId,
+        source: "google-calendar",
+        title: "Point client",
+      }),
+    );
+  });
+
+  it("creates a manual workspace without making a Calendar request", async () => {
+    const createdRow = {
+      attendees: [{ name: "Nabil" }],
+      id: meetingId,
+      live_notes_markdown: "",
+      organization_id: organizationId,
+      starts_at: "2026-08-10T09:00:00.000Z",
+      status: "scheduled",
+      title: "Point Qarizmi",
+      updated_at: "2026-08-10T09:00:00.000Z",
+    };
+    const insertQuery = makeActionQuery({ data: createdRow, error: null });
+    grantAccess({ from: vi.fn(() => insertQuery) });
+
+    const result = await openMeetingWorkspaceAction({
+      attendees: [{ name: "Nabil" }],
+      source: "manual",
+      title: "Point Qarizmi",
+    });
+
+    expect(result).toMatchObject({
+      meeting: { id: meetingId, title: "Point Qarizmi" },
+      success: true,
+    });
+    expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
+    expect(insertQuery.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ source: "manual", title: "Point Qarizmi" }),
+    );
+  });
+
+  it("refreshes Calendar metadata without overwriting a founder's draft fields", async () => {
+    const existingRow = {
+      attendees: [{ name: "Participant ajusté" }],
+      calendar_event_id: "evt-client",
+      id: meetingId,
+      live_notes_markdown: "Notes locales synchronisées",
+      organization_id: organizationId,
+      starts_at: "2026-08-10T09:00:00.000Z",
+      status: "scheduled",
+      title: "Titre ajusté par Ali",
+      updated_at: "2026-08-10T08:00:00.000Z",
+    };
+    const existingQuery = makeActionQuery({
+      data: existingRow,
+      error: null,
+    });
+    const updateQuery = makeActionQuery({ data: existingRow, error: null });
+    const supabase = {
+      from: vi
+        .fn()
+        .mockReturnValueOnce(existingQuery)
+        .mockReturnValueOnce(updateQuery),
+    };
+    grantAccess(supabase);
+    mocks.listGoogleCalendarEvents.mockResolvedValue([
+      {
+        attendees: [{ displayName: "Calendar participant" }],
+        htmlLink: "https://calendar.google.com/event?eid=client",
+        id: "evt-client",
+        start: "2026-08-10T10:00:00+01:00",
+        title: "Titre modifié dans Calendar",
+      },
+    ]);
+
+    const result = await openMeetingWorkspaceAction({
+      calendarEventId: "evt-client",
+      source: "google-calendar",
+    });
+
+    expect(result).toMatchObject({
+      meeting: {
+        attendees: [{ name: "Participant ajusté" }],
+        title: "Titre ajusté par Ali",
+      },
+      success: true,
+    });
+    expect(updateQuery.update).toHaveBeenCalledWith({
+      calendar_event_url: "https://calendar.google.com/event?eid=client",
+      ends_at: null,
+      location: null,
+      starts_at: "2026-08-10T09:00:00.000Z",
+    });
+    expect(updateQuery.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ attendees: expect.anything() }),
+    );
+    expect(updateQuery.update).not.toHaveBeenCalledWith(
+      expect.objectContaining({ updated_at: expect.anything() }),
+    );
   });
 });
 
@@ -230,5 +397,15 @@ function makeThenableQuery(result: { data: unknown; error: unknown }) {
   query.maybeSingle = vi.fn().mockResolvedValue(result);
   query.then = (resolve: (value: typeof result) => unknown) =>
     Promise.resolve(resolve(result));
+  return query;
+}
+
+function makeActionQuery(result: { data: unknown; error: unknown }) {
+  const query: Record<string, ReturnType<typeof vi.fn>> = {};
+  for (const method of ["eq", "insert", "limit", "order", "select", "update"]) {
+    query[method] = vi.fn(() => query);
+  }
+  query.maybeSingle = vi.fn().mockResolvedValue(result);
+  query.single = vi.fn().mockResolvedValue(result);
   return query;
 }

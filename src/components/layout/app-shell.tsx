@@ -76,6 +76,9 @@ export function AppShell({
   session: AppSession;
 }) {
   const pathname = usePathname();
+  const isNaiaHomePage = pathname === "/naia" || pathname === "/dashboard/naia";
+  const isMeetingFocusPage = pathname.startsWith("/meetings");
+  const isFocusPage = isNaiaHomePage || isMeetingFocusPage;
   // Drive folders live in the cofounders-only shared drive; hide the entry
   // for roles without Docs Generator access.
   const canSeeDriveFolders = hasPermission(session.user.role, {
@@ -89,6 +92,7 @@ export function AppShell({
   const [clientsCount, setClientsCount] = useState<number | null>(null);
 
   useEffect(() => {
+    if (isFocusPage) return;
     let isMounted = true;
     async function loadCounts() {
       try {
@@ -109,12 +113,11 @@ export function AppShell({
     return () => {
       isMounted = false;
     };
-  }, [pathname]);
+  }, [isFocusPage, pathname]);
 
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [theme, setTheme] = useState<"light" | "dark">("light");
-  const isNaiaHomePage = pathname === "/naia" || pathname === "/dashboard/naia";
   const isFullBleedPage =
     pathname === "/dashboard/leads" ||
     pathname === "/crm" ||
@@ -162,7 +165,7 @@ export function AppShell({
         color: "var(--maison-text-primary)",
       }}
     >
-      {isNaiaHomePage ? null : (
+      {isFocusPage ? null : (
         <aside
           className={cn(
             "fixed inset-y-0 left-0 z-30 hidden lg:flex lg:flex-col transition-all duration-300",
@@ -186,7 +189,7 @@ export function AppShell({
         </aside>
       )}
 
-      {isNaiaHomePage ? null : (
+      {isFocusPage ? null : (
         <>
           <div
             className={cn(
@@ -237,10 +240,10 @@ export function AppShell({
       <div
         className={cn(
           "transition-all duration-300",
-          !isNaiaHomePage && (isCollapsed ? "lg:pl-20" : "lg:pl-[236px]"),
+          !isFocusPage && (isCollapsed ? "lg:pl-20" : "lg:pl-[236px]"),
         )}
       >
-        {isNaiaHomePage ? null : (
+        {isFocusPage ? null : (
           <header
             className="sticky top-0 z-20 flex h-[52px] items-center justify-between px-4 backdrop-blur md:px-6"
             style={{
@@ -390,7 +393,7 @@ export function AppShell({
         <main
           className={cn(
             "mx-auto w-full",
-            isNaiaHomePage
+            isFocusPage
               ? "max-w-none p-0"
               : isFullBleedPage
                 ? "max-w-none px-3 py-3 md:px-4 lg:px-6"
@@ -400,7 +403,7 @@ export function AppShell({
         >
           <NaiaPageContextProvider pathname={pathname}>
             {children}
-            <NaiaFloatingAssistant />
+            {isMeetingFocusPage ? null : <NaiaFloatingAssistant />}
           </NaiaPageContextProvider>
         </main>
       </div>

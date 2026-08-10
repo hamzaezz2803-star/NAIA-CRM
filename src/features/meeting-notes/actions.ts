@@ -7,6 +7,7 @@ import { z } from "zod";
 import { crmLeadStatuses } from "@/features/crm/contracts";
 import {
   createGoogleCalendarReminder,
+  listGoogleCalendarEvents,
   listGeminiMeetingNoteMessages,
 } from "@/platform/integrations/google-workspace";
 import {
@@ -30,6 +31,7 @@ import {
   meetingStructuredOutputSchema,
   recordingManifestSchema,
 } from "./contracts";
+import { getMeetingDayBounds } from "./calendar-day";
 import { archiveMeetingOutput } from "./drive";
 import {
   matchGeminiNoteToMeeting,
@@ -53,6 +55,19 @@ const saveCaptureDraftSchema = z.object({
   recordingState: z.enum(["idle", "recording", "stopped"]).optional(),
   title: z.string().trim().min(1).max(300),
 });
+
+const openMeetingWorkspaceSchema = z.discriminatedUnion("source", [
+  z.object({
+    calendarEventId: z.string().trim().min(1).max(2_048),
+    source: z.literal("google-calendar"),
+  }),
+  z.object({
+    attendees: z.array(meetingAttendeeSchema).max(40).default([]),
+    source: z.literal("manual"),
+    startsAt: z.string().trim().max(100).optional(),
+    title: z.string().trim().min(1).max(300),
+  }),
+]);
 
 const registerSupportSchema = z.object({
   meetingId: z.string().uuid(),
@@ -289,6 +304,156 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
           ? error.message
           : "Meeting Intelligence est indisponible.",
       meetings: [],
+    };
+  }
+}
+
+export async function openMeetingWorkspaceAction(rawInput: unknown) {
+  try {
+    const input = openMeetingWorkspaceSchema.parse(rawInput);
+    const { organizationId, supabase, user } =
+      await requireMeetingNotesAccess();
+
+    if (input.source === "manual") {
+      const startsAt =
+        normalizeMeetingTimestamp(input.startsAt) ?? new Date().toISOString();
+      const { data, error } = await supabase
+        .from("meetings")
+        .insert({
+          attendees: input.attendees,
+          created_by_profile_id: user.id,
+          organization_id: organizationId,
+          source: "manual",
+          starts_at: startsAt,
+          status: "scheduled",
+          title: input.title,
+        })
+        .select("*, company:company_id(name), contact:contact_id(name)")
+        .single();
+      if (error || !data) {
+        throw new Error(error?.message ?? "Impossible de créer le meeting.");
+      }
+
+      revalidatePath("/meetings");
+      return {
+        meeting: shapeMeetingWorkspace(data, organizationId),
+        success: true,
+      };
+    }
+
+    const { timeMax, timeMin } = getMeetingDayBounds();
+    const events = await listGoogleCalendarEvents(
+      {
+        maxResults: 50,
+        timeMax,
+        timeMin,
+      },
+      {
+        organizationId,
+        profileId: user.id,
+        supabase,
+      },
+    );
+    const event = events.find(
+      (candidate) => candidate.id === input.calendarEventId,
+    );
+    if (!event) {
+      throw new Error("Ce meeting n'est pas dans votre agenda Google du jour.");
+    }
+
+    const attendees = (event.attendees ?? [])
+      .map((attendee) => ({
+        ...(attendee.displayName ? { displayName: attendee.displayName } : {}),
+        ...(attendee.email ? { email: attendee.email } : {}),
+        ...(attendee.responseStatus
+          ? { responseStatus: attendee.responseStatus }
+          : {}),
+      }))
+      .filter((attendee) => attendee.displayName || attendee.email);
+    const calendarMetadata = {
+      calendar_event_url: event.htmlLink ?? null,
+      ends_at: normalizeMeetingTimestamp(event.end) ?? null,
+      location: event.location ?? null,
+      starts_at: normalizeMeetingTimestamp(event.start) ?? null,
+    };
+    const calendarValues = {
+      ...calendarMetadata,
+      attendees,
+      title: event.title,
+    };
+    const selection = "*, company:company_id(name), contact:contact_id(name)";
+    const { data: existing, error: existingError } = await supabase
+      .from("meetings")
+      .select(selection)
+      .eq("organization_id", organizationId)
+      .eq("calendar_event_id", event.id)
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+    if (existingError) throw new Error(existingError.message);
+
+    if (existing) {
+      const { data, error } = await supabase
+        .from("meetings")
+        .update(calendarMetadata)
+        .eq("id", existing.id)
+        .eq("organization_id", organizationId)
+        .select(selection)
+        .single();
+      if (error || !data) {
+        throw new Error(error?.message ?? "Impossible d'ouvrir le meeting.");
+      }
+      return {
+        meeting: shapeMeetingWorkspace(data, organizationId),
+        success: true,
+      };
+    }
+
+    const { data, error } = await supabase
+      .from("meetings")
+      .insert({
+        ...calendarValues,
+        calendar_event_id: event.id,
+        created_by_profile_id: user.id,
+        organization_id: organizationId,
+        source: "google-calendar",
+        status: "scheduled",
+      })
+      .select(selection)
+      .single();
+
+    if (error?.code === "23505") {
+      const { data: concurrent, error: concurrentError } = await supabase
+        .from("meetings")
+        .select(selection)
+        .eq("organization_id", organizationId)
+        .eq("calendar_event_id", event.id)
+        .limit(1)
+        .single();
+      if (concurrentError || !concurrent) {
+        throw new Error(concurrentError?.message ?? error.message);
+      }
+      return {
+        meeting: shapeMeetingWorkspace(concurrent, organizationId),
+        success: true,
+      };
+    }
+    if (error || !data) {
+      throw new Error(error?.message ?? "Impossible de créer le meeting.");
+    }
+
+    revalidatePath("/meetings");
+    return {
+      meeting: shapeMeetingWorkspace(data, organizationId),
+      success: true,
+    };
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Impossible d'ouvrir le meeting.",
+      success: false,
     };
   }
 }
@@ -2008,6 +2173,46 @@ function normalizeKnowledgeText(value: string) {
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeMeetingTimestamp(value?: string) {
+  if (!value) return undefined;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+}
+
+function shapeMeetingWorkspace(
+  row: Record<string, unknown>,
+  organizationId: string,
+): MeetingWorkspace {
+  const company = firstRelation(row.company) as { name?: string } | null;
+  const contact = firstRelation(row.contact) as { name?: string } | null;
+  const attendees = z
+    .array(meetingAttendeeSchema)
+    .safeParse(row.attendees ?? []);
+
+  return {
+    attendees: attendees.success ? attendees.data : [],
+    calendarEventId: (row.calendar_event_id as string | null) ?? undefined,
+    calendarEventUrl: (row.calendar_event_url as string | null) ?? undefined,
+    companyName: company?.name,
+    consentConfirmedAt:
+      (row.consent_confirmed_at as string | null) ?? undefined,
+    contactName: contact?.name,
+    id: row.id as string,
+    leadId: (row.lead_id as string | null) ?? undefined,
+    liveNotesMarkdown: (row.live_notes_markdown as string | null) ?? "",
+    organizationId,
+    startsAt: (row.starts_at as string | null) ?? undefined,
+    status: (row.status as string | null) ?? "scheduled",
+    supportFileName: (row.support_file_name as string | null) ?? undefined,
+    title: row.title as string,
+    updatedAt: (row.updated_at as string | null) ?? undefined,
+  };
 }
 
 function knowledgeTokens(value: string) {

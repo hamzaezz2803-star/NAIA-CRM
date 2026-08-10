@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   AlertTriangle,
+  ArrowLeft,
   Bell,
   BookOpen,
   CalendarDays,
@@ -23,6 +24,7 @@ import {
   UploadCloud,
   Users,
 } from "lucide-react";
+import Link from "next/link";
 import {
   type ChangeEvent,
   type ReactNode,
@@ -43,6 +45,7 @@ import {
   fetchMeetingIntelligenceAction,
   fetchMeetingTranscriptAction,
   linkGeminiArtifactToMeetingAction,
+  openMeetingWorkspaceAction,
   queueMeetingProcessingAction,
   registerMeetingSupportAction,
   retryMeetingDriveArchiveAction,
@@ -50,6 +53,7 @@ import {
   saveMeetingCaptureDraftAction,
   syncGeminiMeetingNotesAction,
 } from "./actions";
+import { isMeetingOnDay } from "./calendar-day";
 import {
   MAX_RECORDING_BYTES,
   MAX_RECORDING_CHUNKS,
@@ -106,14 +110,21 @@ type ActionFeedback = {
 
 export function MeetingIntelligenceWorkspace({
   calendarEvents = [],
+  calendarUnavailable = false,
   initialState,
+  variant = "full",
 }: {
   calendarEvents?: GoogleCalendarEventSummary[];
+  calendarUnavailable?: boolean;
   initialState: MeetingIntelligenceState;
+  variant?: "focus" | "full";
 }) {
+  const isFocusMode = variant === "focus";
   const initialMeeting =
-    initialState.meetings.find((meeting) => meeting.leadId) ??
-    initialState.meetings[0];
+    variant === "full"
+      ? (initialState.meetings.find((meeting) => meeting.leadId) ??
+        initialState.meetings[0])
+      : undefined;
   const [workspaceState, setWorkspaceState] = useState(initialState);
   const [selectedMeetingId, setSelectedMeetingId] = useState(
     () => initialMeeting?.id ?? "",
@@ -122,6 +133,8 @@ export function MeetingIntelligenceWorkspace({
   const [uploadProgress, setUploadProgress] = useState(0);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [isOpeningMeeting, setIsOpeningMeeting] = useState(false);
+  const [focusSelection, setFocusSelection] = useState("");
   const [isApproving, setIsApproving] = useState(false);
   const [isRetrying, setIsRetrying] = useState(false);
   const [isUploadingSupport, setIsUploadingSupport] = useState(false);
@@ -178,11 +191,18 @@ export function MeetingIntelligenceWorkspace({
     () => workspaceState.meetings.filter((meeting) => meeting.leadId),
     [workspaceState.meetings],
   );
+  const selectableMeetings = isFocusMode
+    ? workspaceState.meetings
+    : crmMeetings;
   const selectedMeeting = useMemo(
     () =>
-      crmMeetings.find((meeting) => meeting.id === selectedMeetingId) ??
-      crmMeetings[0],
-    [crmMeetings, selectedMeetingId],
+      selectableMeetings.find((meeting) => meeting.id === selectedMeetingId) ??
+      (isFocusMode ? undefined : crmMeetings[0]),
+    [crmMeetings, isFocusMode, selectableMeetings, selectedMeetingId],
+  );
+  const todayCalendarEvents = useMemo(
+    () => calendarEvents.filter((event) => isMeetingOnDay(event.start)),
+    [calendarEvents],
   );
   const matchedCalendarEvent = useMemo(
     () => matchCalendarEvent(selectedMeeting, calendarEvents),
@@ -210,7 +230,7 @@ export function MeetingIntelligenceWorkspace({
     isUploadingSupport ||
     isSyncingGemini ||
     isLinkingGemini;
-  const hasActiveJobs = crmMeetings.some((meeting) =>
+  const hasActiveJobs = workspaceState.meetings.some((meeting) =>
     meeting.job ? ACTIVE_JOB_STATUSES.has(meeting.job.status) : false,
   );
 
@@ -311,7 +331,7 @@ export function MeetingIntelligenceWorkspace({
     return () => {
       cancelled = true;
     };
-  }, [matchedCalendarEvent, selectedMeeting]);
+  }, [isFocusMode, matchedCalendarEvent, selectedMeeting]);
 
   useEffect(() => {
     if (
@@ -555,7 +575,7 @@ export function MeetingIntelligenceWorkspace({
       setFeedback({ error: "Donne un titre au meeting avant de démarrer." });
       return;
     }
-    if (!consentConfirmed) {
+    if (!isFocusMode && !consentConfirmed) {
       setFeedback({
         error:
           "Confirme que les participants ont été informés avant d'enregistrer.",
@@ -709,11 +729,15 @@ export function MeetingIntelligenceWorkspace({
 
       recorder.start(1_000);
       setCaptureMode("recording");
-      setFeedback({
-        message: recoveryEnabled
-          ? "Enregistrement discret en cours. Les notes et l'audio sont sauvegardés au fil du meeting."
-          : "Enregistrement en cours. La reprise audio locale est indisponible dans ce navigateur; garde cette page ouverte.",
-      });
+      setFeedback(
+        isFocusMode
+          ? {}
+          : {
+              message: recoveryEnabled
+                ? "Enregistrement discret en cours. Les notes et l'audio sont sauvegardés au fil du meeting."
+                : "Enregistrement en cours. La reprise audio locale est indisponible dans ce navigateur; garde cette page ouverte.",
+            },
+      );
     } catch (error) {
       mediaStreamRef.current?.getTracks().forEach((track) => track.stop());
       mediaRecorderRef.current = null;
@@ -1050,7 +1074,178 @@ export function MeetingIntelligenceWorkspace({
     }
   };
 
+  const installFocusedMeeting = (meeting: MeetingWorkspace) => {
+    hydratedMeetingIdRef.current = "";
+    setWorkspaceState((current) => {
+      const existing = current.meetings.find(
+        (candidate) => candidate.id === meeting.id,
+      );
+      const focusedMeeting = {
+        ...existing,
+        ...meeting,
+        // Opening a Calendar workspace only refreshes the meeting row. Keep the
+        // already-loaded processing state so an active job cannot disappear
+        // from the client while the founder switches into the focused view.
+        job: meeting.job ?? existing?.job,
+        output: meeting.output ?? existing?.output,
+      } satisfies MeetingWorkspace;
+
+      return {
+        ...current,
+        meetings: [
+          focusedMeeting,
+          ...current.meetings.filter(
+            (candidate) => candidate.id !== meeting.id,
+          ),
+        ],
+      };
+    });
+    setSelectedMeetingId(meeting.id);
+  };
+
+  const flushCurrentLocalDraft = () => {
+    if (
+      !selectedMeeting ||
+      draftMeetingId !== selectedMeeting.id ||
+      !meetingTitle.trim()
+    ) {
+      return;
+    }
+
+    writeLocalMeetingDraft(selectedMeeting.id, {
+      consentConfirmed,
+      liveNotesMarkdown,
+      participantsText,
+      title: meetingTitle,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
+  const selectFocusedMeeting = async (value: string) => {
+    if (captureMode === "recording" || captureMode === "paused") return;
+    flushCurrentLocalDraft();
+    // Detach the previous workspace before pre-filling or awaiting Google.
+    // This cancels its autosave timers and prevents cross-meeting writes when
+    // the provider response is slow.
+    hydratedMeetingIdRef.current = "";
+    setSelectedMeetingId("");
+    setDraftMeetingId("");
+    setFocusSelection(value);
+    setFeedback({});
+
+    if (!value) {
+      return;
+    }
+    if (value === "manual") {
+      setMeetingTitle("");
+      setParticipantsText("");
+      setLiveNotesMarkdown("");
+      setConsentConfirmed(false);
+      setDraftSaveState("idle");
+      return;
+    }
+
+    const event = todayCalendarEvents.find(
+      (candidate) => candidate.id === value,
+    );
+    if (!event) {
+      setFocusSelection("");
+      setFeedback({ error: "Ce meeting n'est plus disponible dans Calendar." });
+      return;
+    }
+
+    setMeetingTitle(event.title);
+    setLiveNotesMarkdown("");
+    setParticipantsText(
+      formatAttendees(
+        (event.attendees ?? [])
+          .map((attendee) => ({
+            displayName: attendee.displayName,
+            email: attendee.email,
+            responseStatus: attendee.responseStatus,
+          }))
+          .filter((attendee) => attendee.displayName || attendee.email),
+      ),
+    );
+    setIsOpeningMeeting(true);
+    try {
+      const result = await openMeetingWorkspaceAction({
+        calendarEventId: event.id,
+        source: "google-calendar",
+      });
+      const meeting = "meeting" in result ? result.meeting : undefined;
+      if (!result.success || !meeting) {
+        throw new Error(
+          "error" in result ? result.error : "Impossible d'ouvrir le meeting.",
+        );
+      }
+      installFocusedMeeting(meeting);
+    } catch (error) {
+      setFocusSelection("");
+      setSelectedMeetingId("");
+      setFeedback({ error: getErrorMessage(error) });
+    } finally {
+      if (!disposedRef.current) setIsOpeningMeeting(false);
+    }
+  };
+
+  const createManualMeeting = async () => {
+    if (!meetingTitle.trim()) {
+      setFeedback({ error: "Donne un titre au meeting pour commencer." });
+      return;
+    }
+
+    setIsOpeningMeeting(true);
+    setFeedback({});
+    try {
+      const result = await openMeetingWorkspaceAction({
+        attendees: parseAttendees(participantsText),
+        source: "manual",
+        title: meetingTitle.trim(),
+      });
+      const meeting = "meeting" in result ? result.meeting : undefined;
+      if (!result.success || !meeting) {
+        throw new Error(
+          "error" in result ? result.error : "Impossible de créer le meeting.",
+        );
+      }
+      installFocusedMeeting(meeting);
+    } catch (error) {
+      setFeedback({ error: getErrorMessage(error) });
+    } finally {
+      if (!disposedRef.current) setIsOpeningMeeting(false);
+    }
+  };
+
   if (!workspaceState.configured) {
+    if (isFocusMode) {
+      return (
+        <section className="min-h-dvh bg-stone-100 px-3 py-3 text-stone-950 dark:bg-stone-950 dark:text-stone-50 sm:px-6 sm:py-5">
+          <div className="mx-auto flex min-h-[calc(100dvh-1.5rem)] max-w-5xl flex-col sm:min-h-[calc(100dvh-2.5rem)]">
+            <Link
+              aria-label="Quitter le mode meeting"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-full text-stone-500 transition-colors hover:bg-white hover:text-stone-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:hover:bg-stone-900 dark:hover:text-stone-50"
+              href="/dashboard"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            </Link>
+            <div className="mt-3 flex flex-1 items-center justify-center">
+              <div className="flex max-w-md items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/40 dark:text-amber-100">
+                <AlertCircle
+                  className="mt-0.5 h-5 w-5 shrink-0"
+                  aria-hidden="true"
+                />
+                <p>
+                  {workspaceState.error ??
+                    "L'intelligence meeting n'est pas encore configurée."}
+                </p>
+              </div>
+            </div>
+          </div>
+        </section>
+      );
+    }
+
     return (
       <section
         className="rounded-lg border px-4 py-3"
@@ -1068,6 +1263,291 @@ export function MeetingIntelligenceWorkspace({
             {workspaceState.error ??
               "L'intelligence meeting n'est pas encore configurée."}
           </p>
+        </div>
+      </section>
+    );
+  }
+
+  if (isFocusMode) {
+    const isActive = captureMode === "recording" || captureMode === "paused";
+    const canProcessRecovered = Boolean(
+      recoveredRecording && selectedMeeting && captureMode === "idle",
+    );
+    const selectedCalendarEvent = todayCalendarEvents.find(
+      (event) => event.id === focusSelection,
+    );
+
+    return (
+      <section
+        aria-labelledby="meeting-focus-title"
+        className="min-h-dvh bg-stone-100 px-3 py-3 text-stone-950 dark:bg-stone-950 dark:text-stone-50 sm:px-6 sm:py-5"
+      >
+        <div className="mx-auto flex min-h-[calc(100dvh-1.5rem)] max-w-5xl flex-col sm:min-h-[calc(100dvh-2.5rem)]">
+          <header className="flex min-h-12 items-center gap-2 sm:gap-3">
+            <Link
+              aria-label="Quitter le mode meeting"
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-stone-500 transition-colors hover:bg-white hover:text-stone-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:hover:bg-stone-900 dark:hover:text-stone-50"
+              href="/dashboard"
+            >
+              <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            </Link>
+            {!isActive && captureMode !== "uploading" ? (
+              <Link
+                aria-label="Ouvrir les comptes rendus"
+                className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full text-stone-500 transition-colors hover:bg-white hover:text-stone-950 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:hover:bg-stone-900 dark:hover:text-stone-50"
+                href="/meetings/history"
+                title="Comptes rendus"
+              >
+                <BookOpen className="h-4 w-4" aria-hidden="true" />
+              </Link>
+            ) : null}
+            <h1 id="meeting-focus-title" className="sr-only">
+              Notes de meeting
+            </h1>
+
+            <label className="min-w-0 flex-1" htmlFor="meeting-focus-select">
+              <span className="sr-only">Meeting du jour</span>
+              <select
+                aria-label="Meeting du jour"
+                className="h-11 w-full rounded-full border border-stone-200 bg-white px-4 text-sm font-medium text-stone-900 outline-none transition-colors focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-800 dark:bg-stone-900 dark:text-stone-50"
+                disabled={
+                  isActive || captureMode === "uploading" || isOpeningMeeting
+                }
+                id="meeting-focus-select"
+                onChange={(event) =>
+                  void selectFocusedMeeting(event.target.value)
+                }
+                value={focusSelection}
+              >
+                <option value="">
+                  {calendarUnavailable
+                    ? "Calendar indisponible · vérifier Google"
+                    : todayCalendarEvents.length
+                      ? "Choisir un meeting du jour"
+                      : "Aucun meeting Calendar aujourd'hui"}
+                </option>
+                {todayCalendarEvents.map((event) => (
+                  <option key={event.id} value={event.id}>
+                    {formatCalendarEventOption(event)}
+                  </option>
+                ))}
+                <option value="manual">Nouveau meeting</option>
+              </select>
+            </label>
+
+            <button
+              aria-label={
+                isActive ? "Capture active" : "Démarrer la capture du meeting"
+              }
+              className="inline-flex h-11 w-14 shrink-0 items-center justify-center gap-1.5 rounded-full border border-stone-200 bg-white transition-colors hover:border-stone-300 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 disabled:cursor-not-allowed disabled:opacity-60 dark:border-stone-800 dark:bg-stone-900 dark:hover:border-stone-700"
+              disabled={
+                !selectedMeeting ||
+                isActive ||
+                captureMode === "uploading" ||
+                isOpeningMeeting ||
+                hasActiveJob(selectedMeeting)
+              }
+              onClick={() => void startRecording()}
+              type="button"
+            >
+              <span
+                className={`h-2.5 w-2.5 rounded-full bg-orange-400 transition-[opacity,box-shadow] duration-200 motion-reduce:transition-none ${
+                  isActive
+                    ? "opacity-100 shadow-[0_0_0_5px_rgba(251,146,60,0.14),0_0_14px_rgba(251,146,60,0.65)] motion-safe:animate-pulse"
+                    : "opacity-25"
+                }`}
+                aria-hidden="true"
+              />
+              <span
+                className={`h-2.5 w-2.5 rounded-full bg-emerald-500 transition-opacity duration-200 motion-reduce:transition-none ${
+                  isActive ? "opacity-25" : "opacity-100"
+                }`}
+                aria-hidden="true"
+              />
+            </button>
+
+            {isActive || canProcessRecovered || captureMode === "uploading" ? (
+              <Button
+                aria-label={
+                  canProcessRecovered
+                    ? "Traiter la capture récupérée"
+                    : "Traiter le meeting"
+                }
+                className="h-11 shrink-0 rounded-full px-4"
+                disabled={captureMode === "uploading"}
+                onClick={() =>
+                  void (canProcessRecovered
+                    ? processRecoveredRecording()
+                    : stopRecording())
+                }
+              >
+                {captureMode === "uploading" ? (
+                  <LoaderCircle
+                    className="h-4 w-4 animate-spin motion-reduce:animate-none"
+                    aria-hidden="true"
+                  />
+                ) : (
+                  <Sparkles className="h-4 w-4" aria-hidden="true" />
+                )}
+                <span>Traiter</span>
+              </Button>
+            ) : null}
+          </header>
+
+          <div className="relative mt-3 flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-stone-200 bg-white shadow-sm dark:border-stone-800 dark:bg-stone-900">
+            {isOpeningMeeting ? (
+              <div
+                aria-label="Ouverture du meeting"
+                className="absolute inset-0 z-10 flex items-center justify-center bg-white/80 backdrop-blur-sm dark:bg-stone-900/80"
+                role="status"
+              >
+                <LoaderCircle
+                  className="h-5 w-5 animate-spin text-stone-500 motion-reduce:animate-none"
+                  aria-hidden="true"
+                />
+              </div>
+            ) : null}
+
+            {focusSelection === "manual" && !selectedMeeting ? (
+              <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col justify-center px-5 py-10 sm:px-10">
+                <p className="text-xs font-semibold uppercase tracking-[0.14em] text-stone-400">
+                  Nouveau meeting
+                </p>
+                <label className="mt-6" htmlFor="meeting-focus-manual-title">
+                  <span className="sr-only">Titre du meeting</span>
+                  <input
+                    autoFocus
+                    className="h-14 w-full border-0 border-b border-stone-200 bg-transparent px-0 text-2xl font-semibold outline-none placeholder:text-stone-300 focus:border-teal-600 focus:ring-0 dark:border-stone-700 dark:placeholder:text-stone-600"
+                    id="meeting-focus-manual-title"
+                    maxLength={300}
+                    onChange={(event) => setMeetingTitle(event.target.value)}
+                    placeholder="Titre du meeting"
+                    value={meetingTitle}
+                  />
+                </label>
+                <label
+                  className="mt-6"
+                  htmlFor="meeting-focus-manual-participants"
+                >
+                  <span className="sr-only">Participants</span>
+                  <input
+                    className="h-12 w-full rounded-lg border border-stone-200 bg-transparent px-3 text-sm outline-none placeholder:text-stone-400 focus-visible:ring-2 focus-visible:ring-teal-600 dark:border-stone-700"
+                    id="meeting-focus-manual-participants"
+                    maxLength={4_000}
+                    onChange={(event) =>
+                      setParticipantsText(event.target.value)
+                    }
+                    placeholder="Participants (noms ou emails)"
+                    value={participantsText}
+                  />
+                </label>
+                <Button
+                  className="mt-8 h-11 self-start rounded-full px-5"
+                  disabled={isOpeningMeeting || !meetingTitle.trim()}
+                  onClick={() => void createManualMeeting()}
+                >
+                  Commencer
+                </Button>
+              </div>
+            ) : selectedMeeting ? (
+              <div className="flex min-h-0 flex-1 flex-col px-5 pb-5 pt-6 sm:px-10 sm:pb-8 sm:pt-9">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+                  <label
+                    className="min-w-0 flex-1"
+                    htmlFor="meeting-focus-title-input"
+                  >
+                    <span className="sr-only">Titre du meeting</span>
+                    <input
+                      className="w-full border-0 bg-transparent p-0 text-2xl font-semibold leading-tight outline-none placeholder:text-stone-300 focus:ring-0 sm:text-3xl dark:placeholder:text-stone-600"
+                      id="meeting-focus-title-input"
+                      maxLength={300}
+                      onChange={(event) => setMeetingTitle(event.target.value)}
+                      value={meetingTitle}
+                    />
+                  </label>
+                  <span
+                    aria-live="polite"
+                    className="shrink-0 text-xs text-stone-400 sm:mt-1"
+                  >
+                    {draftSaveLabel(draftSaveState)}
+                  </span>
+                </div>
+
+                <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2 text-xs text-stone-500">
+                  {(selectedCalendarEvent?.start ??
+                  selectedMeeting.startsAt) ? (
+                    <span>
+                      {formatMeetingDate(
+                        selectedCalendarEvent?.start ??
+                          selectedMeeting.startsAt,
+                      )}
+                    </span>
+                  ) : null}
+                  {selectedCalendarEvent?.conferenceUrl ? (
+                    <a
+                      className="font-medium text-teal-700 underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-600 dark:text-teal-300"
+                      href={selectedCalendarEvent.conferenceUrl}
+                      rel="noreferrer"
+                      target="_blank"
+                    >
+                      Rejoindre
+                    </a>
+                  ) : null}
+                </div>
+
+                <label className="mt-5" htmlFor="meeting-focus-participants">
+                  <span className="sr-only">Participants</span>
+                  <input
+                    aria-label="Participants"
+                    className="h-10 w-full rounded-lg border-0 bg-stone-50 px-3 text-sm text-stone-600 outline-none placeholder:text-stone-400 focus-visible:ring-2 focus-visible:ring-teal-600 dark:bg-stone-950 dark:text-stone-300"
+                    id="meeting-focus-participants"
+                    maxLength={4_000}
+                    onChange={(event) =>
+                      setParticipantsText(event.target.value)
+                    }
+                    placeholder="Participants"
+                    value={participantsText}
+                  />
+                </label>
+
+                <label
+                  className="mt-5 flex min-h-0 flex-1 flex-col"
+                  htmlFor="meeting-focus-notes"
+                >
+                  <span className="sr-only">Notes</span>
+                  <textarea
+                    autoFocus
+                    aria-label="Notes"
+                    className="min-h-[50vh] flex-1 resize-none border-0 bg-transparent p-0 text-base leading-7 outline-none placeholder:text-stone-300 focus:ring-0 sm:min-h-[56vh] dark:placeholder:text-stone-600"
+                    id="meeting-focus-notes"
+                    maxLength={500_000}
+                    onChange={(event) =>
+                      setLiveNotesMarkdown(event.target.value)
+                    }
+                    placeholder="Prends tes notes ici…"
+                    value={liveNotesMarkdown}
+                  />
+                </label>
+              </div>
+            ) : (
+              <div className="flex flex-1 items-center justify-center px-6 py-16 text-center">
+                <p className="max-w-sm text-sm leading-6 text-stone-400">
+                  Choisis un meeting du jour ou crée un nouveau meeting.
+                </p>
+              </div>
+            )}
+          </div>
+
+          {feedback.error || feedback.warnings?.length ? (
+            <div className="mt-3">
+              <FeedbackBar
+                feedback={{
+                  error: feedback.error,
+                  warnings: feedback.warnings,
+                }}
+              />
+            </div>
+          ) : null}
         </div>
       </section>
     );
@@ -2001,7 +2481,7 @@ function AttendeeGroup({
   );
 }
 
-function MeetingKnowledgeSearch({ meetingId }: { meetingId: string }) {
+export function MeetingKnowledgeSearch({ meetingId }: { meetingId: string }) {
   const [question, setQuestion] = useState("");
   const [scope, setScope] = useState<"meeting" | "recent">("meeting");
   const [result, setResult] = useState<MeetingKnowledgeAnswer>();
@@ -2128,7 +2608,7 @@ function MeetingKnowledgeSearch({ meetingId }: { meetingId: string }) {
   );
 }
 
-function ReviewWorkspace({
+export function ReviewWorkspace({
   disabled,
   meeting,
   onApprove,
@@ -2802,6 +3282,21 @@ function formatMeetingOption(meeting: MeetingWorkspace) {
   const label = meeting.companyName ?? meeting.title;
   const date = formatMeetingDate(meeting.startsAt);
   return date ? `${label} · ${date}` : label;
+}
+
+function formatCalendarEventOption(event: GoogleCalendarEventSummary) {
+  if (!event.start) return event.title;
+  if (/^\d{4}-\d{2}-\d{2}$/.test(event.start)) {
+    return `Toute la journée · ${event.title}`;
+  }
+  const date = new Date(event.start);
+  if (Number.isNaN(date.getTime())) return event.title;
+  const time = new Intl.DateTimeFormat("fr-FR", {
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Africa/Casablanca",
+  }).format(date);
+  return `${time} · ${event.title}`;
 }
 
 function formatMeetingDate(value?: string) {
