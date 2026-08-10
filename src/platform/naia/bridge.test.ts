@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   claimBridgeAction: vi.fn(),
   createGoogleCalendarReminder: vi.fn(),
   createLeadAction: vi.fn(),
+  createServerSupabaseClient: vi.fn(),
   createServiceRoleSupabaseClient: vi.fn(),
   executeCrmBridgeLeadStatusAction: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
@@ -25,6 +26,7 @@ vi.mock("@/platform/integrations/google-workspace", () => ({
 }));
 
 vi.mock("@/platform/auth/supabase-server", () => ({
+  createServerSupabaseClient: mocks.createServerSupabaseClient,
   createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
 }));
 

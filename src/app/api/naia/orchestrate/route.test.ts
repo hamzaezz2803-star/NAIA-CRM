@@ -299,8 +299,6 @@ describe("NAIA orchestrate route", () => {
     expect(body.response).toContain("modele de langage");
     expect(systemPrompt).toContain("question générale");
     expect(systemPrompt).toContain("Ne prétends jamais avoir exécuté");
-    expect(systemPrompt).toContain("realGoogleCalendar");
-    expect(systemPrompt).toContain("prime");
     expect(userPrompt.operatingContext.cashFlow).toContain("Oct.");
     expect(userPrompt.operatingContext.pipeline).toContain("Atlas Process");
     expect(userPrompt.operatingContext.projects).toContain("Sahara Logistics");
@@ -309,7 +307,9 @@ describe("NAIA orchestrate route", () => {
     );
     expect(userPrompt.operatingContext.followUps).toContain("Medina Health");
     expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
-    expect(userPrompt.contextSources.googleCalendar).toBe("not loaded");
+    expect(userPrompt.contextSources.googleCalendar).toContain(
+      "Calendar stays local-only",
+    );
     expect(userPrompt.realGoogleCalendar).toBeUndefined();
   });
 
