@@ -25,6 +25,7 @@ export type TrelloImportDryRun = {
     categories: number;
     checklistItems: number;
     checklists: number;
+    cofounderLeads: number;
     cofoundersOnly: number;
     leads: number;
     openLeads: number;
@@ -243,6 +244,15 @@ function stableJson(value: unknown): string {
 
 export function sha256StableJson(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex");
+}
+
+function privateTrelloLabelToken(boardId: string, labelId: string) {
+  return createHash("sha256")
+    .update("trello-blank-label\0")
+    .update(boardId)
+    .update("\0")
+    .update(labelId)
+    .digest("hex");
 }
 
 export function createTrelloStagingAttestation(
@@ -647,7 +657,6 @@ export function normalizeTrelloExport(
   }
 
   for (const label of board.labels) {
-    if (!label.name.trim()) continue;
     const privacy = labelPrivacy.get(label.id) ?? {
       accessScope: "cofounders" as const,
       reasons: ["fail-closed:missing-label-rule"],
@@ -660,7 +669,9 @@ export function normalizeTrelloExport(
         externalId: label.id,
         payload: {
           color: COLOR_MAP[label.color ?? ""] ?? "teal",
-          name: label.name.trim(),
+          name:
+            label.name.trim() ||
+            `Label Trello privé ${privateTrelloLabelToken(board.id, label.id).slice(0, 10)}`,
         },
         privacyReasons: privacy.reasons,
         validationErrors: [],
@@ -672,7 +683,9 @@ export function normalizeTrelloExport(
     (label) => !label.name.trim(),
   ).length;
   if (blankLabelCount > 0) {
-    warnings.push(`${blankLabelCount} label(s) sans nom ignoré(s).`);
+    warnings.push(
+      `${blankLabelCount} label(s) sans nom conservé(s) comme tag(s) cofondateurs.`,
+    );
   }
 
   const closedCardCount = board.cards.filter((card) => card.closed).length;
@@ -747,6 +760,7 @@ export function normalizeTrelloExport(
       .find((item) => item.state !== "complete");
     const privacyReasons: string[] = [];
     let accessScope: CrmAccessScope = "organization";
+    let hasUnnamedLabel = false;
     const listRule = list ? listPrivacy.get(list.id) : undefined;
     if (!list || !listRule) {
       accessScope = "cofounders";
@@ -760,7 +774,8 @@ export function normalizeTrelloExport(
     for (const labelId of card.idLabels) {
       const label = labelsById.get(labelId);
       if (label && !label.name.trim()) {
-        privacyReasons.push("ignored:unnamed-label-without-semantic-payload");
+        accessScope = "cofounders";
+        hasUnnamedLabel = true;
         continue;
       }
       const labelRule = labelPrivacy.get(labelId);
@@ -778,12 +793,15 @@ export function normalizeTrelloExport(
       accessScope = "cofounders";
       privacyReasons.push("sensitive-keyword:card-content");
     }
+    if (hasUnnamedLabel) {
+      privacyReasons.push("label:fail-closed:unnamed-label");
+    }
     const due = validDueDate(card.due);
     if (card.due && !due) {
       warnings.push(`Échéance Trello invalide ignorée (${card.id}).`);
     }
     const knownLabelIds = card.idLabels.filter((labelId) =>
-      Boolean(labelsById.get(labelId)?.name.trim()),
+      labelsById.has(labelId),
     );
     const unknownLabelCount = card.idLabels.filter(
       (labelId) => !labelsById.has(labelId),
@@ -842,6 +860,10 @@ export function normalizeTrelloExport(
         0,
       ),
       checklists: board.checklists.length,
+      cofounderLeads: items.filter(
+        (item) =>
+          item.entityType === "lead" && item.accessScope === "cofounders",
+      ).length,
       cofoundersOnly: items.filter((item) => item.accessScope === "cofounders")
         .length,
       leads: board.cards.length,

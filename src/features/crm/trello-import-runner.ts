@@ -20,6 +20,7 @@ export const DEFAULT_TRELLO_EXPORT_PATH =
 
 export type TrelloImportSourceContract = {
   boardId: string;
+  cofounderLeads: number;
   cofoundersOnly: number;
   counts: {
     categories: number;
@@ -37,14 +38,15 @@ export type TrelloImportSourceContract = {
 
 export const COMMERCIAL_TRELLO_SOURCE_CONTRACT: TrelloImportSourceContract = {
   boardId: "69de18c4a11891f0f0aae68a",
-  cofoundersOnly: 4,
+  cofounderLeads: 13,
+  cofoundersOnly: 16,
   counts: {
     categories: 14,
     leads: 221,
-    tags: 3,
-    totalItems: 238,
+    tags: 6,
+    totalItems: 241,
   },
-  expectedLeadTagRelations: 139,
+  expectedLeadTagRelations: 149,
   organizationIdSha256:
     "3a4a564659d65572eb77be0e02c3b6d61ecd659761802e0b521486bddb9ba461",
   rawSha256: "d8096a4afc5c0fde191bd7ba1b3528fe7001dd18332abe0d8a423abf1663bdde",
@@ -52,7 +54,7 @@ export const COMMERCIAL_TRELLO_SOURCE_CONTRACT: TrelloImportSourceContract = {
   sourceHash:
     "af8f6341485e1c0f47598a66168cac5fe6eedf78f32af73c3ba57572bede6c43",
   stagingHash:
-    "7475418f8629ca717973038a354911cbc3e306706eec2d5dfb179cdeda702254",
+    "10e5e9865cad632643f62be132598eebedee700328952868d29a3da32bab95f3",
 };
 
 export type TrelloImportTargetContract = {
@@ -114,7 +116,7 @@ export type CrmTrelloImportResult = {
   counts: TrelloImportSourceContract["counts"];
   existingCrmDeterministicMatches: number;
   mode: CrmTrelloImportMode;
-  privacy: { cofoundersOnly: number };
+  privacy: { cofounderLeads: number; cofoundersOnly: number };
   rlsVerified: boolean;
   schemaVerified: true;
   sourceHash: string;
@@ -214,6 +216,7 @@ const stageResponseSchema = z.object({
 
 const stageVerificationSchema = z.object({
   categoryCount: z.number().int().nonnegative(),
+  cofounderLeads: z.number().int().nonnegative(),
   cofoundersOnly: z.number().int().nonnegative(),
   expectedItemCount: z.number().int().nonnegative(),
   leadCount: z.number().int().nonnegative(),
@@ -451,6 +454,7 @@ function verifyNormalizedSource(
       dryRun.counts.categories === contract.counts.categories &&
       dryRun.counts.tags === contract.counts.tags &&
       dryRun.counts.leads === contract.counts.leads &&
+      dryRun.counts.cofounderLeads === contract.cofounderLeads &&
       dryRun.counts.cofoundersOnly === contract.cofoundersOnly &&
       countLeadTagRelations(dryRun) === contract.expectedLeadTagRelations,
     "NORMALIZED_COUNTS_MISMATCH",
@@ -774,6 +778,7 @@ select jsonb_build_object(
   'categoryCount', (select count(*) from public.crm_import_staging row_record where row_record.run_id = target_run.id and row_record.organization_id = target_run.organization_id and row_record.entity_type = 'category'),
   'tagCount', (select count(*) from public.crm_import_staging row_record where row_record.run_id = target_run.id and row_record.organization_id = target_run.organization_id and row_record.entity_type = 'tag'),
   'leadCount', (select count(*) from public.crm_import_staging row_record where row_record.run_id = target_run.id and row_record.organization_id = target_run.organization_id and row_record.entity_type = 'lead'),
+  'cofounderLeads', (select count(*) from public.crm_import_staging row_record where row_record.run_id = target_run.id and row_record.organization_id = target_run.organization_id and row_record.entity_type = 'lead' and row_record.access_scope = 'cofounders'),
   'cofoundersOnly', (select count(*) from public.crm_import_staging row_record where row_record.run_id = target_run.id and row_record.organization_id = target_run.organization_id and row_record.access_scope = 'cofounders'),
   'validationErrorRows', (select count(*) from public.crm_import_staging row_record where row_record.run_id = target_run.id and row_record.organization_id = target_run.organization_id and jsonb_array_length(row_record.validation_errors) > 0)
 ) as payload
@@ -1075,6 +1080,7 @@ function verifyStage(value: unknown, contract: TrelloImportSourceContract) {
       stage.categoryCount === contract.counts.categories &&
       stage.tagCount === contract.counts.tags &&
       stage.leadCount === contract.counts.leads &&
+      stage.cofounderLeads === contract.cofounderLeads &&
       stage.cofoundersOnly === contract.cofoundersOnly &&
       stage.validationErrorRows === 0 &&
       stage.sourceHash === contract.sourceHash &&
@@ -1115,7 +1121,7 @@ function verifyRls(args: {
       nonFounder.unexpectedRefs === 0 &&
       nonFounder.organizationLeads > 0 &&
       (!args.expectApplied ||
-        (founder.importedCofounderLeads === args.contract.cofoundersOnly &&
+        (founder.importedCofounderLeads === args.contract.cofounderLeads &&
           founder.ledgerRefs === args.contract.counts.totalItems &&
           founder.ledgerChanges > 0)),
     "RLS_VERIFICATION_FAILED",
@@ -1155,7 +1161,7 @@ function verifyPostconditions(args: {
       post.activeCategoryMappings === args.contract.counts.categories &&
       post.activeTagMappings === args.contract.counts.tags &&
       post.activeLeadMappings === args.contract.counts.leads &&
-      post.cofounderLocalLeads === args.contract.cofoundersOnly &&
+      post.cofounderLocalLeads === args.contract.cofounderLeads &&
       post.expectedRelations === args.contract.expectedLeadTagRelations &&
       post.missingRelations === 0,
     "POSTCONDITION_FAILED",
@@ -1236,6 +1242,13 @@ export async function runCrmTrelloImport(
 ): Promise<CrmTrelloImportResult> {
   const contract = options.sourceContract ?? COMMERCIAL_TRELLO_SOURCE_CONTRACT;
   assertGate(
+    Number.isInteger(contract.cofounderLeads) &&
+      contract.cofounderLeads >= 0 &&
+      contract.cofounderLeads <= contract.cofoundersOnly,
+    "SOURCE_CONTRACT_INVALID",
+    "Le contrat source Trello est invalide.",
+  );
+  assertGate(
     options.mode !== "apply" || options.confirmApply === true,
     "APPLY_CONFIRMATION_REQUIRED",
     "Le mode apply exige --confirm-apply.",
@@ -1272,7 +1285,10 @@ export async function runCrmTrelloImport(
     existingCrmDeterministicMatches:
       reconciled.review.existingCrmDeterministicMatches,
     mode: options.mode,
-    privacy: { cofoundersOnly: contract.cofoundersOnly },
+    privacy: {
+      cofounderLeads: contract.cofounderLeads,
+      cofoundersOnly: contract.cofoundersOnly,
+    },
     sourceHash: contract.sourceHash,
     stagingHash: contract.stagingHash,
   } as const;

@@ -293,6 +293,80 @@ describe("normalizeTrelloExport", () => {
     ).toBe("cofounders");
   });
 
+  it("preserves unnamed labels privately, including unused definitions and card relations", () => {
+    const dryRun = normalizeTrelloExport({
+      ...syntheticBoard,
+      cards: [
+        {
+          ...syntheticBoard.cards[0],
+          idLabels: ["label-urgent", "label-blank-used"],
+        },
+      ],
+      labels: [
+        { color: "red", id: "label-urgent", name: "Urgent" },
+        { color: "red", id: "label-blank-used", name: "" },
+        { color: "orange", id: "label-blank-unused-a", name: "   " },
+        { color: null, id: "label-blank-unused-b", name: "" },
+      ],
+      lists: [{ ...syntheticBoard.lists[0], name: "Contacted" }],
+    });
+    const blankTags = dryRun.items.filter(
+      (item) =>
+        item.entityType === "tag" && item.externalId.startsWith("label-blank"),
+    );
+    const lead = dryRun.items.find(
+      (item) => item.entityType === "lead" && item.externalId === "card-client",
+    );
+
+    expect(blankTags).toHaveLength(3);
+    expect(
+      blankTags.map((item) => ({
+        accessScope: item.accessScope,
+        color: item.payload.color,
+        externalId: item.externalId,
+        name: item.payload.name,
+        privacyReasons: item.privacyReasons,
+      })),
+    ).toEqual([
+      {
+        accessScope: "cofounders",
+        color: "red",
+        externalId: "label-blank-used",
+        name: "Label Trello privé 199e082d54",
+        privacyReasons: ["fail-closed:unnamed-label"],
+      },
+      {
+        accessScope: "cofounders",
+        color: "orange",
+        externalId: "label-blank-unused-a",
+        name: "Label Trello privé 63ee0a8928",
+        privacyReasons: ["fail-closed:unnamed-label"],
+      },
+      {
+        accessScope: "cofounders",
+        color: "teal",
+        externalId: "label-blank-unused-b",
+        name: "Label Trello privé 462e36660b",
+        privacyReasons: ["fail-closed:unnamed-label"],
+      },
+    ]);
+    expect(lead).toMatchObject({
+      accessScope: "cofounders",
+      payload: {
+        labelExternalIds: ["label-urgent", "label-blank-used"],
+      },
+    });
+    expect(lead?.privacyReasons).toContain("label:fail-closed:unnamed-label");
+    expect(dryRun.counts).toMatchObject({
+      cofounderLeads: 1,
+      cofoundersOnly: 4,
+      tags: 4,
+    });
+    expect(dryRun.warnings.join(" ")).toMatch(
+      /3 label\(s\) sans nom conservé\(s\)/i,
+    );
+  });
+
   it("reconciles one exact existing CRM lead and fails closed on ambiguity", () => {
     const dryRun = normalizeTrelloExport({
       ...syntheticBoard,

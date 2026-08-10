@@ -43,7 +43,8 @@ bounded staging records:
 - cards become leads and retain title, description, due date, closed state,
   labels, checklist text, the first incomplete checklist item as the next
   action, attachment metadata/URL, and external assignment IDs;
-- named labels become tags;
+- every label becomes a tag; unnamed labels receive a deterministic,
+  non-revealing name and remain founder-only even when unused;
 - closed cards remain traceable as `dead-end` rather than being discarded;
 - unknown lists/cards are routed to a founder-only review category;
 - duplicate titles are reported for review but not merged automatically;
@@ -92,7 +93,12 @@ array. Classification is fail-closed:
 Any failed rule produces `cofounders`. Free-text keyword detection is therefore
 an additional guard, not the sole protection. Before live apply, founders must
 review every `fail-closed:unreviewed-label` result and explicitly approve any
-new organization-safe label. Do not weaken the fallback.
+new organization-safe label. An unnamed label is never discarded: its tag uses
+`Label Trello privé <hash court>`, its reason is
+`fail-closed:unnamed-label`, and any attached card is also founder-only. The
+hash is domain-separated by board and label identifiers so no source name or
+identifier is exposed in the synthetic display name. Do not weaken the
+fallback.
 
 The same vocabulary boundary is enforced by a database trigger for every
 manual company, contact, lead, category, tag, and task write, regardless of the
@@ -177,7 +183,11 @@ expected row count and staging hash before any CRM write, including on a replay.
 
 ## Latest local validation (aggregate only)
 
-- 14 lists and 221 cards normalized into 238 staging items;
+- 14 lists, 6 labels, and 221 cards normalized into 241 staging items;
+- all 3 unnamed labels preserved as deterministic founder-only tags, including
+  2 unused definitions;
+- 13 founder-only leads and 16 founder-only staging rows in total;
+- 149 lead-tag relations preserved;
 - 192 open and 29 archived cards;
 - 28 due dates and 47 descriptions preserved;
 - 5 checklists containing 13 items preserved;

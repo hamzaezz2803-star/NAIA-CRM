@@ -61,6 +61,7 @@ const normalized = normalizeTrelloExport(exportBytes.toString("utf8"));
 const attestation = createTrelloStagingAttestation(normalized.items);
 const contract: TrelloImportSourceContract = {
   boardId: board.id,
+  cofounderLeads: 0,
   cofoundersOnly: 0,
   counts: { categories: 1, leads: 1, tags: 1, totalItems: 3 },
   expectedLeadTagRelations: 1,
@@ -105,6 +106,7 @@ const snapshot = {
 
 const stageVerification = {
   categoryCount: 1,
+  cofounderLeads: 0,
   cofoundersOnly: 0,
   expectedItemCount: 3,
   leadCount: 1,
@@ -175,24 +177,41 @@ const validPost = {
   unexpectedRefs: 0,
 };
 
-function dependencies(database: DatabasePort): RunnerDependencies {
+function dependencies(
+  database: DatabasePort,
+  sourceBytes = exportBytes,
+): RunnerDependencies {
   return {
     attestTarget: () => targetReady,
     database,
     loadExport: () => ({
-      bytes: exportBytes,
+      bytes: sourceBytes,
       isRegularFile: true,
       mode: 0o100600,
-      size: exportBytes.length,
+      size: sourceBytes.length,
     }),
   };
 }
+
+const defaultMockScenario = {
+  applySummary,
+  founderRlsAfter,
+  founderRlsBefore,
+  nonFounderRls,
+  post: validPost,
+  stageVerification,
+};
+
+type MockScenario = typeof defaultMockScenario;
 
 class MockDatabase implements DatabasePort {
   readonly calls: Array<{ operation: string; sql: string }> = [];
   private counts = new Map<string, number>();
 
-  constructor(private readonly conflictPost = false) {}
+  constructor(
+    private readonly conflictPost = false,
+    private readonly scenario: MockScenario = defaultMockScenario,
+  ) {}
 
   query(operation: Parameters<DatabasePort["query"]>[0], sql: string) {
     this.calls.push({ operation, sql });
@@ -208,23 +227,25 @@ class MockDatabase implements DatabasePort {
           ? { reused: false, runId: RUN_ID, status: "staged" }
           : { reused: true, runId: RUN_ID, status: "applied" };
       case "stage-verify":
-        return stageVerification;
+        return this.scenario.stageVerification;
       case "founder-rls":
-        return count === 1 ? founderRlsBefore : founderRlsAfter;
+        return count === 1
+          ? this.scenario.founderRlsBefore
+          : this.scenario.founderRlsAfter;
       case "nonfounder-rls":
-        return nonFounderRls;
+        return this.scenario.nonFounderRls;
       case "apply":
         return count === 1
-          ? applySummary
-          : { ...applySummary, idempotentReplay: true };
+          ? this.scenario.applySummary
+          : { ...this.scenario.applySummary, idempotentReplay: true };
       case "post-verify":
         return this.conflictPost
           ? {
-              ...validPost,
+              ...this.scenario.post,
               conflictCount: 1,
-              summary: { ...applySummary, conflicts: 1 },
+              summary: { ...this.scenario.applySummary, conflicts: 1 },
             }
-          : validPost;
+          : this.scenario.post;
       case "run-status":
         return { status: "applied" };
       case "rollback":
@@ -304,6 +325,7 @@ describe("CRM Trello import runner", () => {
     expect(result).toMatchObject({
       counts: contract.counts,
       mode: "dry-run",
+      privacy: { cofounderLeads: 0, cofoundersOnly: 0 },
       rlsVerified: false,
       schemaVerified: true,
       status: "ready",
@@ -351,6 +373,109 @@ describe("CRM Trello import runner", () => {
       "apply",
       "post-verify",
     ]);
+  });
+
+  it("keeps confidential non-lead rows distinct from founder-only leads in every gate", async () => {
+    const boardWithPrivateUnusedTag = {
+      ...board,
+      labels: [
+        ...board.labels,
+        { color: "orange", id: "label-private-unused", name: "" },
+      ],
+    };
+    const privateExportBytes = Buffer.from(
+      JSON.stringify(boardWithPrivateUnusedTag),
+      "utf8",
+    );
+    const privateNormalized = normalizeTrelloExport(
+      privateExportBytes.toString("utf8"),
+    );
+    const privateAttestation = createTrelloStagingAttestation(
+      privateNormalized.items,
+    );
+    const privateContract: TrelloImportSourceContract = {
+      boardId: board.id,
+      cofounderLeads: 0,
+      cofoundersOnly: 1,
+      counts: { categories: 1, leads: 1, tags: 2, totalItems: 4 },
+      expectedLeadTagRelations: 1,
+      organizationIdSha256: contract.organizationIdSha256,
+      rawSha256: createHash("sha256").update(privateExportBytes).digest("hex"),
+      rawSize: privateExportBytes.length,
+      sourceHash: privateNormalized.sourceHash,
+      stagingHash: privateAttestation.stagingHash,
+    };
+    const privateApplySummary = { ...applySummary, created: 4 };
+    const database = new MockDatabase(false, {
+      applySummary: privateApplySummary,
+      founderRlsAfter: {
+        ...founderRlsAfter,
+        ledgerChanges: 5,
+        ledgerRefs: 4,
+        ledgerStaging: 4,
+      },
+      founderRlsBefore: { ...founderRlsBefore, ledgerStaging: 4 },
+      nonFounderRls,
+      post: {
+        ...validPost,
+        activeRefs: 4,
+        activeTagMappings: 2,
+        activatedByType: { categories: 1, leads: 1, tags: 2 },
+        changeCount: 5,
+        mappedRefs: 4,
+        postCounts: { categories: 2, leads: 2, tags: 3 },
+        summary: privateApplySummary,
+      },
+      stageVerification: {
+        ...stageVerification,
+        cofoundersOnly: 1,
+        expectedItemCount: 4,
+        stagingCount: 4,
+        stagingHash: privateContract.stagingHash,
+        sourceHash: privateContract.sourceHash,
+        tagCount: 2,
+      },
+    });
+
+    const result = await runCrmTrelloImport(
+      {
+        confirmApply: true,
+        exportPath: "/secure/private-export.json",
+        mode: "apply",
+        sourceContract: privateContract,
+      },
+      dependencies(database, privateExportBytes),
+    );
+
+    expect(result).toMatchObject({
+      applied: { created: 4, replayVerified: true },
+      privacy: { cofounderLeads: 0, cofoundersOnly: 1 },
+      status: "applied",
+    });
+  });
+
+  it("rejects a source contract whose founder-only lead count exceeds its private total", async () => {
+    const loadExport = vi.fn();
+
+    await expect(
+      runCrmTrelloImport(
+        {
+          exportPath: "/secure/export.json",
+          mode: "dry-run",
+          sourceContract: {
+            ...contract,
+            cofounderLeads: 2,
+            cofoundersOnly: 1,
+          },
+        },
+        {
+          attestTarget: () => targetReady,
+          database: new MockDatabase(),
+          loadExport,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "SOURCE_CONTRACT_INVALID" });
+    expect(loadExport).not.toHaveBeenCalled();
   });
 
   it("soft-archives a newly applied run when a postcondition fails", async () => {
