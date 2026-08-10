@@ -88,6 +88,7 @@ export function getDriveFolderUrl(folderId: string) {
  */
 export async function ensureClientDriveFolder(
   clientName: string,
+  { beforeMutation }: { beforeMutation?: () => Promise<void> } = {},
 ): Promise<ClientDriveFolder> {
   const rootFolderId = getClientsRootFolderId();
   if (!rootFolderId) {
@@ -108,13 +109,16 @@ export async function ensureClientDriveFolder(
       normalizedName,
     );
     const folderId =
-      existing ?? (await createDriveFolder(rootFolderId, normalizedName));
+      existing ??
+      (await createDriveFolder(rootFolderId, normalizedName, {
+        beforeMutation,
+      }));
 
     // Idempotent: also repairs client folders whose subfolders were never
     // fully created (partial earlier run, or folder created by hand).
     for (const subfolderName of CLIENT_DRIVE_SUBFOLDERS) {
       if (!(await findDriveChildFolderByName(folderId, subfolderName))) {
-        await createDriveFolder(folderId, subfolderName);
+        await createDriveFolder(folderId, subfolderName, { beforeMutation });
       }
     }
 
@@ -445,7 +449,12 @@ export async function findDriveChildFolderByName(
   return payload.files?.[0]?.id ?? null;
 }
 
-export async function createDriveFolder(parentFolderId: string, name: string) {
+export async function createDriveFolder(
+  parentFolderId: string,
+  name: string,
+  { beforeMutation }: { beforeMutation?: () => Promise<void> } = {},
+) {
+  await beforeMutation?.();
   const url = new URL(DRIVE_FILES_URL);
   url.searchParams.set("fields", "id");
 
@@ -468,10 +477,11 @@ export async function createDriveFolder(parentFolderId: string, name: string) {
 export async function ensureDriveChildFolder(
   parentFolderId: string,
   name: string,
+  { beforeMutation }: { beforeMutation?: () => Promise<void> } = {},
 ) {
   return (
     (await findDriveChildFolderByName(parentFolderId, name)) ??
-    createDriveFolder(parentFolderId, name)
+    createDriveFolder(parentFolderId, name, { beforeMutation })
   );
 }
 

@@ -235,6 +235,7 @@ describe("Gemini meeting-note mailbox isolation", () => {
     );
 
     expect(batch).toEqual({
+      documentCount: 1,
       messages: [
         expect.objectContaining({
           bodyText: body,
@@ -244,12 +245,78 @@ describe("Gemini meeting-note mailbox isolation", () => {
         }),
       ],
       nextPageToken: undefined,
+      processedBytes:
+        Buffer.byteLength(body) +
+        Buffer.byteLength("Transcript\nAli: le pilote est validé."),
       scanned: 3,
     });
     expect(fetchMock).toHaveBeenCalledTimes(5);
     for (const [, init] of fetchMock.mock.calls) {
       expect(init?.method ?? "GET").toBe("GET");
     }
+  });
+
+  it("keeps the Gmail cursor unchanged when a linked Gemini document export has a transient failure", async () => {
+    const body = [
+      'Notes de "Projet Atlas"',
+      "",
+      "Résumé",
+      "Le pilote est validé.",
+      "https://docs.google.com/document/d/doc-transient/edit",
+    ].join("\n");
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      );
+      if (url.pathname.endsWith("/users/me/messages")) {
+        return Response.json({
+          messages: [{ id: "allowed" }],
+          nextPageToken: "must-not-be-committed",
+        });
+      }
+      if (url.pathname.endsWith("/messages/allowed")) {
+        return Response.json({
+          payload: {
+            body: { data: Buffer.from(body).toString("base64url") },
+            headers: [
+              { name: "From", value: "Gemini <gemini-notes@google.com>" },
+              {
+                name: "Authentication-Results",
+                value:
+                  "mx.google.com; dkim=pass header.i=@google.com; dmarc=pass header.from=google.com",
+              },
+              { name: "Subject", value: 'Notes : "Projet Atlas"' },
+            ],
+            mimeType: "text/plain",
+          },
+        });
+      }
+      if (url.pathname.endsWith("/files/doc-transient/export")) {
+        return new Response("temporary Drive outage", { status: 503 });
+      }
+      throw new Error(`Unexpected Google request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext({
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "redacted-test-token",
+        expiry_date: Date.now() + 3_600_000,
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-1",
+      organization_id: "organization-1",
+      scopes: [...GOOGLE_USER_SCOPES, GOOGLE_MEETING_NOTE_SCOPE],
+      status: "connected",
+    });
+
+    await expect(listGeminiMeetingNoteMessages({}, context)).rejects.toThrow(
+      "Google Drive request failed (503)",
+    );
   });
 
   it("continues from an opaque Gmail cursor and returns the next cursor", async () => {
@@ -324,6 +391,135 @@ describe("Gemini meeting-note mailbox isolation", () => {
     expect(batch.nextPageToken).toBe("next-opaque-cursor");
     expect(batch.scanned).toBe(1);
     expect(batch.messages).toHaveLength(1);
+  });
+
+  it("caps each Gmail page at 25 messages even when a caller asks for more", async () => {
+    const listUrls: URL[] = [];
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      );
+      listUrls.push(url);
+      return Response.json({ messages: [], nextPageToken: "next-page" });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext({
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "redacted-test-token",
+        expiry_date: Date.now() + 3_600_000,
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-1",
+      organization_id: "organization-1",
+      scopes: [...GOOGLE_USER_SCOPES],
+      status: "connected",
+    });
+
+    const batch = await listGeminiMeetingNoteMessages(
+      { maxResults: 200 },
+      context,
+    );
+
+    expect(listUrls).toHaveLength(1);
+    expect(listUrls[0].searchParams.get("maxResults")).toBe("25");
+    expect(batch).toMatchObject({
+      documentCount: 0,
+      nextPageToken: "next-page",
+      processedBytes: 0,
+      scanned: 0,
+    });
+  });
+
+  it("fails before advancing the cursor when the cumulative byte budget is exhausted", async () => {
+    const body = `Notes de "Projet Atlas"\n\n${"x".repeat(200)}`;
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      );
+      if (url.pathname.endsWith("/users/me/messages")) {
+        return Response.json({
+          messages: [{ id: "oversized" }],
+          nextPageToken: "must-not-be-committed",
+        });
+      }
+      return Response.json({
+        payload: {
+          body: { data: Buffer.from(body).toString("base64url") },
+          headers: [
+            { name: "From", value: "Gemini <gemini-notes@google.com>" },
+            {
+              name: "Authentication-Results",
+              value:
+                "mx.google.com; dkim=pass header.i=@google.com; dmarc=pass header.from=google.com",
+            },
+            { name: "Subject", value: 'Notes : "Projet Atlas"' },
+          ],
+          mimeType: "text/plain",
+        },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext({
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "redacted-test-token",
+        expiry_date: Date.now() + 3_600_000,
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-1",
+      organization_id: "organization-1",
+      scopes: [...GOOGLE_USER_SCOPES],
+      status: "connected",
+    });
+
+    await expect(
+      listGeminiMeetingNoteMessages({ maxBytes: 64 }, context),
+    ).rejects.toThrow("limite cumulée");
+  });
+
+  it("fails the whole page when one Gmail detail read is transiently unavailable", async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = new URL(
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url,
+      );
+      if (url.pathname.endsWith("/users/me/messages")) {
+        return Response.json({
+          messages: [{ id: "temporarily-unavailable" }],
+          nextPageToken: "must-not-be-committed",
+        });
+      }
+      return new Response("temporary Gmail outage", { status: 503 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext({
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "redacted-test-token",
+        expiry_date: Date.now() + 3_600_000,
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-1",
+      organization_id: "organization-1",
+      scopes: [...GOOGLE_USER_SCOPES],
+      status: "connected",
+    });
+
+    await expect(listGeminiMeetingNoteMessages({}, context)).rejects.toThrow(
+      "Gmail request failed (503)",
+    );
   });
 
   it("quarantines a broad refreshed token before any Gmail request", async () => {

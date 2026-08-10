@@ -6,11 +6,6 @@ import { z } from "zod";
 
 import { crmLeadStatuses } from "@/features/crm/contracts";
 import {
-  listDriveFolderFiles,
-  updateDriveFileContent,
-  uploadDriveFile,
-} from "@/platform/integrations/google-drive-service";
-import {
   createGoogleCalendarReminder,
   listGeminiMeetingNoteMessages,
 } from "@/platform/integrations/google-workspace";
@@ -86,6 +81,20 @@ const linkGeminiArtifactSchema = z.object({
 const syncGeminiInputSchema = z
   .object({ pageToken: z.string().trim().min(1).max(2_048).optional() })
   .default({});
+const geminiSyncClaimSchema = z.discriminatedUnion("action", [
+  z.object({ action: z.literal("busy") }),
+  z.object({ action: z.literal("cooldown"), retryAfterMs: z.number().int() }),
+  z.object({ action: z.literal("denied") }),
+  z.object({
+    action: z.literal("execute"),
+    deadlineAt: z.string(),
+    leaseToken: z.string().uuid(),
+    maxBytes: z.number().int().positive().max(10_485_760),
+    maxDocuments: z.number().int().min(0).max(20),
+    maxResults: z.number().int().min(1).max(25),
+    pageToken: z.string().min(1).max(2_048).nullish(),
+  }),
+]);
 const meetingKnowledgeQuestionSchema = z.object({
   meetingId: z.string().uuid().optional(),
   question: z.string().trim().min(2).max(500),
@@ -318,15 +327,57 @@ export async function fetchMeetingTranscriptAction(
 }
 
 export async function syncGeminiMeetingNotesAction(rawInput: unknown = {}) {
+  let activeClaim:
+    | {
+        leaseToken: string;
+        organizationId: string;
+        supabase: Awaited<
+          ReturnType<typeof requireMeetingNotesAccess>
+        >["supabase"];
+      }
+    | undefined;
   try {
-    const input = syncGeminiInputSchema.parse(rawInput);
+    // The legacy browser cursor remains accepted for backwards compatibility,
+    // but the provider cursor used below comes exclusively from the durable
+    // per-profile database claim.
+    syncGeminiInputSchema.parse(rawInput);
     const { organizationId, supabase, user } =
       await requireMeetingNotesAccess();
+    const { data: rawClaim, error: claimError } = await supabase.rpc(
+      "claim_meeting_gemini_sync",
+      {
+        lease_seconds: 180,
+        requested_organization_id: organizationId,
+      },
+    );
+    if (claimError) throw claimError;
+    const claim = geminiSyncClaimSchema.parse(rawClaim);
+    if (claim.action === "denied") {
+      throw new Error(
+        "La synchronisation Gemini est réservée au cofondateur owner connecté.",
+      );
+    }
+    if (claim.action === "busy") {
+      return {
+        error: "Une synchronisation Gemini est déjà en cours pour ce profil.",
+        success: false,
+      };
+    }
+    if (claim.action === "cooldown") {
+      return {
+        error: `La synchronisation Gemini peut reprendre dans ${Math.max(1, Math.ceil(claim.retryAfterMs / 1000))} seconde(s).`,
+        success: false,
+      };
+    }
+    activeClaim = { leaseToken: claim.leaseToken, organizationId, supabase };
     const batch = await listGeminiMeetingNoteMessages(
       {
-        maxResults: 200,
+        deadlineAt: claim.deadlineAt,
+        maxBytes: claim.maxBytes,
+        maxDocuments: Math.min(5, claim.maxDocuments),
+        maxResults: claim.maxResults,
         newerThanDays: 180,
-        pageToken: input.pageToken,
+        pageToken: claim.pageToken ?? undefined,
       },
       { organizationId, profileId: user.id, supabase },
     );
@@ -334,6 +385,24 @@ export async function syncGeminiMeetingNotesAction(rawInput: unknown = {}) {
       .map(parseGeminiMeetingNoteMessage)
       .filter((note): note is NonNullable<typeof note> => Boolean(note));
     if (!parsed.length) {
+      const { data: completed, error: completeError } = await supabase.rpc(
+        "complete_meeting_gemini_sync",
+        {
+          document_count: batch.documentCount,
+          processed_bytes: batch.processedBytes,
+          requested_lease_token: claim.leaseToken,
+          requested_organization_id: organizationId,
+          returned_page_token: batch.nextPageToken ?? null,
+          scanned_count: batch.scanned,
+        },
+      );
+      if (completeError) throw completeError;
+      if (completed !== true) {
+        throw new Error(
+          "Le curseur Gemini a changé avant la finalisation de cette page.",
+        );
+      }
+      activeClaim = undefined;
       return {
         imported: 0,
         matched: 0,
@@ -403,6 +472,24 @@ export async function syncGeminiMeetingNotesAction(rawInput: unknown = {}) {
         onConflict: "organization_id,provider,external_message_id",
       });
     if (upsertError) throw upsertError;
+    const { data: completed, error: completeError } = await supabase.rpc(
+      "complete_meeting_gemini_sync",
+      {
+        document_count: batch.documentCount,
+        processed_bytes: batch.processedBytes,
+        requested_lease_token: claim.leaseToken,
+        requested_organization_id: organizationId,
+        returned_page_token: batch.nextPageToken ?? null,
+        scanned_count: batch.scanned,
+      },
+    );
+    if (completeError) throw completeError;
+    if (completed !== true) {
+      throw new Error(
+        "Les notes ont été importées, mais le curseur Gemini n'a pas pu être finalisé; la reprise restera idempotente.",
+      );
+    }
+    activeClaim = undefined;
     revalidatePath("/meetings");
 
     return {
@@ -416,6 +503,14 @@ export async function syncGeminiMeetingNotesAction(rawInput: unknown = {}) {
       total: rows.length,
     };
   } catch (error) {
+    if (activeClaim) {
+      await activeClaim.supabase.rpc("release_meeting_gemini_sync_claim", {
+        failure_message:
+          error instanceof Error ? error.message : "Gemini sync failed",
+        requested_lease_token: activeClaim.leaseToken,
+        requested_organization_id: activeClaim.organizationId,
+      });
+    }
     return {
       error:
         error instanceof Error
@@ -976,12 +1071,11 @@ export async function retryMeetingProcessingAction(rawMeetingId: unknown) {
 export async function retryMeetingDriveArchiveAction(rawMeetingId: unknown) {
   try {
     const meetingId = meetingIdSchema.parse(rawMeetingId);
-    const { organizationId, supabase, user } =
-      await requireMeetingNotesAccess();
+    const { organizationId, supabase } = await requireMeetingNotesAccess();
     const [meetingResult, outputResult] = await Promise.all([
       supabase
         .from("meetings")
-        .select("id, title, starts_at, company:company_id(name)")
+        .select("id, company_id, title, starts_at, company:company_id(id,name)")
         .eq("id", meetingId)
         .eq("organization_id", organizationId)
         .single(),
@@ -1000,20 +1094,59 @@ export async function retryMeetingDriveArchiveAction(rawMeetingId: unknown) {
     const meeting = meetingResult.data;
     const output = outputResult.data;
     const reviewRevision = Number(output.review_revision ?? 0);
-    const company = firstRelation(meeting.company) as { name?: string } | null;
+    const company = firstRelation(meeting.company) as {
+      id?: string;
+      name?: string;
+    } | null;
+    const companyId = company?.id?.trim() || meeting.company_id?.trim();
     const companyName = company?.name?.trim();
-    if (!companyName) {
+    if (!companyId || !companyName) {
       throw new Error(
         "Renseigne l'entreprise du lead CRM avant de relancer l'archivage Drive.",
       );
     }
+    const authorizeMutation = async () => {
+      const { data: authorized, error: authorizationError } =
+        await supabase.rpc("authorize_meeting_drive_archive", {
+          expected_output_version: Number(output.version),
+          expected_review_revision: reviewRevision,
+          requested_company_id: companyId,
+          requested_company_name: companyName,
+          requested_meeting_id: meetingId,
+          requested_organization_id: organizationId,
+          requested_output_id: output.id,
+        });
+      if (authorizationError) throw authorizationError;
+      if (authorized !== true) {
+        throw new Error(
+          "L'autorisation, l'entreprise ou la révision du meeting a changé. Recharge le cockpit avant de réessayer.",
+        );
+      }
+    };
+    let approvalWarnings = (output.approval_warnings as string[] | null) ?? [];
+    const reviewedNotes =
+      output.review_status === "approved" &&
+      typeof output.reviewed_notes_markdown === "string" &&
+      reviewRevision > 0
+        ? {
+            notesMarkdown: output.reviewed_notes_markdown,
+            reviewRevision,
+          }
+        : undefined;
+    if (reviewedNotes) {
+      approvalWarnings = approvalWarnings.filter(
+        (warning) => !warning.startsWith("Version relue"),
+      );
+    }
     const archive = await archiveMeetingOutput({
+      authorizeMutation,
       companyName,
       meetingDate: meeting.starts_at,
       meetingId,
       meetingTitle: meeting.title,
       notesMarkdown: output.notes_markdown as string,
       outputVersion: Number(output.version),
+      reviewedNotes,
       structuredOutput: meetingStructuredOutputSchema.parse(
         output.structured_output ?? {},
       ),
@@ -1021,96 +1154,99 @@ export async function retryMeetingDriveArchiveAction(rawMeetingId: unknown) {
       transcriptText: output.transcript_text as string,
     });
     const archivedFiles = [...archive.files];
-    let approvalWarnings = (output.approval_warnings as string[] | null) ?? [];
-    if (
-      output.review_status === "approved" &&
-      typeof output.reviewed_notes_markdown === "string" &&
-      reviewRevision > 0
-    ) {
-      const reviewed = await archiveReviewedMeetingNotes({
-        folderId: archive.folderId,
-        notesMarkdown: output.reviewed_notes_markdown,
-        outputVersion: Number(output.version),
-        reviewRevision,
-      });
-      archivedFiles.push({
-        externalId: reviewed.id,
-        kind: "meeting-notes",
-        mimeType: "text/markdown",
-        name: reviewed.name,
-        url:
-          reviewed.webViewLink ??
-          `https://drive.google.com/file/d/${reviewed.id}/view`,
-      });
-      approvalWarnings = approvalWarnings.filter(
-        (warning) => !warning.startsWith("Version relue"),
-      );
-    }
-
-    const externalIds = archivedFiles
-      .map((file) => file.externalId)
-      .filter((id): id is string => Boolean(id));
-    const { data: existingAssets, error: existingAssetsError } =
-      externalIds.length
-        ? await supabase
-            .from("meeting_assets")
-            .select("external_id")
-            .eq("meeting_id", meetingId)
-            .eq("organization_id", organizationId)
-            .in("external_id", externalIds)
-        : { data: [], error: null };
-    if (existingAssetsError) throw existingAssetsError;
-    const existingIds = new Set(
-      (existingAssets ?? []).map((asset) => asset.external_id as string),
-    );
-    const newAssets = archivedFiles
-      .filter((file) => !file.externalId || !existingIds.has(file.externalId))
-      .map((file) => ({
-        created_by_profile_id: user.id,
-        display_name: file.name,
-        external_id: file.externalId,
-        kind: file.kind,
-        meeting_id: meetingId,
-        mime_type: file.mimeType,
-        organization_id: organizationId,
-        provider: "google-drive",
-        url: file.url,
-      }));
-
     const warnings = ((output.warnings as string[] | null) ?? []).filter(
       (warning) => !warning.startsWith("Archivage Drive différé"),
     );
-    const [meetingUpdate, outputUpdate] = await Promise.all([
-      supabase
-        .from("meetings")
-        .update({
-          drive_folder_id: archive.folderId,
-          drive_folder_url: archive.folderUrl,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", meetingId)
-        .eq("organization_id", organizationId),
-      supabase
-        .from("meeting_outputs")
-        .update({ approval_warnings: approvalWarnings, warnings })
-        .eq("id", output.id)
-        .eq("organization_id", organizationId)
-        .eq("review_revision", reviewRevision)
-        .select("id")
-        .maybeSingle(),
-    ]);
-    if (meetingUpdate.error) throw meetingUpdate.error;
-    if (outputUpdate.error) throw outputUpdate.error;
-    if (!outputUpdate.data) {
+    const fileManifest = archivedFiles.map((file) => ({
+      externalId: file.externalId,
+      kind: file.kind,
+      mimeType: file.mimeType,
+      name: file.name,
+      parentFolderId: file.parentFolderId,
+      sha256: file.sha256,
+      sizeBytes: file.sizeBytes,
+      url: file.url,
+    }));
+    const { data: finalized, error: finalizeError } = await supabase.rpc(
+      "finalize_meeting_drive_archive",
+      {
+        archive_files: fileManifest,
+        requested_approval_warnings: approvalWarnings,
+        expected_output_version: Number(output.version),
+        expected_review_revision: reviewRevision,
+        requested_output_warnings: warnings,
+        requested_company_id: companyId,
+        requested_company_name: companyName,
+        requested_drive_folder_id: archive.folderId,
+        requested_drive_folder_url: archive.folderUrl,
+        requested_meeting_id: meetingId,
+        requested_organization_id: organizationId,
+        requested_output_id: output.id,
+      },
+    );
+    if (finalizeError) throw finalizeError;
+    if (finalized !== true) {
       throw new Error(
-        "Une revue plus récente a été enregistrée pendant l'archivage. Recharge le cockpit avant de réessayer.",
+        "L'archivage Drive a été créé, mais la base a refusé sa finalisation car l'autorisation ou la révision a changé.",
       );
     }
-    if (newAssets.length) {
-      const { error: assetInsertError } = await supabase
+
+    const externalIds = fileManifest
+      .map((file) => file.externalId)
+      .filter((id): id is string => Boolean(id));
+    const [finalMeeting, finalOutput, finalAssets] = await Promise.all([
+      supabase
+        .from("meetings")
+        .select("id,company_id,drive_folder_id,drive_folder_url")
+        .eq("id", meetingId)
+        .eq("organization_id", organizationId)
+        .maybeSingle(),
+      supabase
+        .from("meeting_outputs")
+        .select("id,version,review_revision")
+        .eq("id", output.id)
+        .eq("meeting_id", meetingId)
+        .eq("organization_id", organizationId)
+        .maybeSingle(),
+      supabase
         .from("meeting_assets")
-        .insert(newAssets);
-      if (assetInsertError) throw assetInsertError;
+        .select("external_id,display_name,metadata")
+        .eq("meeting_id", meetingId)
+        .eq("organization_id", organizationId)
+        .eq("provider", "google-drive")
+        .in("external_id", externalIds),
+    ]);
+    if (finalMeeting.error) throw finalMeeting.error;
+    if (finalOutput.error) throw finalOutput.error;
+    if (finalAssets.error) throw finalAssets.error;
+    const assetsByExternalId = new Map(
+      (finalAssets.data ?? []).map((asset) => [
+        asset.external_id as string,
+        asset,
+      ]),
+    );
+    const finalStateMatches =
+      finalMeeting.data?.company_id === companyId &&
+      finalMeeting.data?.drive_folder_id === archive.folderId &&
+      finalMeeting.data?.drive_folder_url === archive.folderUrl &&
+      finalOutput.data?.version === Number(output.version) &&
+      finalOutput.data?.review_revision === reviewRevision &&
+      externalIds.length === fileManifest.length &&
+      fileManifest.every((file) => {
+        if (!file.externalId) return false;
+        const asset = assetsByExternalId.get(file.externalId);
+        const metadata = asset?.metadata as
+          { parentFolderId?: string; sha256?: string } | null | undefined;
+        return (
+          asset?.display_name === file.name &&
+          metadata?.parentFolderId === file.parentFolderId &&
+          metadata?.sha256 === file.sha256
+        );
+      });
+    if (!finalStateMatches) {
+      throw new Error(
+        "La relecture finale de l'archive Drive ne correspond pas au manifeste attesté.",
+      );
     }
 
     revalidatePath("/meetings");
@@ -1337,46 +1473,33 @@ export async function approveMeetingOutputAction(rawInput: unknown) {
       reviewFinalized = true;
 
       const nextReviewRevision = input.reviewRevision + 1;
-      if (meeting.drive_folder_id) {
-        try {
-          const reviewed = await archiveReviewedMeetingNotes({
-            folderId: meeting.drive_folder_id,
-            notesMarkdown: input.notesMarkdown,
-            outputVersion: input.outputVersion,
-            reviewRevision: nextReviewRevision,
-          });
-          const { error: assetError } = await supabase
-            .from("meeting_assets")
-            .insert({
-              created_by_profile_id: user.id,
-              display_name: reviewed.name,
-              external_id: reviewed.id,
-              kind: "meeting-notes",
-              meeting_id: meeting.id,
-              mime_type: "text/markdown",
-              organization_id: organizationId,
-              provider: "google-drive",
-              url: reviewed.webViewLink,
-            });
-          if (assetError && assetError.code !== "23505") throw assetError;
+      try {
+        const archiveResult = await retryMeetingDriveArchiveAction(meeting.id);
+        if (archiveResult.success) {
           removeReviewArchiveWarnings(warnings);
-        } catch (error) {
+        } else {
           removeReviewArchiveWarnings(warnings);
           pushUnique(
             warnings,
-            error instanceof Error
-              ? `Version relue non archivée: ${error.message}`
-              : "Version relue non archivée dans Drive.",
+            `Version relue non archivée: ${archiveResult.error}`,
           );
         }
-        await persistApprovalWarnings({
-          organizationId,
-          outputId: output.id as string,
-          reviewRevision: nextReviewRevision,
-          supabase,
+      } catch (error) {
+        removeReviewArchiveWarnings(warnings);
+        pushUnique(
           warnings,
-        });
+          error instanceof Error
+            ? `Version relue non archivée: ${error.message}`
+            : "Version relue non archivée dans Drive.",
+        );
       }
+      await persistApprovalWarnings({
+        organizationId,
+        outputId: output.id as string,
+        reviewRevision: nextReviewRevision,
+        supabase,
+        warnings,
+      });
 
       revalidatePath("/meetings");
       revalidatePath("/dashboard/leads");
@@ -1436,35 +1559,6 @@ async function releaseMeetingOutputReview({
     review_warnings: warnings,
   });
   if (error) throw error;
-}
-
-async function archiveReviewedMeetingNotes({
-  folderId,
-  notesMarkdown,
-  outputVersion,
-  reviewRevision,
-}: {
-  folderId: string;
-  notesMarkdown: string;
-  outputVersion: number;
-  reviewRevision: number;
-}) {
-  const reviewedName = `meeting_notes_v${outputVersion}_review_r${reviewRevision}.md`;
-  const existingReviewed = (
-    await listDriveFolderFiles(folderId, { maxResults: 1000 })
-  ).find((file) => file.name === reviewedName);
-  return existingReviewed?.id
-    ? updateDriveFileContent({
-        content: Buffer.from(notesMarkdown, "utf8"),
-        fileId: existingReviewed.id,
-        mimeType: "text/markdown",
-      })
-    : uploadDriveFile({
-        content: Buffer.from(notesMarkdown, "utf8"),
-        mimeType: "text/markdown",
-        name: reviewedName,
-        parentFolderId: folderId,
-      });
 }
 
 async function persistApprovalWarnings({

@@ -82,8 +82,10 @@ export type GmailMeetingNoteMessage = GmailMessageSummary & {
 };
 
 export type GmailMeetingNoteBatch = {
+  documentCount: number;
   messages: GmailMeetingNoteMessage[];
   nextPageToken?: string;
+  processedBytes: number;
   scanned: number;
 };
 
@@ -520,10 +522,16 @@ const GEMINI_MEETING_NOTE_SENDERS = new Set([
  */
 export async function listGeminiMeetingNoteMessages(
   {
-    maxResults = 100,
+    deadlineAt,
+    maxBytes = 10_485_760,
+    maxDocuments = 5,
+    maxResults = 25,
     newerThanDays = 120,
     pageToken,
   }: {
+    deadlineAt?: string;
+    maxBytes?: number;
+    maxDocuments?: number;
     maxResults?: number;
     newerThanDays?: number;
     pageToken?: string;
@@ -533,61 +541,60 @@ export async function listGeminiMeetingNoteMessages(
   const connection = await getGoogleWorkspaceConnection(context);
   const accessToken = await getGoogleAccessToken(connection);
   await revalidateGoogleProviderUse(connection, context);
-  const boundedMaxResults = Math.max(1, Math.min(maxResults, 200));
+  const boundedMaxResults = Math.max(1, Math.min(maxResults, 25));
+  const boundedMaxDocuments = Math.max(0, Math.min(maxDocuments, 5));
+  const boundedMaxBytes = Math.max(1, Math.min(maxBytes, 10_485_760));
   const boundedDays = Math.max(1, Math.min(newerThanDays, 365));
+  const deadlineMs = Math.min(parseDeadline(deadlineAt), Date.now() + 90_000);
   const canReadLinkedDocuments = canReadGoogleMeetingDocuments(
     connection.scopes,
   );
-  const messages: Array<{ id: string; threadId?: string }> = [];
-  let nextPageToken = pageToken?.trim() || undefined;
-  do {
-    const listUrl = new URL(
-      "https://gmail.googleapis.com/gmail/v1/users/me/messages",
-    );
-    listUrl.searchParams.set(
-      "maxResults",
-      String(Math.min(100, boundedMaxResults - messages.length)),
-    );
-    listUrl.searchParams.set(
-      "q",
-      `{from:gemini-notes@google.com from:meetings-noreply@google.com} newer_than:${boundedDays}d -in:spam -in:trash`,
-    );
-    if (nextPageToken) listUrl.searchParams.set("pageToken", nextPageToken);
-
-    const listResponse = await fetch(listUrl, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!listResponse.ok) {
-      throw new Error(await providerError("Gmail", listResponse));
-    }
-
-    const listPayload = (await listResponse.json()) as {
-      messages?: Array<{ id?: string; threadId?: string }>;
-      nextPageToken?: string;
-    };
-    messages.push(
-      ...(listPayload.messages ?? []).filter(
-        (message): message is { id: string; threadId?: string } =>
-          Boolean(message.id),
-      ),
-    );
-    nextPageToken = listPayload.nextPageToken;
-  } while (nextPageToken && messages.length < boundedMaxResults);
-
-  const boundedMessages = messages.slice(0, boundedMaxResults);
+  assertBeforeDeadline(deadlineMs);
+  const listUrl = new URL(
+    "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+  );
+  listUrl.searchParams.set("maxResults", String(boundedMaxResults));
+  listUrl.searchParams.set(
+    "q",
+    `{from:gemini-notes@google.com from:meetings-noreply@google.com} newer_than:${boundedDays}d -in:spam -in:trash`,
+  );
+  if (pageToken?.trim()) {
+    listUrl.searchParams.set("pageToken", pageToken.trim());
+  }
+  const listResponse = await fetch(listUrl, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(Math.max(1, deadlineMs - Date.now())),
+  });
+  if (!listResponse.ok) {
+    throw new Error(await providerError("Gmail", listResponse));
+  }
+  const listPayload = (await listResponse.json()) as {
+    messages?: Array<{ id?: string; threadId?: string }>;
+    nextPageToken?: string;
+  };
+  const boundedMessages = (listPayload.messages ?? [])
+    .filter((message): message is { id: string; threadId?: string } =>
+      Boolean(message.id),
+    )
+    .slice(0, boundedMaxResults);
 
   const detailed = await mapWithConcurrency<
-    (typeof messages)[number],
-    GmailMeetingNoteMessage | undefined
-  >(boundedMessages, 8, async (message) => {
+    (typeof boundedMessages)[number],
+    (GmailMeetingNoteMessage & { documentFileId?: string }) | undefined
+  >(boundedMessages, 4, async (message) => {
+    assertBeforeDeadline(deadlineMs);
     const detailUrl = new URL(
       `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}`,
     );
     detailUrl.searchParams.set("format", "full");
     const detailResponse = await fetch(detailUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
+      signal: AbortSignal.timeout(Math.max(1, deadlineMs - Date.now())),
     });
-    if (!detailResponse.ok) return undefined;
+    if ([404, 410].includes(detailResponse.status)) return undefined;
+    if (!detailResponse.ok) {
+      throw new Error(await providerError("Gmail", detailResponse));
+    }
 
     const detail = (await detailResponse.json()) as GmailFullMessagePayload;
     const rawHeaders = detail.payload?.headers ?? [];
@@ -607,34 +614,76 @@ export async function listGeminiMeetingNoteMessages(
       return undefined;
     }
 
-    const bodyText = extractGmailMessageText(detail.payload).slice(0, 300_000);
+    const bodyText = extractGmailMessageText(detail.payload).slice(0, 64_000);
     if (!bodyText.trim()) return undefined;
     const documentFileId = bodyText.match(
       /https:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/u,
     )?.[1];
-    const documentText =
-      canReadLinkedDocuments && documentFileId
-        ? await downloadGeminiDocumentText(documentFileId, accessToken)
-        : undefined;
-
     return {
       bodyText,
       date: headers.get("date"),
-      documentText,
+      documentFileId,
       from,
       id: message.id,
       senderEmail,
       snippet: detail.snippet,
       subject,
       threadId: detail.threadId ?? message.threadId,
-    } satisfies GmailMeetingNoteMessage;
+    };
   });
 
+  let documentCount = 0;
+  let processedBytes = 0;
+  const accepted: GmailMeetingNoteMessage[] = [];
+  for (const detail of detailed) {
+    if (!detail) continue;
+    assertBeforeDeadline(deadlineMs);
+    const bodyBytes = Buffer.byteLength(detail.bodyText, "utf8");
+    if (processedBytes + bodyBytes > boundedMaxBytes) {
+      throw new Error(
+        "La limite cumulée de données Gemini a été atteinte avant la fin de la page; le curseur n'a pas avancé.",
+      );
+    }
+    processedBytes += bodyBytes;
+    let documentText: string | undefined;
+    if (
+      canReadLinkedDocuments &&
+      detail.documentFileId &&
+      documentCount < boundedMaxDocuments &&
+      processedBytes < boundedMaxBytes
+    ) {
+      documentCount += 1;
+      const document = await downloadGeminiDocumentText(
+        detail.documentFileId,
+        accessToken,
+        {
+          deadlineMs,
+          maxBytes: Math.min(1_500_000, boundedMaxBytes - processedBytes),
+        },
+      );
+      if (document) {
+        documentText = document.text;
+        processedBytes += document.bytes;
+      }
+    }
+    accepted.push({
+      bodyText: detail.bodyText,
+      date: detail.date,
+      documentText,
+      from: detail.from,
+      id: detail.id,
+      senderEmail: detail.senderEmail,
+      snippet: detail.snippet,
+      subject: detail.subject,
+      threadId: detail.threadId,
+    });
+  }
+
   return {
-    messages: detailed.filter((message): message is GmailMeetingNoteMessage =>
-      Boolean(message),
-    ),
-    nextPageToken,
+    documentCount,
+    messages: accepted,
+    nextPageToken: listPayload.nextPageToken,
+    processedBytes,
     scanned: boundedMessages.length,
   };
 }
@@ -642,21 +691,57 @@ export async function listGeminiMeetingNoteMessages(
 async function downloadGeminiDocumentText(
   documentFileId: string,
   accessToken: string,
+  { deadlineMs, maxBytes }: { deadlineMs: number; maxBytes: number },
 ) {
   const url = new URL(
     `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(documentFileId)}/export`,
   );
   url.searchParams.set("mimeType", "text/plain");
-  try {
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!response.ok) return undefined;
-    const contentLength = Number(response.headers.get("content-length") ?? 0);
-    if (contentLength > 2_000_000) return undefined;
-    return (await response.text()).trim().slice(0, 1_500_000) || undefined;
-  } catch {
-    return undefined;
+  const response = await fetch(url, {
+    headers: { Authorization: `Bearer ${accessToken}` },
+    signal: AbortSignal.timeout(Math.max(1, deadlineMs - Date.now())),
+  });
+  if ([403, 404].includes(response.status)) return undefined;
+  if (!response.ok) {
+    throw new Error(await providerError("Google Drive", response));
+  }
+  const contentLength = Number(response.headers.get("content-length") ?? 0);
+  if (contentLength > maxBytes || maxBytes <= 0) return undefined;
+  const content = await readResponseBytes(response, maxBytes);
+  if (!content) return undefined;
+  const text = content.toString("utf8").trim();
+  return text ? { bytes: content.byteLength, text } : undefined;
+}
+
+async function readResponseBytes(response: Response, maxBytes: number) {
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  const chunks: Buffer[] = [];
+  let totalBytes = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    totalBytes += value.byteLength;
+    if (totalBytes > maxBytes) {
+      await reader.cancel();
+      return undefined;
+    }
+    chunks.push(Buffer.from(value));
+  }
+  return Buffer.concat(chunks, totalBytes);
+}
+
+function parseDeadline(value?: string) {
+  if (!value) return Date.now() + 90_000;
+  const parsed = new Date(value).getTime();
+  return Number.isFinite(parsed) ? parsed : Date.now();
+}
+
+function assertBeforeDeadline(deadlineMs: number) {
+  if (Date.now() >= deadlineMs) {
+    throw new Error(
+      "La fenêtre de synchronisation Gemini est terminée; la reprise conservera le curseur courant.",
+    );
   }
 }
 
