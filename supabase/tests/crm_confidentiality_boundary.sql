@@ -660,9 +660,11 @@ declare
   target_run_id uuid;
   result jsonb;
 begin
-  select id into target_run_id
+  select id into strict target_run_id
   from public.crm_import_runs
-  where source_external_id = 'qa-board-full';
+  where source_external_id = 'qa-board-full'
+    and source_hash = repeat('4', 64)
+    and status = 'staged';
 
   result := public.apply_crm_trello_import(target_run_id);
   if (result ->> 'created')::integer <> 3 then
@@ -674,21 +676,428 @@ begin
   ) <> 3 then
     raise exception 'Full apply did not create three active references';
   end if;
+end
+$assertions$;
 
-  result := public.rollback_crm_trello_import(target_run_id);
-  if (result ->> 'softArchivedOnRollback')::integer < 3 then
-    raise exception 'Rollback did not soft-archive created entities: %', result;
+-- A distinct board revision reuses three active mappings and adds one delta.
+-- Its postconditions must include both old and newly touched references, while
+-- its rollback may archive only the delta and must preserve run A.
+with canonical(row_text) as (
+  values
+    (
+      'category' || chr(31) || 'qa-category-full' || chr(31) ||
+        repeat('d', 64) || chr(31) || encode(
+          extensions.digest(convert_to('[]', 'UTF8'), 'sha256'), 'hex'
+        )
+    ),
+    (
+      'lead' || chr(31) || 'qa-lead-full' || chr(31) || repeat('e', 64) ||
+        chr(31) || encode(
+          extensions.digest(convert_to('[]', 'UTF8'), 'sha256'), 'hex'
+        )
+    ),
+    (
+      'tag' || chr(31) || 'qa-tag-delta' || chr(31) || repeat('1', 64) ||
+        chr(31) || encode(
+          extensions.digest(convert_to('[]', 'UTF8'), 'sha256'), 'hex'
+        )
+    ),
+    (
+      'tag' || chr(31) || 'qa-tag-full' || chr(31) || repeat('f', 64) ||
+        chr(31) || encode(
+          extensions.digest(convert_to('[]', 'UTF8'), 'sha256'), 'hex'
+        )
+    )
+), attestation as (
+  select encode(
+    extensions.digest(
+      convert_to(string_agg(row_text, E'\n' order by row_text), 'UTF8'),
+      'sha256'
+    ),
+    'hex'
+  ) as staging_hash
+  from canonical
+), first_run as (
+  select run.*
+  from public.crm_import_runs run
+  where run.source_external_id = 'qa-board-full'
+    and run.source_hash = repeat('4', 64)
+    and run.status = 'applied'
+), requested_rows as (
+  select jsonb_agg(
+    jsonb_build_object(
+      'entity_type', stage.entity_type,
+      'external_id', stage.external_id,
+      'parent_external_id', stage.parent_external_id,
+      'access_scope', stage.access_scope,
+      'normalized_payload', stage.normalized_payload,
+      'payload_hash', stage.payload_hash,
+      'privacy_reasons', stage.privacy_reasons,
+      'validation_errors', stage.validation_errors
+    ) order by stage.entity_type, stage.external_id
+  ) || jsonb_build_array(jsonb_build_object(
+    'entity_type', 'tag',
+    'external_id', 'qa-tag-delta',
+    'parent_external_id', null,
+    'access_scope', 'organization',
+    'normalized_payload', jsonb_build_object(
+      'name', 'Delta',
+      'color', 'blue'
+    ),
+    'payload_hash', repeat('1', 64),
+    'privacy_reasons', jsonb_build_array(),
+    'validation_errors', jsonb_build_array()
+  )) as rows
+  from first_run
+  join public.crm_import_staging stage
+    on stage.run_id = first_run.id
+    and stage.organization_id = first_run.organization_id
+)
+select public.stage_crm_trello_import(
+  first_run.organization_id,
+  first_run.source_external_id,
+  repeat('5', 64),
+  attestation.staging_hash,
+  4,
+  '{"boardName":"Full QA delta"}'::jsonb,
+  requested_rows.rows
+)
+from first_run cross join requested_rows cross join attestation;
+
+do $assertions$
+declare
+  run_a_id uuid;
+  run_b_id uuid;
+  result jsonb;
+begin
+  select id into strict run_a_id
+  from public.crm_import_runs
+  where source_external_id = 'qa-board-full'
+    and source_hash = repeat('4', 64)
+    and status = 'applied';
+  select id into strict run_b_id
+  from public.crm_import_runs
+  where source_external_id = 'qa-board-full'
+    and source_hash = repeat('5', 64)
+    and status = 'staged';
+
+  result := public.apply_crm_trello_import(run_b_id);
+  if (result ->> 'unchanged')::integer <> 3
+    or (result ->> 'created')::integer <> 1
+    or (result ->> 'conflicts')::integer <> 0 then
+    raise exception 'Delta apply did not separate unchanged and touched refs: %', result;
   end if;
+
+  if (
+    select count(*)
+    from public.crm_import_staging stage
+    join public.crm_import_runs run
+      on run.id = stage.run_id
+      and run.organization_id = stage.organization_id
+    join public.crm_external_refs ref
+      on ref.organization_id = stage.organization_id
+      and ref.provider = run.provider
+      and ref.external_type = stage.entity_type
+      and ref.external_id = stage.external_id
+    where run.id = run_b_id
+      and ref.archived_at is null
+      and ref.source_hash = stage.payload_hash
+      and ref.access_scope = stage.access_scope
+  ) <> 4 then
+    raise exception 'Delta apply postconditions missed unchanged active mappings';
+  end if;
+
+  if (
+    select count(*) from public.crm_external_refs
+    where last_run_id = run_b_id and archived_at is null
+  ) <> 1 or (
+    select count(*) from public.crm_external_refs
+    where last_run_id = run_a_id and archived_at is null
+  ) <> 3 then
+    raise exception 'Delta apply corrupted first/last run provenance';
+  end if;
+
+  result := public.rollback_crm_trello_import(run_b_id);
   if exists (
     select 1 from public.crm_external_refs
-    where last_run_id = target_run_id and archived_at is null
+    where last_run_id = run_b_id and archived_at is null
+  ) or (
+    select count(*) from public.crm_external_refs
+    where last_run_id = run_a_id and archived_at is null
+  ) <> 3 then
+    raise exception 'Delta rollback did not preserve run A mappings: %', result;
+  end if;
+
+  if exists (
+    select 1
+    from public.crm_external_refs ref
+    where ref.last_run_id = run_a_id
+      and ref.archived_at is null
+      and not exists (
+        select 1 from public.crm_import_staging stage
+        where stage.run_id = run_b_id
+          and stage.organization_id = ref.organization_id
+          and stage.entity_type = ref.external_type
+          and stage.external_id = ref.external_id
+      )
+  ) or not exists (
+    select 1
+    from public.crm_lead_tags relation
+    join public.crm_external_refs lead_ref on lead_ref.local_id = relation.lead_id
+    join public.crm_external_refs tag_ref on tag_ref.local_id = relation.tag_id
+    where lead_ref.external_id = 'qa-lead-full'
+      and tag_ref.external_id = 'qa-tag-full'
+      and relation.archived_at is null
+  ) or exists (
+    select 1
+    from public.crm_external_refs ref
+    left join public.crm_categories category
+      on ref.local_table = 'crm_categories'
+      and category.id = ref.local_id
+      and category.organization_id = ref.organization_id
+      and category.archived_at is null
+    left join public.crm_tags tag
+      on ref.local_table = 'crm_tags'
+      and tag.id = ref.local_id
+      and tag.organization_id = ref.organization_id
+      and tag.archived_at is null
+    left join public.crm_leads lead
+      on ref.local_table = 'crm_leads'
+      and lead.id = ref.local_id
+      and lead.organization_id = ref.organization_id
+      and lead.archived_at is null
+    where ref.last_run_id = run_a_id
+      and ref.archived_at is null
+      and category.id is null
+      and tag.id is null
+      and lead.id is null
   ) then
-    raise exception 'Rollback left an active external reference';
+    raise exception 'Delta rollback did not preserve run A rows and relation';
+  end if;
+
+  result := public.rollback_crm_trello_import(run_a_id);
+  if exists (
+    select 1 from public.crm_external_refs
+    where last_run_id = run_a_id and archived_at is null
+  ) then
+    raise exception 'Run A rollback left an active reference: %', result;
+  end if;
+end
+$assertions$;
+
+-- Re-stage A identically after its soft rollback. The mappings keep A as
+-- first_run_id, move last_run_id to C, and revive the previously archived
+-- relationship before C's rollback restores its exact archived timestamp.
+with original_run as (
+  select run.*
+  from public.crm_import_runs run
+  where run.source_external_id = 'qa-board-full'
+    and run.source_hash = repeat('4', 64)
+    and run.status = 'rolled-back'
+), requested_rows as (
+  select jsonb_agg(
+    jsonb_build_object(
+      'entity_type', stage.entity_type,
+      'external_id', stage.external_id,
+      'parent_external_id', stage.parent_external_id,
+      'access_scope', stage.access_scope,
+      'normalized_payload', stage.normalized_payload,
+      'payload_hash', stage.payload_hash,
+      'privacy_reasons', stage.privacy_reasons,
+      'validation_errors', stage.validation_errors
+    ) order by stage.entity_type, stage.external_id
+  ) as rows
+  from original_run
+  join public.crm_import_staging stage
+    on stage.run_id = original_run.id
+    and stage.organization_id = original_run.organization_id
+)
+select public.stage_crm_trello_import(
+  original_run.organization_id,
+  original_run.source_external_id,
+  original_run.source_hash,
+  original_run.staging_hash,
+  original_run.expected_item_count,
+  '{"boardName":"Full QA revived"}'::jsonb,
+  requested_rows.rows
+)
+from original_run cross join requested_rows;
+
+do $assertions$
+declare
+  run_a_id uuid;
+  run_c_id uuid;
+  mapped_lead_id uuid;
+  mapped_tag_id uuid;
+  previous_relation_archived_at timestamptz;
+  result jsonb;
+begin
+  select distinct ref.first_run_id into strict run_a_id
+  from public.crm_external_refs ref
+  where ref.external_type = 'lead'
+    and ref.external_id = 'qa-lead-full';
+  select run.id into strict run_c_id
+  from public.crm_import_runs run
+  where run.source_external_id = 'qa-board-full'
+    and run.source_hash = repeat('4', 64)
+    and run.status = 'staged';
+
+  result := public.apply_crm_trello_import(run_c_id);
+  if (result ->> 'revived')::integer <> 3
+    or (result ->> 'created')::integer <> 0
+    or (result ->> 'conflicts')::integer <> 0 then
+    raise exception 'Identical re-apply did not revive all mappings: %', result;
+  end if;
+
+  if (
+    select count(*)
+    from public.crm_import_staging stage
+    join public.crm_import_runs run
+      on run.id = stage.run_id
+      and run.organization_id = stage.organization_id
+    join public.crm_external_refs ref
+      on ref.organization_id = stage.organization_id
+      and ref.provider = run.provider
+      and ref.external_type = stage.entity_type
+      and ref.external_id = stage.external_id
+      and ref.last_run_id = run.id
+    where run.id = run_c_id
+      and ref.first_run_id = run_a_id
+      and ref.archived_at is null
+      and ref.source_hash = stage.payload_hash
+      and ref.access_scope = stage.access_scope
+  ) <> 3 then
+    raise exception 'Identical re-apply mappings are not exact/current';
+  end if;
+
+  if exists (
+    select 1
+    from public.crm_external_refs ref
+    left join public.crm_categories category
+      on ref.local_table = 'crm_categories'
+      and category.id = ref.local_id
+      and category.organization_id = ref.organization_id
+      and category.archived_at is null
+    left join public.crm_tags tag
+      on ref.local_table = 'crm_tags'
+      and tag.id = ref.local_id
+      and tag.organization_id = ref.organization_id
+      and tag.archived_at is null
+    left join public.crm_leads lead
+      on ref.local_table = 'crm_leads'
+      and lead.id = ref.local_id
+      and lead.organization_id = ref.organization_id
+      and lead.archived_at is null
+    where ref.last_run_id = run_c_id
+      and ref.archived_at is null
+      and category.id is null
+      and tag.id is null
+      and lead.id is null
+  ) then
+    raise exception 'Identical re-apply left an inactive local mapping';
+  end if;
+
+  select lead_ref.local_id, tag_ref.local_id
+  into strict mapped_lead_id, mapped_tag_id
+  from public.crm_external_refs lead_ref
+  cross join public.crm_external_refs tag_ref
+  where lead_ref.external_type = 'lead'
+    and lead_ref.external_id = 'qa-lead-full'
+    and lead_ref.last_run_id = run_c_id
+    and lead_ref.archived_at is null
+    and tag_ref.organization_id = lead_ref.organization_id
+    and tag_ref.provider = lead_ref.provider
+    and tag_ref.external_type = 'tag'
+    and tag_ref.external_id = 'qa-tag-full'
+    and tag_ref.last_run_id = run_c_id
+    and tag_ref.archived_at is null;
+
+  select (change.before_snapshot ->> 'previousArchivedAt')::timestamptz
+  into strict previous_relation_archived_at
+  from public.crm_import_changes change
+  where change.run_id = run_c_id
+    and change.operation = 'linked-relation'
+    and coalesce(change.before_snapshot ->> 'wasPresent', 'false')::boolean
+    and (change.after_snapshot ->> 'leadId')::uuid = mapped_lead_id
+    and (change.after_snapshot ->> 'tagId')::uuid = mapped_tag_id;
+  if previous_relation_archived_at is null or not exists (
+    select 1 from public.crm_lead_tags relation
+    where relation.lead_id = mapped_lead_id
+      and relation.tag_id = mapped_tag_id
+      and relation.archived_at is null
+  ) then
+    raise exception 'Identical re-apply did not revive the archived relation';
+  end if;
+
+  result := public.rollback_crm_trello_import(run_c_id);
+  if exists (
+    select 1 from public.crm_external_refs
+    where last_run_id = run_c_id and archived_at is null
+  ) then
+    raise exception 'Revived-run rollback left an active ref: %', result;
   end if;
 end
 $assertions$;
 
 reset role;
+
+do $assertions$
+declare
+  run_c_id uuid;
+begin
+  select ref.last_run_id into strict run_c_id
+  from public.crm_external_refs ref
+  where ref.external_type = 'lead'
+    and ref.external_id = 'qa-lead-full';
+
+  if exists (
+    select 1
+    from public.crm_import_changes change
+    join public.crm_import_runs run
+      on run.id = change.run_id
+      and run.organization_id = change.organization_id
+    left join public.crm_categories category
+      on change.local_table = 'crm_categories'
+      and category.id = change.local_id
+      and category.organization_id = change.organization_id
+    left join public.crm_tags tag
+      on change.local_table = 'crm_tags'
+      and tag.id = change.local_id
+      and tag.organization_id = change.organization_id
+    left join public.crm_leads lead
+      on change.local_table = 'crm_leads'
+      and lead.id = change.local_id
+      and lead.organization_id = change.organization_id
+    where run.source_external_id = 'qa-board-full'
+      and run.status = 'rolled-back'
+      and change.operation in ('created', 'revived')
+      and (
+        (change.local_table = 'crm_categories' and category.archived_at is null)
+        or (change.local_table = 'crm_tags' and tag.archived_at is null)
+        or (change.local_table = 'crm_leads' and lead.archived_at is null)
+      )
+  ) then
+    raise exception 'Revived-run rollback left a local row active';
+  end if;
+
+  if exists (
+    select 1
+    from public.crm_import_changes change
+    left join public.crm_lead_tags relation
+      on relation.lead_id = (change.after_snapshot ->> 'leadId')::uuid
+      and relation.tag_id = (change.after_snapshot ->> 'tagId')::uuid
+    where change.run_id = run_c_id
+      and change.operation = 'linked-relation'
+      and (
+        relation.lead_id is null
+        or relation.archived_at is distinct from
+          (change.before_snapshot ->> 'previousArchivedAt')::timestamptz
+      )
+  ) then
+    raise exception 'Revived-run rollback did not restore relation provenance';
+  end if;
+end
+$assertions$;
 
 -- Category/status and tag confidentiality are durable classifiers, including
 -- bidirectional family propagation without recursive trigger failures.

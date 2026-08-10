@@ -213,6 +213,7 @@ const rlsVerificationSchema = z.object({
   ledgerRuns: z.number().int().nonnegative(),
   ledgerStaging: z.number().int().nonnegative(),
   organizationLeads: z.number().int().nonnegative(),
+  unexpectedRefs: z.number().int().nonnegative(),
 });
 
 const importSummarySchema = z.record(z.string(), z.unknown());
@@ -243,13 +244,16 @@ const postVerificationSchema = z.object({
   refScopeMismatches: z.number().int().nonnegative(),
   status: z.enum(["applied", "rolled-back", "staged"]),
   summary: importSummarySchema,
+  unexpectedRefs: z.number().int().nonnegative(),
 });
 
 const rollbackVerificationSchema = z.object({
   activeCreatedOrRevivedRows: z.number().int().nonnegative(),
   activeImportedRelations: z.number().int().nonnegative(),
   activeRefs: z.number().int().nonnegative(),
+  relationRollbackMismatches: z.number().int().nonnegative(),
   status: z.enum(["rolled-back"]),
+  unexpectedRefs: z.number().int().nonnegative(),
 });
 
 const runStatusSchema = z.object({
@@ -661,20 +665,61 @@ export function buildRlsVerificationSql(args: {
   return `/* naia:rls-verify */
 begin;
 set local role authenticated;
-with ${actorCte(args.actorProfileId)}, stats as (
+with ${actorCte(args.actorProfileId)}, target_run as materialized (
+  select row_record.*
+  from public.crm_import_runs row_record, actor_context
+  where row_record.id = ${sqlDecodedText(args.runId)}::uuid
+    and row_record.organization_id = ${sqlDecodedText(args.organizationId)}::uuid
+    and row_record.provider = 'trello'
+), staged as materialized (
+  select stage.*
+  from target_run
+  join public.crm_import_staging stage
+    on stage.run_id = target_run.id
+    and stage.organization_id = target_run.organization_id
+), run_refs as materialized (
+  select ref.*
+  from target_run
+  join public.crm_external_refs ref
+    on ref.organization_id = target_run.organization_id
+    and ref.provider = target_run.provider
+    and ref.last_run_id = target_run.id
+), refs as materialized (
+  select ref.*
+  from target_run
+  join staged stage on stage.organization_id = target_run.organization_id
+  join public.crm_external_refs ref
+    on stage.organization_id = ref.organization_id
+    and ref.provider = target_run.provider
+    and ref.external_type = stage.entity_type
+    and ref.external_id = stage.external_id
+), changes as materialized (
+  select change.*
+  from target_run
+  join public.crm_import_changes change
+    on change.run_id = target_run.id
+    and change.organization_id = target_run.organization_id
+), stats as (
   select
-    (select count(*) from public.crm_import_runs row_record where row_record.id = ${sqlDecodedText(args.runId)}::uuid) as ledger_runs,
-    (select count(*) from public.crm_import_staging row_record where row_record.run_id = ${sqlDecodedText(args.runId)}::uuid) as ledger_staging,
-    (select count(*) from public.crm_external_refs row_record where row_record.first_run_id = ${sqlDecodedText(args.runId)}::uuid) as ledger_refs,
-    (select count(*) from public.crm_import_changes row_record where row_record.run_id = ${sqlDecodedText(args.runId)}::uuid) as ledger_changes,
+    (select count(*) from target_run) as ledger_runs,
+    (select count(*) from staged) as ledger_staging,
+    (select count(*) from refs) as ledger_refs,
+    (select count(*) from changes) as ledger_changes,
+    (select count(*) from run_refs ref where not exists (
+      select 1 from staged stage
+      where stage.organization_id = ref.organization_id
+        and stage.entity_type = ref.external_type
+        and stage.external_id = ref.external_id
+    )) as unexpected_refs,
     (select count(*) from public.crm_leads row_record where row_record.organization_id = ${sqlDecodedText(args.organizationId)}::uuid and row_record.archived_at is null and row_record.access_scope = 'organization') as organization_leads,
     (select count(*) from public.crm_leads row_record where row_record.organization_id = ${sqlDecodedText(args.organizationId)}::uuid and row_record.archived_at is null and row_record.access_scope = 'cofounders') as cofounder_leads,
     (select count(*) from public.crm_lead_tags relation join public.crm_leads lead on lead.id = relation.lead_id where lead.organization_id = ${sqlDecodedText(args.organizationId)}::uuid and lead.archived_at is null and lead.access_scope = 'cofounders' and relation.archived_at is null) as cofounder_lead_relations,
     (select count(*)
-      from public.crm_external_refs ref
-      join public.crm_leads lead on lead.id = ref.local_id
-      where ref.first_run_id = ${sqlDecodedText(args.runId)}::uuid
-        and ref.local_table = 'crm_leads'
+      from refs ref
+      join public.crm_leads lead
+        on lead.id = ref.local_id
+        and lead.organization_id = ref.organization_id
+      where ref.local_table = 'crm_leads'
         and ref.archived_at is null
         and lead.archived_at is null
         and lead.access_scope = 'cofounders'
@@ -689,7 +734,8 @@ select jsonb_build_object(
   'organizationLeads', organization_leads,
   'cofounderLeads', cofounder_leads,
   'cofounderLeadRelations', cofounder_lead_relations,
-  'importedCofounderLeads', imported_cofounder_leads
+  'importedCofounderLeads', imported_cofounder_leads,
+  'unexpectedRefs', unexpected_refs
 ) as payload from stats;
 rollback;`;
 }
@@ -710,11 +756,29 @@ export function buildPostVerificationSql(runId: string) {
   const run = `${sqlDecodedText(runId)}::uuid`;
   return `/* naia:post-verify */
 with target_run as (
-  select * from public.crm_import_runs where id = ${run}
+  select * from public.crm_import_runs where id = ${run} and provider = 'trello'
 ), staged as (
-  select * from public.crm_import_staging where run_id = ${run}
+  select stage.*
+  from target_run
+  join public.crm_import_staging stage
+    on stage.run_id = target_run.id
+    and stage.organization_id = target_run.organization_id
+), run_refs as (
+  select ref.*
+  from target_run
+  join public.crm_external_refs ref
+    on ref.organization_id = target_run.organization_id
+    and ref.provider = target_run.provider
+    and ref.last_run_id = target_run.id
 ), refs as (
-  select * from public.crm_external_refs where first_run_id = ${run}
+  select ref.*
+  from target_run
+  join staged stage on stage.organization_id = target_run.organization_id
+  join public.crm_external_refs ref
+    on stage.organization_id = ref.organization_id
+    and ref.provider = target_run.provider
+    and ref.external_type = stage.entity_type
+    and ref.external_id = stage.external_id
 ), expected_relations as (
   select distinct lead_ref.local_id as lead_id, tag_ref.local_id as tag_id
   from staged lead_stage
@@ -724,9 +788,11 @@ with target_run as (
   join refs lead_ref
     on lead_ref.external_type = 'lead'
     and lead_ref.external_id = lead_stage.external_id
+    and lead_ref.archived_at is null
   join refs tag_ref
     on tag_ref.external_type = 'tag'
     and tag_ref.external_id = label_external_id
+    and tag_ref.archived_at is null
   where lead_stage.entity_type = 'lead'
 ), activated as (
   select
@@ -740,19 +806,20 @@ select jsonb_build_object(
   'status', target_run.status,
   'summary', target_run.summary,
   'activeRefs', (select count(*) from refs where archived_at is null),
-  'mappedRefs', (select count(*) from refs ref join staged stage on stage.entity_type = ref.external_type and stage.external_id = ref.external_id where ref.archived_at is null and ref.source_hash = stage.payload_hash),
-  'hashMismatches', (select count(*) from refs ref join staged stage on stage.entity_type = ref.external_type and stage.external_id = ref.external_id where ref.source_hash <> stage.payload_hash),
-  'refScopeMismatches', (select count(*) from refs ref join staged stage on stage.entity_type = ref.external_type and stage.external_id = ref.external_id where ref.access_scope <> stage.access_scope),
+  'mappedRefs', (select count(*) from refs ref join staged stage on stage.organization_id = ref.organization_id and stage.entity_type = ref.external_type and stage.external_id = ref.external_id where ref.archived_at is null and ref.source_hash = stage.payload_hash),
+  'hashMismatches', (select count(*) from refs ref join staged stage on stage.organization_id = ref.organization_id and stage.entity_type = ref.external_type and stage.external_id = ref.external_id where ref.source_hash <> stage.payload_hash),
+  'refScopeMismatches', (select count(*) from refs ref join staged stage on stage.organization_id = ref.organization_id and stage.entity_type = ref.external_type and stage.external_id = ref.external_id where ref.access_scope <> stage.access_scope),
+  'unexpectedRefs', (select count(*) from run_refs ref where not exists (select 1 from staged stage where stage.organization_id = ref.organization_id and stage.entity_type = ref.external_type and stage.external_id = ref.external_id)),
   'activeCategoryMappings', (select count(*) from refs ref join public.crm_categories local_row on local_row.id = ref.local_id and local_row.organization_id = ref.organization_id where ref.local_table = 'crm_categories' and ref.archived_at is null and local_row.archived_at is null),
   'activeTagMappings', (select count(*) from refs ref join public.crm_tags local_row on local_row.id = ref.local_id and local_row.organization_id = ref.organization_id where ref.local_table = 'crm_tags' and ref.archived_at is null and local_row.archived_at is null),
   'activeLeadMappings', (select count(*) from refs ref join public.crm_leads local_row on local_row.id = ref.local_id and local_row.organization_id = ref.organization_id where ref.local_table = 'crm_leads' and ref.archived_at is null and local_row.archived_at is null),
   'localScopeMismatches', (
     select count(*) from (
-      select ref.id from refs ref join public.crm_categories local_row on local_row.id = ref.local_id where ref.local_table = 'crm_categories' and ref.access_scope <> local_row.access_scope
+      select ref.id from refs ref join public.crm_categories local_row on local_row.id = ref.local_id and local_row.organization_id = ref.organization_id where ref.local_table = 'crm_categories' and ref.access_scope <> local_row.access_scope
       union all
-      select ref.id from refs ref join public.crm_tags local_row on local_row.id = ref.local_id where ref.local_table = 'crm_tags' and ref.access_scope <> local_row.access_scope
+      select ref.id from refs ref join public.crm_tags local_row on local_row.id = ref.local_id and local_row.organization_id = ref.organization_id where ref.local_table = 'crm_tags' and ref.access_scope <> local_row.access_scope
       union all
-      select ref.id from refs ref join public.crm_leads local_row on local_row.id = ref.local_id where ref.local_table = 'crm_leads' and ref.access_scope <> local_row.access_scope
+      select ref.id from refs ref join public.crm_leads local_row on local_row.id = ref.local_id and local_row.organization_id = ref.organization_id where ref.local_table = 'crm_leads' and ref.access_scope <> local_row.access_scope
     ) mismatches
   ),
   'cofounderLocalLeads', (select count(*) from refs ref join public.crm_leads lead on lead.id = ref.local_id where ref.local_table = 'crm_leads' and ref.archived_at is null and lead.archived_at is null and lead.access_scope = 'cofounders'),
@@ -793,13 +860,40 @@ export function buildRollbackVerificationSql(runId: string) {
   const run = `${sqlDecodedText(runId)}::uuid`;
   return `/* naia:rollback-verify */
 with target_run as (
-  select * from public.crm_import_runs where id = ${run}
+  select * from public.crm_import_runs where id = ${run} and provider = 'trello'
+), staged as (
+  select stage.*
+  from target_run
+  join public.crm_import_staging stage
+    on stage.run_id = target_run.id
+    and stage.organization_id = target_run.organization_id
+), run_refs as (
+  select ref.*
+  from target_run
+  join public.crm_external_refs ref
+    on ref.organization_id = target_run.organization_id
+    and ref.provider = target_run.provider
+    and ref.last_run_id = target_run.id
+), refs as (
+  select ref.*
+  from target_run
+  join staged stage on stage.organization_id = target_run.organization_id
+  join public.crm_external_refs ref
+    on stage.organization_id = ref.organization_id
+    and ref.provider = target_run.provider
+    and ref.external_type = stage.entity_type
+    and ref.external_id = stage.external_id
 ), changes as (
-  select * from public.crm_import_changes where run_id = ${run}
+  select change.*
+  from target_run
+  join public.crm_import_changes change
+    on change.run_id = target_run.id
+    and change.organization_id = target_run.organization_id
 )
 select jsonb_build_object(
   'status', target_run.status,
-  'activeRefs', (select count(*) from public.crm_external_refs where first_run_id = ${run} and archived_at is null),
+  'activeRefs', (select count(*) from run_refs where archived_at is null),
+  'unexpectedRefs', (select count(*) from run_refs ref where not exists (select 1 from staged stage where stage.organization_id = ref.organization_id and stage.entity_type = ref.external_type and stage.external_id = ref.external_id)),
   'activeCreatedOrRevivedRows', (
     select count(*) from (
       select change.id from changes change join public.crm_categories row_record on row_record.id = change.local_id where change.operation in ('created', 'revived') and change.local_table = 'crm_categories' and row_record.archived_at is null
@@ -818,6 +912,28 @@ select jsonb_build_object(
     where change.operation = 'linked-relation'
       and coalesce(change.before_snapshot ->> 'wasPresent', 'false')::boolean = false
       and relation.archived_at is null
+  ),
+  'relationRollbackMismatches', (
+    select count(*)
+    from changes change
+    left join public.crm_lead_tags relation
+      on relation.lead_id = (change.after_snapshot ->> 'leadId')::uuid
+      and relation.tag_id = (change.after_snapshot ->> 'tagId')::uuid
+    where change.operation = 'linked-relation'
+      and (
+        (
+          coalesce(change.before_snapshot ->> 'wasPresent', 'false')::boolean = false
+          and (relation.lead_id is null or relation.archived_at is null)
+        )
+        or (
+          coalesce(change.before_snapshot ->> 'wasPresent', 'false')::boolean = true
+          and (
+            relation.lead_id is null
+            or relation.archived_at is distinct from
+              (change.before_snapshot ->> 'previousArchivedAt')::timestamptz
+          )
+        )
+      )
   )
 ) as payload from target_run;`;
 }
@@ -870,6 +986,8 @@ function verifyRls(args: {
       nonFounder.cofounderLeads === 0 &&
       nonFounder.cofounderLeadRelations === 0 &&
       nonFounder.importedCofounderLeads === 0 &&
+      founder.unexpectedRefs === 0 &&
+      nonFounder.unexpectedRefs === 0 &&
       nonFounder.organizationLeads > 0 &&
       (!args.expectApplied ||
         (founder.importedCofounderLeads === args.contract.cofoundersOnly &&
@@ -907,6 +1025,7 @@ function verifyPostconditions(args: {
       post.mappedRefs === args.contract.counts.totalItems &&
       post.hashMismatches === 0 &&
       post.refScopeMismatches === 0 &&
+      post.unexpectedRefs === 0 &&
       post.localScopeMismatches === 0 &&
       post.activeCategoryMappings === args.contract.counts.categories &&
       post.activeTagMappings === args.contract.counts.tags &&
@@ -953,8 +1072,10 @@ function verifyRollback(value: unknown) {
   assertGate(
     rollback.status === "rolled-back" &&
       rollback.activeRefs === 0 &&
+      rollback.unexpectedRefs === 0 &&
       rollback.activeCreatedOrRevivedRows === 0 &&
-      rollback.activeImportedRelations === 0,
+      rollback.activeImportedRelations === 0 &&
+      rollback.relationRollbackMismatches === 0,
     "ROLLBACK_VERIFICATION_FAILED",
     "Le rollback compensatoire n'est pas complet.",
   );

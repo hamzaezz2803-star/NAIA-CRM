@@ -112,6 +112,7 @@ const founderRlsBefore = {
   ledgerRuns: 1,
   ledgerStaging: 3,
   organizationLeads: 1,
+  unexpectedRefs: 0,
 };
 
 const founderRlsAfter = {
@@ -129,6 +130,7 @@ const nonFounderRls = {
   ledgerRuns: 0,
   ledgerStaging: 0,
   organizationLeads: 1,
+  unexpectedRefs: 0,
 };
 
 const applySummary = {
@@ -157,6 +159,7 @@ const validPost = {
   refScopeMismatches: 0,
   status: "applied",
   summary: applySummary,
+  unexpectedRefs: 0,
 };
 
 function dependencies(database: DatabasePort): RunnerDependencies {
@@ -217,7 +220,9 @@ class MockDatabase implements DatabasePort {
           activeCreatedOrRevivedRows: 0,
           activeImportedRelations: 0,
           activeRefs: 0,
+          relationRollbackMismatches: 0,
           status: "rolled-back",
+          unexpectedRefs: 0,
         };
     }
   }
@@ -404,5 +409,47 @@ describe("generated SQL safety", () => {
     ];
     expect(sql.every((statement) => statement.length > 0)).toBe(true);
     expect(sql.join("\n")).not.toContain(board.cards[0].name);
+  });
+
+  it("scopes revived references to the exact staging provenance of the current run", () => {
+    const verificationSql = [
+      buildRlsVerificationSql({
+        actorProfileId: ALI_ID,
+        organizationId: ORGANIZATION_ID,
+        runId: RUN_ID,
+      }),
+      buildPostVerificationSql(RUN_ID),
+      buildRollbackVerificationSql(RUN_ID),
+    ];
+
+    for (const sql of verificationSql) {
+      expect(sql).not.toMatch(/first_run_id\s*=/i);
+      expect(sql).toMatch(/ref\.last_run_id\s*=\s*target_run\.id/i);
+      expect(sql).toMatch(
+        /ref\.organization_id\s*=\s*target_run\.organization_id/i,
+      );
+      expect(sql).toMatch(/ref\.provider\s*=\s*target_run\.provider/i);
+      expect(sql).toMatch(/stage\.organization_id\s*=\s*ref\.organization_id/i);
+      expect(sql).toMatch(/stage\.entity_type\s*=\s*ref\.external_type/i);
+      expect(sql).toMatch(/stage\.external_id\s*=\s*ref\.external_id/i);
+      const refsCte = sql.match(
+        /\), refs as(?: materialized)? \(([\s\S]*?)\n\), (?:expected_relations|changes) as/i,
+      )?.[1];
+      expect(refsCte).toContain("join public.crm_external_refs ref");
+      expect(refsCte).not.toContain("from run_refs ref");
+      expect(sql).toContain("'unexpectedRefs'");
+    }
+  });
+
+  it("verifies the exact pre-run state of revived lead-tag relations on rollback", () => {
+    const sql = buildRollbackVerificationSql(RUN_ID);
+
+    expect(sql).toContain("'relationRollbackMismatches'");
+    expect(sql).toMatch(
+      /relationRollbackMismatches'[\s\S]*?left join public\.crm_lead_tags relation/i,
+    );
+    expect(sql).toMatch(/before_snapshot\s*->>\s*'previousArchivedAt'/i);
+    expect(sql).toMatch(/relation\.lead_id\s+is\s+null/i);
+    expect(sql).toMatch(/relation\.archived_at\s+is\s+distinct\s+from/i);
   });
 });
