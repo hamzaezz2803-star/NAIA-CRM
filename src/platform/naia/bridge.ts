@@ -306,50 +306,11 @@ export async function executeBridgeAction(
   }
 
   if (action.kind === "crm.createLead") {
-    const denied = requireCrmPermission(executionUser, "create");
-    if (denied) return denied;
-
-    const draft = action.payload;
-    const status = coerceStatus(draft.status) ?? "lead-to-contact";
-    const topic = (draft.topic ?? "").trim().slice(0, 160);
-    if (topic.length < 3) {
-      return { message: "Brouillon de lead CRM invalide.", success: false };
-    }
-
-    const response = await createLeadAction(
-      {
-        companyName: draft.companyName,
-        contactEmail: draft.contactEmail,
-        contactJobTitle: draft.contactJobTitle,
-        contactLinkedinUrl: draft.contactLinkedinUrl,
-        contactName: draft.contactName,
-        contactPhone: draft.contactPhone,
-        leadDate: draft.leadDate,
-        nextAction: draft.nextAction?.slice(0, 280),
-        notes: draft.notes,
-        source: draft.source || "NAIA",
-        status,
-        tagNames: draft.tags,
-        topic,
-      },
+    return executeClaimedCrmCreateAction({
+      action,
       crmContext,
-    );
-
-    const calendarNote =
-      response.success && draft.leadDate
-        ? response.calendarSynced
-          ? response.calendarLink
-            ? ` Adam a créé l'événement Calendar: ${response.calendarLink}`
-            : " Adam a vérifié Google Calendar."
-          : ` Adam n'a pas pu créer l'événement Calendar: ${response.calendarError ?? "connexion Google à vérifier"}`
-        : "";
-
-    return {
-      message: response.success
-        ? `Lead CRM créé: "${topic}".${calendarNote}`
-        : (response.error ?? "Création du lead impossible."),
-      success: response.success,
-    };
+      executionUser,
+    });
   }
 
   if (action.kind === "calendar.scheduleMeeting") {
@@ -398,6 +359,124 @@ export async function executeBridgeAction(
     message:
       "Cette action se valide depuis le cockpit web NAIA: https://os.qarizmi.com/naia",
     success: false,
+  };
+}
+
+/**
+ * Executes a Slack-edited lead with the original approval token. The modal
+ * payload is covered by Slack's verified request signature, while the
+ * original HMAC token binds the capability, actor and organization. Claiming
+ * that original token before execution makes every modal copy and concurrent
+ * resubmission contend on the same database primary key; no derived token is
+ * minted, so editing cannot manufacture additional single-use approvals.
+ */
+export async function executeEditedBridgeLeadAction(
+  user: NaiaBridgeUser,
+  originalDraft: {
+    actionId: string;
+    approvalToken: string;
+    command: string;
+  },
+  editedDraft: CrmLeadDraft,
+): Promise<NaiaBridgeExecution> {
+  const originalAction = verifyApprovalToken(
+    originalDraft.approvalToken,
+    originalDraft.actionId,
+    originalDraft.command,
+    {
+      actorProfileId: user.profileId,
+      organizationId: user.organizationId,
+    },
+  );
+  if (originalAction?.kind !== "crm.createLead") {
+    return {
+      message:
+        "Jeton d'approbation invalide ou expiré (5 min). Renvoie ta commande à NAIA pour régénérer l'action.",
+      success: false,
+    };
+  }
+
+  const supabase = createServiceRoleSupabaseClient();
+  if (!supabase) {
+    return {
+      message: "Supabase service role non configuré côté serveur.",
+      success: false,
+    };
+  }
+
+  const claim = await claimApprovalToken(
+    supabase,
+    originalDraft.approvalToken,
+    user,
+  );
+  if (!claim.claimed) {
+    return { message: claim.message, success: false };
+  }
+
+  const executionUser = claim.user;
+  return executeClaimedCrmCreateAction({
+    action: { ...originalAction, payload: editedDraft },
+    crmContext: {
+      actorProfileId: executionUser.profileId,
+      organizationId: executionUser.organizationId,
+      supabase,
+    },
+    executionUser,
+  });
+}
+
+async function executeClaimedCrmCreateAction({
+  action,
+  crmContext,
+  executionUser,
+}: {
+  action: Extract<NaiaActionDraft, { kind: "crm.createLead" }>;
+  crmContext: CrmActionContext;
+  executionUser: NaiaBridgeUser;
+}): Promise<NaiaBridgeExecution> {
+  const denied = requireCrmPermission(executionUser, "create");
+  if (denied) return denied;
+
+  const draft = action.payload;
+  const status = coerceStatus(draft.status) ?? "lead-to-contact";
+  const topic = (draft.topic ?? "").trim().slice(0, 160);
+  if (topic.length < 3) {
+    return { message: "Brouillon de lead CRM invalide.", success: false };
+  }
+
+  const response = await createLeadAction(
+    {
+      companyName: draft.companyName,
+      contactEmail: draft.contactEmail,
+      contactJobTitle: draft.contactJobTitle,
+      contactLinkedinUrl: draft.contactLinkedinUrl,
+      contactName: draft.contactName,
+      contactPhone: draft.contactPhone,
+      leadDate: draft.leadDate,
+      nextAction: draft.nextAction?.slice(0, 280),
+      notes: draft.notes,
+      source: draft.source || "NAIA",
+      status,
+      tagNames: draft.tags,
+      topic,
+    },
+    crmContext,
+  );
+
+  const calendarNote =
+    response.success && draft.leadDate
+      ? response.calendarSynced
+        ? response.calendarLink
+          ? ` Adam a créé l'événement Calendar: ${response.calendarLink}`
+          : " Adam a vérifié Google Calendar."
+        : ` Adam n'a pas pu créer l'événement Calendar: ${response.calendarError ?? "connexion Google à vérifier"}`
+      : "";
+
+  return {
+    message: response.success
+      ? `Lead CRM créé: "${topic}".${calendarNote}`
+      : (response.error ?? "Création du lead impossible."),
+    success: response.success,
   };
 }
 

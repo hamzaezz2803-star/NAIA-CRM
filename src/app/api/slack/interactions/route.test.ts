@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   afterTasks: [] as Promise<unknown>[],
   executeBridgeAction: vi.fn(),
+  executeEditedBridgeLeadAction: vi.fn(),
   fetchSlackMessageSnapshot: vi.fn(),
   fetchSlackUserProfile: vi.fn(),
   openSlackModal: vi.fn(),
@@ -21,6 +22,7 @@ vi.mock("next/server", () => ({
 
 vi.mock("@/platform/naia/bridge", () => ({
   executeBridgeAction: mocks.executeBridgeAction,
+  executeEditedBridgeLeadAction: mocks.executeEditedBridgeLeadAction,
   resolveBridgeUser: mocks.resolveBridgeUser,
 }));
 
@@ -39,7 +41,7 @@ vi.mock("@/platform/integrations/slack", async (importOriginal) => {
 });
 
 import type { NaiaActionDraft } from "@/features/naia/orchestrator";
-import { signAction, verifyApprovalToken } from "@/platform/naia/action-tokens";
+import { signAction } from "@/platform/naia/action-tokens";
 
 import { POST } from "./route";
 
@@ -135,6 +137,10 @@ describe("Slack interactions route", () => {
     mocks.executeBridgeAction.mockResolvedValue({
       details: ["• nabil@qarizmi.com — Demo client"],
       message: "Lina a lu 1 message(s) Gmail autorise(s).",
+      success: true,
+    });
+    mocks.executeEditedBridgeLeadAction.mockResolvedValue({
+      message: 'Lead CRM créé: "Présentation pour Winxo".',
       success: true,
     });
     mocks.fetchSlackMessageSnapshot.mockResolvedValue(null);
@@ -427,15 +433,15 @@ describe("Slack interactions route", () => {
     expect(await response.json()).toEqual({ response_action: "clear" });
     await flushAfterTasks();
 
-    const executionDraft = mocks.executeBridgeAction.mock.calls[0][1];
-    const executedAction = verifyApprovalToken(
-      executionDraft.approvalToken,
-      executionDraft.actionId,
-      executionDraft.command,
-    );
-    expect(executedAction).toMatchObject({
-      kind: "crm.createLead",
-      payload: {
+    expect(mocks.executeBridgeAction).not.toHaveBeenCalled();
+    expect(mocks.executeEditedBridgeLeadAction).toHaveBeenCalledWith(
+      bridgeUser,
+      {
+        actionId: signed.id,
+        approvalToken: signed.approvalToken,
+        command,
+      },
+      expect.objectContaining({
         companyName: "Winxo",
         contactEmail: "yzaidi@winxo.com",
         contactJobTitle: "Directeur d'exploitation",
@@ -443,8 +449,8 @@ describe("Slack interactions route", () => {
         contactPhone: "0661420960",
         status: "contacted",
         topic: "Présentation pour Winxo",
-      },
-    });
+      }),
+    );
     expect(mocks.updateSlackMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         channel: "D0123456789",

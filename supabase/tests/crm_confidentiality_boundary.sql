@@ -1030,6 +1030,23 @@ begin
     null;
   end;
 
+  begin
+    perform public.update_crm_lead_atomic(
+      requested_organization_id => '10000000-0000-0000-0000-000000000001',
+      requested_actor_profile_id => current_setting('crm.qa_member_id')::uuid,
+      requested_lead_id => '50000000-0000-0000-0000-000000000012',
+      requested_updates => jsonb_build_object(
+        'notes', E'Entreprise: Atomic rejected update company\nContact: Atomic rejected update contact',
+        'topic', 'Intern candidate update'
+      ),
+      requested_auto_company_name => 'Atomic rejected update company',
+      requested_auto_contact_name => 'Atomic rejected update contact'
+    );
+    raise exception 'Expected non-founder atomic sensitive update rejection';
+  exception when insufficient_privilege then
+    null;
+  end;
+
 end
 $assertions$;
 
@@ -1045,11 +1062,33 @@ begin
   ) or exists (
     select 1 from public.crm_leads
     where topic = 'Intern candidate assessment'
+  ) or exists (
+    select 1 from public.crm_companies
+    where name = 'Atomic rejected update company'
+  ) or exists (
+    select 1 from public.crm_contacts
+    where name = 'Atomic rejected update contact'
+  ) or not exists (
+    select 1 from public.crm_leads
+    where id = '50000000-0000-0000-0000-000000000012'
+      and topic = 'Assigned ordinary lead'
+      and notes is null
+      and access_scope = 'organization'
   ) then
-    raise exception 'Rejected atomic creation left a partial CRM write';
+    raise exception 'Rejected atomic create/update left a partial CRM write';
   end if;
 end
 $assertions$;
+
+insert into public.crm_leads (
+  id, organization_id, topic, status, access_scope
+) values (
+  '50000000-0000-0000-0000-000000000017',
+  '10000000-0000-0000-0000-000000000001',
+  'Founder atomic update seed',
+  'contacted',
+  'organization'
+);
 
 -- A cofounder can create the same family, and every related row is scoped in
 -- the one committed transaction.
@@ -1066,6 +1105,20 @@ select public.create_crm_lead_atomic(
   requested_company_name => 'Atomic founder company',
   requested_contact_name => 'Atomic founder contact',
   requested_status => 'contacted'
+);
+
+select public.update_crm_lead_atomic(
+  requested_organization_id => '10000000-0000-0000-0000-000000000001',
+  requested_actor_profile_id => :'founder_id',
+  requested_lead_id => '50000000-0000-0000-0000-000000000017',
+  requested_updates => jsonb_build_object(
+    'assigned_to_profile_id', :'founder_id',
+    'notes', E'Entreprise: Atomic founder update company\nContact: Atomic founder update contact',
+    'tag_ids', jsonb_build_array('80000000-0000-0000-0000-000000000001'),
+    'topic', 'Intern candidate founder update'
+  ),
+  requested_auto_company_name => 'Atomic founder update company',
+  requested_auto_contact_name => 'Atomic founder update contact'
 );
 
 do $assertions$
@@ -1088,6 +1141,28 @@ begin
     where topic = 'Intern candidate assessment approved'
   ) <> 1 then
     raise exception 'Founder atomic sensitive creation is incomplete or public';
+  end if;
+  if exists (
+    select 1
+    from (
+      select access_scope from public.crm_companies
+      where name = 'Atomic founder update company'
+      union all
+      select access_scope from public.crm_contacts
+      where name = 'Atomic founder update contact'
+      union all
+      select access_scope from public.crm_leads
+      where id = '50000000-0000-0000-0000-000000000017'
+    ) scopes
+    where scopes.access_scope <> 'cofounders'
+  ) or not exists (
+    select 1
+    from public.crm_lead_tags
+    where lead_id = '50000000-0000-0000-0000-000000000017'
+      and tag_id = '80000000-0000-0000-0000-000000000001'
+      and archived_at is null
+  ) then
+    raise exception 'Founder atomic sensitive update is incomplete or public';
   end if;
 end
 $assertions$;

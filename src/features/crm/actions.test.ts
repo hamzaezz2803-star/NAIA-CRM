@@ -33,6 +33,7 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
 }));
 
 import {
+  createGoogleDriveFolderAction,
   createLeadAction,
   fetchCompanyDetailAction,
   updateLeadAction,
@@ -75,6 +76,7 @@ type QueryState = {
   op: "delete" | "insert" | "rpc" | "select" | "update";
   columns?: string;
   functionName?: string;
+  filters?: Array<[string, unknown]>;
   payload?: unknown;
 };
 
@@ -82,9 +84,9 @@ type QueryResponder = (state: QueryState) => unknown;
 
 type FakeQueryBuilder = {
   delete: () => FakeQueryBuilder;
-  eq: () => FakeQueryBuilder;
+  eq: (column: string, value: unknown) => FakeQueryBuilder;
   insert: (payload: unknown) => FakeQueryBuilder;
-  is: () => FakeQueryBuilder;
+  is: (column: string, value: unknown) => FakeQueryBuilder;
   limit: () => FakeQueryBuilder;
   maybeSingle: () => Promise<unknown>;
   order: () => FakeQueryBuilder;
@@ -120,7 +122,9 @@ function createFakeSupabase(respond: QueryResponder) {
           state.op = "delete";
           return builder;
         },
-        eq() {
+        eq(column: string, value: unknown) {
+          state.filters ??= [];
+          state.filters.push([column, value]);
           return builder;
         },
         insert(payload: unknown) {
@@ -128,7 +132,9 @@ function createFakeSupabase(respond: QueryResponder) {
           state.payload = payload;
           return builder;
         },
-        is() {
+        is(column: string, value: unknown) {
+          state.filters ??= [];
+          state.filters.push([column, value]);
           return builder;
         },
         limit() {
@@ -184,6 +190,17 @@ function respondForLead({
   onUpdate?: (state: QueryState) => void;
 }): QueryResponder {
   return (state) => {
+    if (state.op === "rpc" && state.functionName === "update_crm_lead_atomic") {
+      return {
+        data: {
+          access_scope: accessScope,
+          company_id: companyName ? "company-1" : null,
+          contact_id: null,
+          lead_id: "lead-1",
+        },
+        error: null,
+      };
+    }
     if (state.op === "update") {
       onUpdate?.(state);
       return { data: [{ id: "lead-1" }], error: null };
@@ -385,7 +402,7 @@ describe("CRM lead status Drive folder creation", () => {
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
   });
 
-  it("replaces tags atomically without deleting junction rows", async () => {
+  it("updates the lead and its tags through one atomic RPC", async () => {
     const terminalQueries: QueryState[] = [];
     const fallback = respondForLead({ companyName: "Total Energies" });
     mocks.createServerSupabaseClient.mockResolvedValue(
@@ -405,14 +422,14 @@ describe("CRM lead status Drive folder creation", () => {
     expect(result.success).toBe(true);
     expect(terminalQueries).toContainEqual(
       expect.objectContaining({
-        functionName: "replace_crm_lead_tags_atomic",
+        functionName: "update_crm_lead_atomic",
         op: "rpc",
-        payload: {
+        payload: expect.objectContaining({
           requested_actor_profile_id: "user-1",
           requested_lead_id: "lead-1",
           requested_organization_id: "org-1",
-          requested_tag_ids: ["tag-a", "tag-b"],
-        },
+          requested_updates: { tag_ids: ["tag-a", "tag-b"] },
+        }),
       }),
     );
     expect(
@@ -420,6 +437,212 @@ describe("CRM lead status Drive folder creation", () => {
         (query) => query.table === "crm_lead_tags" && query.op === "delete",
       ),
     ).toBe(false);
+  });
+
+  it("never creates company/contact rows outside a rejected atomic edit", async () => {
+    const terminalQueries: QueryState[] = [];
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        terminalQueries.push({ ...state });
+        if (
+          state.op === "rpc" &&
+          state.functionName === "update_crm_lead_atomic"
+        ) {
+          return {
+            data: null,
+            error: {
+              code: "42501",
+              message:
+                "Only a cofounder may update a confidential CRM lead family",
+            },
+          };
+        }
+        if (state.table === "organization_memberships") {
+          return { data: { organization_id: "org-1" }, error: null };
+        }
+        return { data: null, error: null };
+      }),
+    );
+
+    const result = await updateLeadAction("lead-1", {
+      notes: "Entreprise: Secret Interns\nContact: Candidate Person",
+      topic: "Stage confidentiel",
+    });
+
+    expect(result).toEqual({
+      error: "Only a cofounder may update a confidential CRM lead family",
+      success: false,
+    });
+    expect(terminalQueries).toContainEqual(
+      expect.objectContaining({
+        functionName: "update_crm_lead_atomic",
+        payload: expect.objectContaining({
+          requested_auto_company_name: "Secret Interns",
+          requested_auto_contact_name: "Candidate Person",
+        }),
+      }),
+    );
+    expect(
+      terminalQueries.some(
+        (query) =>
+          ["delete", "insert", "update"].includes(query.op) &&
+          ["crm_companies", "crm_contacts", "crm_leads"].includes(query.table),
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("manual CRM Drive folder authorization", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.afterCallbacks.length = 0;
+    mocks.isDriveServiceConfigured.mockReturnValue(true);
+    mocks.ensureClientDriveFolder.mockResolvedValue({
+      created: true,
+      folderId: "client-folder",
+      folderUrl: "https://drive.google.com/drive/folders/client-folder",
+    });
+  });
+
+  function driveResponder({
+    companyOrganizationId = "org-1",
+    companyScope = "organization",
+    lead = true,
+    leadScope = "organization",
+    role = "member",
+    roleSequence,
+    zeroCompanyUpdate = false,
+  }: {
+    companyOrganizationId?: string;
+    companyScope?: "cofounders" | "organization";
+    lead?: boolean;
+    leadScope?: "cofounders" | "organization";
+    role?: "member" | "viewer";
+    roleSequence?: Array<"member" | "viewer">;
+    zeroCompanyUpdate?: boolean;
+  } = {}): QueryResponder {
+    let companyFolderUrl: string | null = null;
+    let leadFolderUrl: string | null = null;
+    let roleReadCount = 0;
+
+    return (state) => {
+      if (state.table === "organization_memberships") {
+        if (state.columns === "organization_id") {
+          return { data: { organization_id: "org-1" }, error: null };
+        }
+        const currentRole = roleSequence?.[roleReadCount] ?? role;
+        roleReadCount += 1;
+        return { data: { role: currentRole }, error: null };
+      }
+      if (state.table === "crm_leads" && state.op === "select") {
+        if (!lead) return { data: null, error: null };
+        return {
+          data: {
+            access_scope: leadScope,
+            company: {
+              access_scope: companyScope,
+              archived_at: null,
+              drive_folder_url: companyFolderUrl,
+              id: "company-1",
+              name: "Canonical Client",
+              organization_id: companyOrganizationId,
+            },
+            company_id: "company-1",
+            drive_folder_url: leadFolderUrl,
+            id: "lead-1",
+          },
+          error: null,
+        };
+      }
+      if (state.table === "crm_companies" && state.op === "update") {
+        if (zeroCompanyUpdate) return { data: null, error: null };
+        companyFolderUrl =
+          (state.payload as { drive_folder_url?: string }).drive_folder_url ??
+          null;
+        return { data: { id: "company-1" }, error: null };
+      }
+      if (state.table === "crm_leads" && state.op === "update") {
+        leadFolderUrl =
+          (state.payload as { drive_folder_url?: string }).drive_folder_url ??
+          null;
+        return { data: { id: "lead-1" }, error: null };
+      }
+      return { data: null, error: null };
+    };
+  }
+
+  it.each([
+    ["a cross-tenant company relation", { companyOrganizationId: "org-2" }],
+    ["a missing lead", { lead: false }],
+    ["a confidential lead", { leadScope: "cofounders" }],
+    ["a confidential company", { companyScope: "cofounders" }],
+    ["a read-only member", { role: "viewer" }],
+  ] as const)("does not call Drive for %s", async (_label, options) => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(driveResponder(options)),
+    );
+
+    const result = await (
+      createGoogleDriveFolderAction as unknown as (
+        leadId: string,
+        forgedCompanyName: string,
+      ) => Promise<{ success: boolean }>
+    )("lead-1", "Forged Browser Company");
+
+    expect(result.success).toBe(false);
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+  });
+
+  it("derives the canonical company name server-side", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(driveResponder()),
+    );
+
+    const result = await (
+      createGoogleDriveFolderAction as unknown as (
+        leadId: string,
+        forgedCompanyName: string,
+      ) => Promise<{ success: boolean; folderLink?: string }>
+    )("lead-1", "Forged Browser Company");
+
+    expect(result).toEqual({
+      folderLink: "https://drive.google.com/drive/folders/client-folder",
+      success: true,
+    });
+    expect(mocks.ensureClientDriveFolder).toHaveBeenCalledWith(
+      "Canonical Client",
+    );
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalledWith(
+      "Forged Browser Company",
+    );
+  });
+
+  it("fails closed when a checked persistence update matches zero rows", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(driveResponder({ zeroCompanyUpdate: true })),
+    );
+
+    const result = await createGoogleDriveFolderAction("lead-1");
+
+    expect(result.success).toBe(false);
+    expect(result).toEqual(
+      expect.objectContaining({
+        error: expect.stringContaining("plus modifiable"),
+      }),
+    );
+  });
+
+  it("revalidates membership immediately before calling Drive", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(
+        driveResponder({ roleSequence: ["member", "viewer"] }),
+      ),
+    );
+
+    const result = await createGoogleDriveFolderAction("lead-1");
+
+    expect(result.success).toBe(false);
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
   });
 });
 

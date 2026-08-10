@@ -34,6 +34,7 @@ import { signAction } from "@/platform/naia/action-tokens";
 
 import {
   executeBridgeAction,
+  executeEditedBridgeLeadAction,
   planBridgeCommand,
   type NaiaBridgeUser,
 } from "./bridge";
@@ -224,6 +225,55 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(second.success).toBe(false);
     expect(second.message).toBe("Cette action a déjà été validée.");
     expect(mocks.listGmailMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("makes concurrent edited-modal submissions consume the same original token", async () => {
+    const command = "crée le lead HPS";
+    const signed = signAction(sparseCrmCreateAction, command, bridgeBinding);
+    const originalDraft = {
+      actionId: signed.id,
+      approvalToken: signed.approvalToken,
+      command,
+    };
+    const claimHashes: string[] = [];
+    let consumed = false;
+    mocks.claimBridgeAction.mockImplementation(
+      (args: { requested_token_hash: string }) => {
+        claimHashes.push(args.requested_token_hash);
+        if (consumed) {
+          return Promise.resolve({ data: null, error: { code: "23505" } });
+        }
+        consumed = true;
+        return Promise.resolve({
+          data: [{ actor_is_cofounder: true, actor_role: "owner" }],
+          error: null,
+        });
+      },
+    );
+    mocks.createLeadAction.mockResolvedValue({
+      lead: { id: "lead-hps" },
+      success: true,
+    });
+    const editedDraft: CrmLeadDraft = {
+      companyName: "HPS",
+      contactName: "Abdeslam",
+      source: "Slack",
+      status: "contacted",
+      topic: "HPS edited once",
+    };
+
+    const results = await Promise.all([
+      executeEditedBridgeLeadAction(bridgeUser, originalDraft, editedDraft),
+      executeEditedBridgeLeadAction(bridgeUser, originalDraft, editedDraft),
+    ]);
+
+    expect(results.filter(({ success }) => success)).toHaveLength(1);
+    expect(results.find(({ success }) => !success)?.message).toBe(
+      "Cette action a déjà été validée.",
+    );
+    expect(mocks.createLeadAction).toHaveBeenCalledTimes(1);
+    expect(claimHashes).toHaveLength(2);
+    expect(new Set(claimHashes)).toHaveProperty("size", 1);
   });
 
   it("fails closed when the claim cannot be registered", async () => {

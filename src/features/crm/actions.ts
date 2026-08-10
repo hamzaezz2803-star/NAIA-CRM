@@ -37,6 +37,10 @@ import {
   type CrmAccessScope,
 } from "./confidentiality";
 import { CRM_PIPELINE_LEAD_COLUMNS, mapCrmPipelineLead } from "./pipeline-data";
+import {
+  hasPermission,
+  type OrganizationRole,
+} from "@/platform/core/permissions";
 
 // ────────────────────────────────────────────────────────────
 // Types for DB rows (aligned with 20260624120000_crm_tables.sql)
@@ -860,72 +864,34 @@ export async function updateLeadAction(
   } = await supabase.auth.getUser();
   if (!user?.id) return { success: false, error: "Not authenticated" };
 
-  let companyId =
-    updates.companyId !== undefined ? updates.companyId : undefined;
-  let contactId =
-    updates.contactId !== undefined ? updates.contactId : undefined;
-
-  // Auto-create and link company/contact if notes are updated
-  if (
-    (companyId === undefined || contactId === undefined) &&
+  // Notes can suggest a company/contact, but resolving or creating those
+  // records must happen inside the same database transaction as the lead
+  // update. A rejected confidential update must never leave visible orphans.
+  const parsedContactInfo =
     updates.notes !== undefined
-  ) {
-    const { company, contact } = parseContactInfoFromNotes(updates.notes);
+      ? parseContactInfoFromNotes(updates.notes)
+      : { company: undefined, contact: undefined };
 
-    if (companyId === undefined && company) {
-      const { data: existingComp } = await supabase
-        .from("crm_companies")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("name", company)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingComp) {
-        companyId = existingComp.id;
-      } else {
-        const { data: newComp } = await supabase
-          .from("crm_companies")
-          .insert({
-            organization_id: orgId,
-            name: company,
-            created_by_profile_id: user?.id ?? null,
-          })
-          .select("id")
-          .single();
-        if (newComp) companyId = newComp.id;
-      }
-    }
-
-    if (companyId && contactId === undefined && contact) {
-      const { data: existingCont } = await supabase
-        .from("crm_contacts")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("company_id", companyId)
-        .eq("name", contact)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingCont) {
-        contactId = existingCont.id;
-      } else {
-        const { data: newCont } = await supabase
-          .from("crm_contacts")
-          .insert({
-            organization_id: orgId,
-            company_id: companyId,
-            name: contact,
-            job_title: updates.contactJobTitle ?? null,
-            linkedin_url: updates.contactLinkedinUrl ?? null,
-            created_by_profile_id: user?.id ?? null,
-          })
-          .select("id")
-          .single();
-        if (newCont) contactId = newCont.id;
-      }
-    }
-  }
+  const requestedUpdates: Record<string, unknown> = {};
+  if (updates.topic !== undefined) requestedUpdates.topic = updates.topic;
+  if (updates.status !== undefined) requestedUpdates.status = updates.status;
+  if (updates.notes !== undefined) requestedUpdates.notes = updates.notes;
+  if (updates.nextAction !== undefined)
+    requestedUpdates.next_action = updates.nextAction;
+  if (updates.leadDate !== undefined)
+    requestedUpdates.lead_date = updates.leadDate || null;
+  if (updates.source !== undefined) requestedUpdates.source = updates.source;
+  if (updates.companyId !== undefined)
+    requestedUpdates.company_id = updates.companyId || null;
+  if (updates.contactId !== undefined)
+    requestedUpdates.contact_id = updates.contactId || null;
+  if (updates.contactJobTitle !== undefined)
+    requestedUpdates.contact_job_title = updates.contactJobTitle || null;
+  if (updates.contactLinkedinUrl !== undefined)
+    requestedUpdates.contact_linkedin_url = updates.contactLinkedinUrl || null;
+  if (updates.assignedToProfileId !== undefined)
+    requestedUpdates.assigned_to_profile_id = updates.assignedToProfileId;
+  if (updates.tagIds !== undefined) requestedUpdates.tag_ids = updates.tagIds;
 
   const shouldCreateDriveFolder =
     updates.status === "meeting-booked" && !updates.skipGoogleDriveCreate;
@@ -933,59 +899,33 @@ export async function updateLeadAction(
     ? await fetchLeadStatus(supabase, orgId, leadId)
     : null;
 
-  const { error } = await supabase
-    .from("crm_leads")
-    .update({
-      ...(updates.topic !== undefined && { topic: updates.topic }),
-      ...(updates.status !== undefined && { status: updates.status }),
-      ...(updates.notes !== undefined && { notes: updates.notes }),
-      ...(updates.nextAction !== undefined && {
-        next_action: updates.nextAction,
-      }),
-      ...(updates.leadDate !== undefined && {
-        lead_date: updates.leadDate || null,
-      }),
-      ...(updates.source !== undefined && { source: updates.source }),
-      ...(companyId !== undefined && { company_id: companyId }),
-      ...(contactId !== undefined && { contact_id: contactId }),
-      ...(updates.contactJobTitle !== undefined && {
-        contact_job_title: updates.contactJobTitle || null,
-      }),
-      ...(updates.contactLinkedinUrl !== undefined && {
-        contact_linkedin_url: updates.contactLinkedinUrl || null,
-      }),
-      ...(updates.assignedToProfileId !== undefined && {
-        assigned_to_profile_id: updates.assignedToProfileId,
-      }),
-      last_updated_by_profile_id: user?.id ?? null,
-      last_updated_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", leadId)
-    .eq("organization_id", orgId);
+  const { data: atomicUpdate, error } = await supabase.rpc(
+    "update_crm_lead_atomic",
+    {
+      requested_actor_profile_id: user.id,
+      requested_auto_company_name:
+        updates.companyId === undefined
+          ? (parsedContactInfo.company ?? null)
+          : null,
+      requested_auto_contact_name:
+        updates.contactId === undefined
+          ? (parsedContactInfo.contact ?? null)
+          : null,
+      requested_lead_id: leadId,
+      requested_organization_id: orgId,
+      requested_updates: requestedUpdates,
+    },
+  );
 
   if (error) return { success: false, error: error.message };
+  if (!atomicUpdate) {
+    return { success: false, error: "Lead introuvable" };
+  }
 
   if (shouldCreateDriveFolder && previousStatus !== "meeting-booked") {
     // Deferred after the response: up to a dozen sequential Drive calls must
     // not block the update.
     after(() => createMeetingBookedLeadDriveFolder(supabase, leadId));
-  }
-
-  // Sync tags if provided
-  if (updates.tagIds !== undefined) {
-    const { error: tagError } = await supabase.rpc(
-      "replace_crm_lead_tags_atomic",
-      {
-        requested_actor_profile_id: user.id,
-        requested_lead_id: leadId,
-        requested_organization_id: orgId,
-        requested_tag_ids: updates.tagIds,
-      },
-    );
-    if (tagError) {
-      return { success: false, error: tagError.message };
-    }
   }
 
   await syncLeadToGoogleCalendar(supabase, orgId, leadId);
@@ -1820,7 +1760,6 @@ export async function disconnectGoogleAuthAction(): Promise<{
 
 export async function createGoogleDriveFolderAction(
   leadId: string,
-  companyName: string,
 ): Promise<{ success: boolean; folderLink?: string; error?: string }> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
@@ -1828,66 +1767,155 @@ export async function createGoogleDriveFolderAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  if (!isDriveServiceConfigured()) {
-    return {
-      success: false,
-      error:
-        "Drive service account non configuré (GOOGLE_SERVICE_ACCOUNT_KEY / MAYA_DRIVE_OUTPUT_FOLDER_ID).",
-    };
-  }
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.id) return { success: false, error: "Not authenticated" };
 
   try {
-    const { data: leadRow } = await supabase
-      .from("crm_leads")
-      .select("company_id, drive_folder_url")
-      .eq("id", leadId)
-      .single();
+    let authorized = await resolveAuthorizedDriveLead({
+      actorProfileId: user.id,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { success: false, error: authorized.error };
+    }
 
     // If already has a folder, return it
-    if (leadRow?.drive_folder_url) {
-      return { success: true, folderLink: leadRow.drive_folder_url };
+    if (authorized.leadFolderUrl) {
+      return { success: true, folderLink: authorized.leadFolderUrl };
     }
 
     // The company's stored folder wins over a name lookup (client renames
     // must not spawn a second folder).
-    let folderLink: string | null = null;
-    let folderReused = false;
-    if (leadRow?.company_id) {
-      const { data: companyRow } = await supabase
-        .from("crm_companies")
-        .select("drive_folder_url")
-        .eq("id", leadRow.company_id)
-        .maybeSingle();
-      if (companyRow?.drive_folder_url) {
-        folderLink = companyRow.drive_folder_url;
-        folderReused = true;
-      }
-    }
+    let folderLink = authorized.companyFolderUrl;
+    let folderReused = Boolean(folderLink);
+    const providerCompanyId = authorized.companyId;
 
     // One folder per client (not per lead), created by the org service
     // account inside the cofounders-only "clients" shared-drive folder.
     if (!folderLink) {
-      const clientFolder = await ensureClientDriveFolder(companyName);
+      if (!isDriveServiceConfigured()) {
+        return {
+          success: false,
+          error:
+            "Drive service account non configuré (GOOGLE_SERVICE_ACCOUNT_KEY / MAYA_DRIVE_OUTPUT_FOLDER_ID).",
+        };
+      }
+
+      // Re-read membership, tenant, archive state, scope and the canonical
+      // company immediately before the provider call. The browser-provided
+      // company label is never accepted by this action.
+      authorized = await resolveAuthorizedDriveLead({
+        actorProfileId: user.id,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!authorized.ok) {
+        return { success: false, error: authorized.error };
+      }
+      if (authorized.leadFolderUrl) {
+        return { success: true, folderLink: authorized.leadFolderUrl };
+      }
+      if (authorized.companyId !== providerCompanyId) {
+        return {
+          success: false,
+          error:
+            "Le client lié au lead a changé. Recharge la fiche et réessaie.",
+        };
+      }
+      if (authorized.companyFolderUrl) {
+        folderLink = authorized.companyFolderUrl;
+        folderReused = true;
+      }
+    }
+
+    if (!folderLink) {
+      const clientFolder = await ensureClientDriveFolder(
+        authorized.companyName,
+      );
       folderLink = clientFolder.folderUrl;
       folderReused = !clientFolder.created;
     }
 
-    await supabase
-      .from("crm_leads")
-      .update({
-        drive_folder_url: folderLink,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", leadId);
+    // The provider call can outlive an authorization change. Revalidate once
+    // more and require checked update results; zero-row writes never become a
+    // false success.
+    authorized = await resolveAuthorizedDriveLead({
+      actorProfileId: user.id,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { success: false, error: authorized.error };
+    }
+    if (authorized.leadFolderUrl) {
+      return { success: true, folderLink: authorized.leadFolderUrl };
+    }
+    if (authorized.companyId !== providerCompanyId) {
+      return {
+        success: false,
+        error: "Le client lié au lead a changé. Recharge la fiche et réessaie.",
+      };
+    }
 
-    if (leadRow?.company_id) {
-      await supabase
-        .from("crm_companies")
-        .update({
-          drive_folder_url: folderLink,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadRow.company_id);
+    folderLink = authorized.companyFolderUrl ?? folderLink;
+    const now = new Date().toISOString();
+    const { data: updatedCompany, error: companyUpdateError } = await supabase
+      .from("crm_companies")
+      .update({ drive_folder_url: folderLink, updated_at: now })
+      .eq("id", authorized.companyId)
+      .eq("organization_id", orgId)
+      .eq("access_scope", "organization")
+      .is("archived_at", null)
+      .select("id")
+      .maybeSingle();
+    if (companyUpdateError || !updatedCompany) {
+      return {
+        success: false,
+        error:
+          companyUpdateError?.message ??
+          "Le client n'est plus modifiable dans ce périmètre.",
+      };
+    }
+
+    const { data: updatedLead, error: leadUpdateError } = await supabase
+      .from("crm_leads")
+      .update({ drive_folder_url: folderLink, updated_at: now })
+      .eq("id", leadId)
+      .eq("organization_id", orgId)
+      .eq("company_id", authorized.companyId)
+      .eq("access_scope", "organization")
+      .is("archived_at", null)
+      .select("id")
+      .maybeSingle();
+    if (leadUpdateError || !updatedLead) {
+      return {
+        success: false,
+        error:
+          leadUpdateError?.message ??
+          "Le lead n'est plus modifiable dans ce périmètre.",
+      };
+    }
+
+    const finalAuthorization = await resolveAuthorizedDriveLead({
+      actorProfileId: user.id,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!finalAuthorization.ok) {
+      return { success: false, error: finalAuthorization.error };
+    }
+    if (finalAuthorization.leadFolderUrl !== folderLink) {
+      return {
+        success: false,
+        error: "Le lien Drive n'a pas été confirmé sur le lead.",
+      };
     }
 
     revalidatePath("/crm");
@@ -1898,7 +1926,7 @@ export async function createGoogleDriveFolderAction(
       title: folderReused
         ? "Dossier client Drive retrouvé"
         : "Dossier client Drive créé",
-      description: `Le dossier client "${companyName.trim()}" est disponible dans le Drive partagé Qarizmi (clients) depuis le ${new Date().toLocaleString("fr-FR")}.`,
+      description: `Le dossier client "${finalAuthorization.companyName}" est disponible dans le Drive partagé Qarizmi (clients) depuis le ${new Date().toLocaleString("fr-FR")}.`,
       type: "success",
       link_url: folderLink,
     });
@@ -1908,6 +1936,95 @@ export async function createGoogleDriveFolderAction(
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
   }
+}
+
+type AuthorizedDriveLead = {
+  companyFolderUrl: string | null;
+  companyId: string;
+  companyName: string;
+  leadFolderUrl: string | null;
+  ok: true;
+};
+
+async function resolveAuthorizedDriveLead({
+  actorProfileId,
+  leadId,
+  organizationId,
+  supabase,
+}: {
+  actorProfileId: string;
+  leadId: string;
+  organizationId: string;
+  supabase: any;
+}): Promise<AuthorizedDriveLead | { error: string; ok: false }> {
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("role")
+    .eq("organization_id", organizationId)
+    .eq("profile_id", actorProfileId)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !role ||
+    !hasPermission(role, { action: "update", module: "crm" })
+  ) {
+    return {
+      error: "Tu n'as plus la permission de modifier ce lead.",
+      ok: false,
+    };
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from("crm_leads")
+    .select(
+      "id, company_id, drive_folder_url, access_scope, company:company_id(id, organization_id, name, drive_folder_url, access_scope, archived_at)",
+    )
+    .eq("id", leadId)
+    .eq("organization_id", organizationId)
+    .is("archived_at", null)
+    .maybeSingle();
+  if (leadError || !lead) {
+    return {
+      error: leadError?.message ?? "Lead introuvable dans cette organisation.",
+      ok: false,
+    };
+  }
+  if (!allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)) {
+    return {
+      error: "Les dossiers Drive sont désactivés pour les leads confidentiels.",
+      ok: false,
+    };
+  }
+
+  const relatedCompany = Array.isArray(lead.company)
+    ? lead.company[0]
+    : lead.company;
+  if (
+    !lead.company_id ||
+    !relatedCompany ||
+    relatedCompany.id !== lead.company_id ||
+    relatedCompany.organization_id !== organizationId ||
+    relatedCompany.archived_at ||
+    !allowsCrmProviderSideEffects(
+      relatedCompany.access_scope as CrmAccessScope,
+    ) ||
+    !relatedCompany.name?.trim()
+  ) {
+    return {
+      error:
+        "Le lead n'a pas de client actif et autorisé dans cette organisation.",
+      ok: false,
+    };
+  }
+
+  return {
+    companyFolderUrl: relatedCompany.drive_folder_url ?? null,
+    companyId: relatedCompany.id,
+    companyName: relatedCompany.name.trim(),
+    leadFolderUrl: lead.drive_folder_url ?? null,
+    ok: true,
+  };
 }
 
 /**

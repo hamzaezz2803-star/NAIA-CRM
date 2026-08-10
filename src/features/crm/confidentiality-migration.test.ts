@@ -89,8 +89,13 @@ describe("CRM confidentiality and import migration contract", () => {
     expect(migration).toContain(
       "Escalating a parent also escalates every existing descendant",
     );
-    expect(releaseMigration).toContain("private.derive_crm_lead_access_scope");
-    expect(releaseMigration).toContain("category.status_key = new.status");
+    expect(migration).toContain("private.derive_crm_lead_access_scope");
+    expect(migration).toContain("category.status_key = new.status");
+    expect(migration).toContain("private.propagate_crm_classifier_scope");
+    expect(migration).toContain("private.propagate_crm_tag_relation_scope");
+    expect(migration).toContain(
+      "a classifier-derived lead remains organization-visible",
+    );
     expect(releaseMigration).toContain(
       "private.propagate_crm_tag_relation_scope",
     );
@@ -119,6 +124,7 @@ describe("CRM confidentiality and import migration contract", () => {
 
   it("creates lead families atomically and revalidates bridge execution", () => {
     expect(releaseMigration).toContain("public.create_crm_lead_atomic");
+    expect(releaseMigration).toContain("public.update_crm_lead_atomic");
     expect(releaseMigration).toContain(
       "Only a cofounder may create a confidential CRM lead family",
     );
@@ -144,6 +150,9 @@ describe("CRM confidentiality and import migration contract", () => {
     expect(calendarSync).toContain('method: "PATCH"');
     expect(calendarSync).toContain("sendUpdates=none");
     expect(calendarSync).not.toContain("attendees:");
+    expect(crmActions).toContain("resolveAuthorizedDriveLead");
+    expect(crmActions).toContain("company label is never accepted");
+    expect(crmActions).toContain('.eq("organization_id", orgId)');
   });
 
   it("binds every ledger child to the same organization as its run", () => {

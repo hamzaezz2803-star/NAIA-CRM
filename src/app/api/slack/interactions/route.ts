@@ -9,8 +9,12 @@ import {
   updateSlackMessage,
   verifySlackSignature,
 } from "@/platform/integrations/slack";
-import { executeBridgeAction, resolveBridgeUser } from "@/platform/naia/bridge";
-import { signAction, verifyApprovalToken } from "@/platform/naia/action-tokens";
+import {
+  executeBridgeAction,
+  executeEditedBridgeLeadAction,
+  resolveBridgeUser,
+} from "@/platform/naia/bridge";
+import { verifyApprovalToken } from "@/platform/naia/action-tokens";
 import {
   decodeSlackApprovalValue,
   type SlackApprovalDraft,
@@ -341,30 +345,11 @@ async function handleLeadModalSubmission({
     if (!user) return;
 
     const { approvalDraft } = submission.metadata;
-    const originalAction = verifyApprovalToken(
-      approvalDraft.approvalToken,
-      approvalDraft.actionId,
-      approvalDraft.command,
-      {
-        actorProfileId: user.profileId,
-        organizationId: user.organizationId,
-      },
+    const result = await executeEditedBridgeLeadAction(
+      user,
+      approvalDraft,
+      submission.draft,
     );
-    if (originalAction?.kind !== "crm.createLead") return;
-
-    const updatedAction = {
-      ...originalAction,
-      payload: submission.draft,
-    } as const;
-    const signed = signAction(updatedAction, approvalDraft.command, {
-      actorProfileId: user.profileId,
-      organizationId: user.organizationId,
-    });
-    const result = await executeBridgeAction(user, {
-      actionId: signed.id,
-      approvalToken: signed.approvalToken,
-      command: approvalDraft.command,
-    });
     const approverLabel = profile?.displayName || user.email;
     const text = result.success
       ? `✅ Validée par ${approverLabel} — ${result.message}`
@@ -378,14 +363,14 @@ async function handleLeadModalSubmission({
       });
       const fallbackBlocks: SlackBlock[] = [
         {
-          block_id: `naia_action_result:${signed.id}`,
+          block_id: `naia_action_result:${approvalDraft.actionId}`,
           text: { text, type: "mrkdwn" },
           type: "section",
         },
       ];
       await updateSlackMessage({
         blocks:
-          replaceActionBlocks(snapshot?.blocks, signed.id, text) ??
+          replaceActionBlocks(snapshot?.blocks, approvalDraft.actionId, text) ??
           fallbackBlocks,
         channel: submission.metadata.channelId,
         text,

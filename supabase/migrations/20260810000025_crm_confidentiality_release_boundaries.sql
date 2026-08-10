@@ -1332,6 +1332,480 @@ grant execute on function public.create_crm_lead_atomic(
   text, timestamptz, text, text, uuid, uuid[], text[]
 ) to authenticated, service_role;
 
+-- Transactional lead edit API. Derived company/contact records, the lead
+-- update and an optional tag replacement either all commit or all roll back.
+-- In particular, a non-cofounder cannot leave organization-visible orphans
+-- when a new status, note, relation or tag makes the final family confidential.
+create or replace function public.update_crm_lead_atomic(
+  requested_organization_id uuid,
+  requested_actor_profile_id uuid,
+  requested_lead_id uuid,
+  requested_updates jsonb,
+  requested_auto_company_name text default null,
+  requested_auto_contact_name text default null
+)
+returns jsonb
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  actor_is_cofounder boolean;
+  actor_role text;
+  auto_company_name text := nullif(btrim(requested_auto_company_name), '');
+  auto_contact_name text := nullif(btrim(requested_auto_contact_name), '');
+  company_id_value uuid;
+  company_name_value text;
+  company_scope text;
+  contact_company_id uuid;
+  contact_id_value uuid;
+  contact_scope text;
+  final_assignee_id uuid;
+  final_contact_job_title text;
+  final_contact_linkedin_url text;
+  final_lead_date timestamptz;
+  final_next_action text;
+  final_notes text;
+  final_scope text;
+  final_source text;
+  final_status text;
+  final_topic text;
+  lead_row public.crm_leads%rowtype;
+  normalized_tag_ids uuid[];
+  replace_tags boolean;
+begin
+  if requested_organization_id is null
+    or requested_actor_profile_id is null
+    or requested_lead_id is null
+    or requested_updates is null
+    or jsonb_typeof(requested_updates) <> 'object' then
+    raise exception 'CRM lead update payload is incomplete'
+      using errcode = '22023';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_object_keys(requested_updates) requested_key
+    where requested_key not in (
+      'assigned_to_profile_id', 'company_id', 'contact_id',
+      'contact_job_title', 'contact_linkedin_url', 'lead_date',
+      'next_action', 'notes', 'source', 'status', 'tag_ids', 'topic'
+    )
+  ) then
+    raise exception 'CRM lead update contains an unsupported field'
+      using errcode = '22023';
+  end if;
+
+  if (select auth.uid()) is not null
+    and (select auth.uid()) <> requested_actor_profile_id then
+    raise exception 'CRM actor does not match the authenticated user'
+      using errcode = '42501';
+  end if;
+
+  select membership.role,
+    private.is_crm_cofounder_profile(
+      requested_organization_id,
+      requested_actor_profile_id
+    )
+  into actor_role, actor_is_cofounder
+  from public.organization_memberships membership
+  join auth.users user_record on user_record.id = membership.profile_id
+  where membership.organization_id = requested_organization_id
+    and membership.profile_id = requested_actor_profile_id
+  for update of membership, user_record;
+
+  if not found or actor_role not in ('owner', 'admin', 'member') then
+    raise exception 'CRM actor is not an active contributor in this organization'
+      using errcode = '42501';
+  end if;
+
+  select lead.*
+  into lead_row
+  from public.crm_leads lead
+  where lead.id = requested_lead_id
+    and lead.organization_id = requested_organization_id
+    and lead.archived_at is null
+  for update;
+
+  if not found then
+    raise exception 'CRM lead is missing, archived, or belongs to another organization'
+      using errcode = '23514';
+  end if;
+
+  if lead_row.access_scope = 'cofounders' and not actor_is_cofounder then
+    raise exception 'Only a cofounder may update a confidential CRM lead family'
+      using errcode = '42501';
+  end if;
+
+  if exists (
+    select 1
+    from jsonb_each(requested_updates) entry
+    where entry.key in (
+      'assigned_to_profile_id', 'company_id', 'contact_id',
+      'contact_job_title', 'contact_linkedin_url', 'lead_date',
+      'next_action', 'notes', 'source', 'status', 'topic'
+    )
+      and jsonb_typeof(entry.value) not in ('null', 'string')
+  ) then
+    raise exception 'CRM lead scalar update fields must be strings or null'
+      using errcode = '22023';
+  end if;
+
+  replace_tags := requested_updates ? 'tag_ids';
+  if replace_tags and jsonb_typeof(requested_updates -> 'tag_ids') <> 'array' then
+    raise exception 'CRM tag ids must be an array' using errcode = '22023';
+  end if;
+  if replace_tags and exists (
+    select 1
+    from jsonb_array_elements(requested_updates -> 'tag_ids') tag_value
+    where jsonb_typeof(tag_value) <> 'string'
+  ) then
+    raise exception 'CRM tag ids must contain UUID strings'
+      using errcode = '22023';
+  end if;
+
+  final_topic := case when requested_updates ? 'topic'
+    then nullif(btrim(requested_updates ->> 'topic'), '')
+    else lead_row.topic end;
+  final_status := case when requested_updates ? 'status'
+    then nullif(btrim(requested_updates ->> 'status'), '')
+    else lead_row.status end;
+  if final_topic is null or final_status is null then
+    raise exception 'CRM lead topic and status cannot be empty'
+      using errcode = '22023';
+  end if;
+
+  final_notes := case when requested_updates ? 'notes'
+    then requested_updates ->> 'notes' else lead_row.notes end;
+  final_next_action := case when requested_updates ? 'next_action'
+    then requested_updates ->> 'next_action' else lead_row.next_action end;
+  final_source := case when requested_updates ? 'source'
+    then requested_updates ->> 'source' else lead_row.source end;
+  final_contact_job_title := case
+    when requested_updates ? 'contact_job_title'
+      then requested_updates ->> 'contact_job_title'
+    else lead_row.contact_job_title end;
+  final_contact_linkedin_url := case
+    when requested_updates ? 'contact_linkedin_url'
+      then requested_updates ->> 'contact_linkedin_url'
+    else lead_row.contact_linkedin_url end;
+  final_lead_date := case when requested_updates ? 'lead_date'
+    then nullif(requested_updates ->> 'lead_date', '')::timestamptz
+    else lead_row.lead_date end;
+  final_assignee_id := case when requested_updates ? 'assigned_to_profile_id'
+    then nullif(requested_updates ->> 'assigned_to_profile_id', '')::uuid
+    else lead_row.assigned_to_profile_id end;
+
+  company_id_value := case when requested_updates ? 'company_id'
+    then nullif(requested_updates ->> 'company_id', '')::uuid
+    else lead_row.company_id end;
+  contact_id_value := case when requested_updates ? 'contact_id'
+    then nullif(requested_updates ->> 'contact_id', '')::uuid
+    when auto_contact_name is not null then null
+    else lead_row.contact_id end;
+
+  if not (requested_updates ? 'company_id') and auto_company_name is not null then
+    select company.id, company.name, company.access_scope
+    into company_id_value, company_name_value, company_scope
+    from public.crm_companies company
+    where company.organization_id = requested_organization_id
+      and company.archived_at is null
+      and private.crm_normalize_match_text(company.name) =
+        private.crm_normalize_match_text(auto_company_name)
+    order by company.created_at, company.id
+    limit 1;
+    if not found then
+      company_id_value := null;
+      company_name_value := auto_company_name;
+      company_scope := null;
+    end if;
+  elsif company_id_value is not null then
+    select company.name, company.access_scope
+    into company_name_value, company_scope
+    from public.crm_companies company
+    where company.id = company_id_value
+      and company.organization_id = requested_organization_id
+      and company.archived_at is null;
+    if not found then
+      raise exception 'CRM company is missing, archived, or belongs to another organization'
+        using errcode = '23514';
+    end if;
+  else
+    company_name_value := null;
+    company_scope := null;
+  end if;
+
+  if contact_id_value is not null then
+    select contact.company_id, contact.access_scope
+    into contact_company_id, contact_scope
+    from public.crm_contacts contact
+    where contact.id = contact_id_value
+      and contact.organization_id = requested_organization_id
+      and contact.archived_at is null;
+    if not found then
+      raise exception 'CRM contact is missing, archived, or belongs to another organization'
+        using errcode = '23514';
+    end if;
+    if company_id_value is null and contact_company_id is not null then
+      company_id_value := contact_company_id;
+      select company.name, company.access_scope
+      into company_name_value, company_scope
+      from public.crm_companies company
+      where company.id = company_id_value
+        and company.organization_id = requested_organization_id
+        and company.archived_at is null;
+      if not found then
+        raise exception 'CRM contact references an unavailable company'
+          using errcode = '23514';
+      end if;
+    elsif company_id_value is not null
+      and contact_company_id is not null
+      and contact_company_id <> company_id_value then
+      raise exception 'CRM contact does not belong to the selected company'
+        using errcode = '23514';
+    end if;
+  elsif not (requested_updates ? 'contact_id')
+    and auto_contact_name is not null
+    and company_id_value is not null then
+    select contact.id, contact.company_id, contact.access_scope
+    into contact_id_value, contact_company_id, contact_scope
+    from public.crm_contacts contact
+    where contact.organization_id = requested_organization_id
+      and contact.company_id = company_id_value
+      and contact.archived_at is null
+      and private.crm_normalize_match_text(contact.name) =
+        private.crm_normalize_match_text(auto_contact_name)
+    order by contact.created_at, contact.id
+    limit 1;
+  end if;
+
+  if replace_tags then
+    select coalesce(array_agg(distinct tag_id order by tag_id), '{}'::uuid[])
+    into normalized_tag_ids
+    from (
+      select jsonb_array_elements_text(requested_updates -> 'tag_ids')::uuid tag_id
+    ) requested;
+  else
+    select coalesce(array_agg(relation.tag_id order by relation.tag_id), '{}'::uuid[])
+    into normalized_tag_ids
+    from public.crm_lead_tags relation
+    where relation.lead_id = requested_lead_id
+      and relation.archived_at is null;
+  end if;
+
+  if exists (
+    select 1
+    from unnest(normalized_tag_ids) requested_tag_id
+    where not exists (
+      select 1
+      from public.crm_tags tag
+      where tag.id = requested_tag_id
+        and tag.organization_id = requested_organization_id
+        and tag.archived_at is null
+    )
+  ) then
+    raise exception 'CRM tag is missing, archived, or belongs to another organization'
+      using errcode = '23514';
+  end if;
+
+  final_scope := lead_row.access_scope;
+  if company_scope = 'cofounders'
+    or contact_scope = 'cofounders'
+    or private.crm_text_requires_cofounder(concat_ws(E'\n',
+      final_topic,
+      final_status,
+      company_name_value,
+      auto_contact_name,
+      final_source,
+      final_notes,
+      final_next_action,
+      final_contact_job_title
+    ))
+    or exists (
+      select 1
+      from public.crm_categories category
+      where category.organization_id = requested_organization_id
+        and category.status_key = final_status
+        and category.archived_at is null
+        and category.access_scope = 'cofounders'
+    )
+    or exists (
+      select 1
+      from public.crm_tags tag
+      where tag.id = any(normalized_tag_ids)
+        and tag.organization_id = requested_organization_id
+        and tag.archived_at is null
+        and tag.access_scope = 'cofounders'
+    ) then
+    final_scope := 'cofounders';
+  end if;
+
+  -- This check deliberately precedes the first write. Every possible source
+  -- of confidentiality has already been resolved under row locks.
+  if final_scope = 'cofounders' and not actor_is_cofounder then
+    raise exception 'Only a cofounder may update a confidential CRM lead family'
+      using errcode = '42501';
+  end if;
+
+  if final_assignee_id is not null and not exists (
+    select 1
+    from public.organization_memberships membership
+    where membership.organization_id = requested_organization_id
+      and membership.profile_id = final_assignee_id
+  ) then
+    raise exception 'CRM assignee is not a member of this organization'
+      using errcode = '23514';
+  end if;
+  if final_scope = 'cofounders'
+    and final_assignee_id is not null
+    and not private.is_crm_cofounder_profile(
+      requested_organization_id,
+      final_assignee_id
+    ) then
+    raise exception 'A confidential CRM lead cannot be assigned to a non-cofounder'
+      using errcode = '42501';
+  end if;
+
+  if company_id_value is null and company_name_value is not null then
+    insert into public.crm_companies (
+      organization_id, name, access_scope, created_by_profile_id
+    ) values (
+      requested_organization_id, company_name_value, final_scope,
+      requested_actor_profile_id
+    )
+    returning id into company_id_value;
+  elsif company_id_value is not null and final_scope = 'cofounders' then
+    update public.crm_companies
+    set access_scope = 'cofounders'
+    where id = company_id_value
+      and organization_id = requested_organization_id
+      and access_scope <> 'cofounders';
+  end if;
+
+  if contact_id_value is null
+    and auto_contact_name is not null
+    and company_id_value is not null then
+    -- A newly created company could not have had a matching contact during
+    -- preflight; re-check now without leaving the enclosing transaction.
+    select contact.id, contact.access_scope
+    into contact_id_value, contact_scope
+    from public.crm_contacts contact
+    where contact.organization_id = requested_organization_id
+      and contact.company_id = company_id_value
+      and contact.archived_at is null
+      and private.crm_normalize_match_text(contact.name) =
+        private.crm_normalize_match_text(auto_contact_name)
+    order by contact.created_at, contact.id
+    limit 1;
+  end if;
+
+  if contact_id_value is null
+    and auto_contact_name is not null
+    and company_id_value is not null then
+    insert into public.crm_contacts (
+      organization_id, company_id, name, job_title, linkedin_url,
+      access_scope, created_by_profile_id
+    ) values (
+      requested_organization_id, company_id_value, auto_contact_name,
+      nullif(btrim(final_contact_job_title), ''),
+      nullif(btrim(final_contact_linkedin_url), ''),
+      final_scope, requested_actor_profile_id
+    )
+    returning id into contact_id_value;
+  elsif contact_id_value is not null and final_scope = 'cofounders' then
+    update public.crm_contacts
+    set access_scope = 'cofounders'
+    where id = contact_id_value
+      and organization_id = requested_organization_id
+      and access_scope <> 'cofounders';
+  end if;
+
+  update public.crm_leads
+  set topic = final_topic,
+      status = final_status,
+      notes = final_notes,
+      next_action = final_next_action,
+      lead_date = final_lead_date,
+      source = final_source,
+      company_id = company_id_value,
+      contact_id = contact_id_value,
+      contact_job_title = final_contact_job_title,
+      contact_linkedin_url = final_contact_linkedin_url,
+      assigned_to_profile_id = final_assignee_id,
+      access_scope = final_scope,
+      last_updated_by_profile_id = requested_actor_profile_id,
+      last_updated_at = now(),
+      updated_at = now()
+  where id = requested_lead_id
+    and organization_id = requested_organization_id
+    and archived_at is null
+  returning access_scope into final_scope;
+
+  if not found then
+    raise exception 'CRM lead changed while it was being updated'
+      using errcode = '40001';
+  end if;
+
+  if replace_tags then
+    update public.crm_lead_tags relation
+    set archived_at = now()
+    where relation.lead_id = requested_lead_id
+      and relation.archived_at is null
+      and not (relation.tag_id = any(normalized_tag_ids));
+
+    insert into public.crm_lead_tags (lead_id, tag_id, archived_at)
+    select requested_lead_id, tag_id, null
+    from unnest(normalized_tag_ids) tag_id
+    on conflict (lead_id, tag_id) do update
+      set archived_at = null;
+  end if;
+
+  select lead.access_scope
+  into final_scope
+  from public.crm_leads lead
+  where lead.id = requested_lead_id
+    and lead.organization_id = requested_organization_id
+    and lead.archived_at is null
+  for update;
+
+  if final_scope = 'cofounders' and not actor_is_cofounder then
+    raise exception 'Only a cofounder may update a confidential CRM lead family'
+      using errcode = '42501';
+  end if;
+  if final_scope = 'cofounders' and (
+    (company_id_value is not null and exists (
+      select 1 from public.crm_companies company
+      where company.id = company_id_value
+        and company.organization_id = requested_organization_id
+        and company.access_scope <> 'cofounders'
+    ))
+    or (contact_id_value is not null and exists (
+      select 1 from public.crm_contacts contact
+      where contact.id = contact_id_value
+        and contact.organization_id = requested_organization_id
+        and contact.access_scope <> 'cofounders'
+    ))
+  ) then
+    raise exception 'Confidential CRM family propagation did not converge'
+      using errcode = '23514';
+  end if;
+
+  return jsonb_build_object(
+    'access_scope', final_scope,
+    'company_id', company_id_value,
+    'contact_id', contact_id_value,
+    'lead_id', requested_lead_id
+  );
+end;
+$$;
+
+revoke execute on function public.update_crm_lead_atomic(
+  uuid, uuid, uuid, jsonb, text, text
+) from public, anon;
+grant execute on function public.update_crm_lead_atomic(
+  uuid, uuid, uuid, jsonb, text, text
+) to authenticated, service_role;
+
 -- Replace a lead's active tag set without hard-deleting a junction row. The
 -- entire archive/revive operation is atomic, tenant checked and revalidates a
 -- possible confidentiality escalation before it can commit.

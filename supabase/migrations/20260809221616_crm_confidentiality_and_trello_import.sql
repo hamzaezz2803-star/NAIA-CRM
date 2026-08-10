@@ -597,6 +597,400 @@ begin
 end
 $triggers$;
 
+-- This migration must be safe as a release boundary on its own. Derive lead
+-- scope from the active category/status and tags now, rather than relying on a
+-- later additive migration to close an observable intermediate state.
+create or replace function private.derive_crm_lead_access_scope()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if exists (
+    select 1
+    from public.crm_categories category
+    where category.organization_id = new.organization_id
+      and category.status_key = new.status
+      and category.archived_at is null
+      and category.access_scope = 'cofounders'
+  ) or (
+    tg_op = 'UPDATE'
+    and exists (
+      select 1
+      from public.crm_lead_tags relation
+      join public.crm_tags tag on tag.id = relation.tag_id
+      where relation.lead_id = new.id
+        and relation.archived_at is null
+        and tag.organization_id = new.organization_id
+        and tag.archived_at is null
+        and tag.access_scope = 'cofounders'
+    )
+  ) then
+    new.access_scope := 'cofounders';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke execute on function private.derive_crm_lead_access_scope()
+from public, anon, authenticated, service_role;
+
+drop trigger if exists derive_crm_lead_access_scope_trigger
+on public.crm_leads;
+create trigger derive_crm_lead_access_scope_trigger
+before insert or update on public.crm_leads
+for each row execute function private.derive_crm_lead_access_scope();
+
+-- Classifier edits are durable: a category/status or tag that becomes
+-- confidential immediately escalates every active target in the same tenant.
+create or replace function private.propagate_crm_classifier_scope()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+begin
+  if new.access_scope <> 'cofounders' then
+    return new;
+  end if;
+
+  if tg_table_name = 'crm_categories' then
+    if new.archived_at is null then
+      update public.crm_leads
+      set access_scope = 'cofounders'
+      where organization_id = new.organization_id
+        and status = new.status_key
+        and archived_at is null
+        and access_scope <> 'cofounders';
+    end if;
+  elsif tg_table_name = 'crm_tags' then
+    if new.archived_at is null then
+      update public.crm_leads lead
+      set access_scope = 'cofounders'
+      from public.crm_lead_tags relation
+      where relation.tag_id = new.id
+        and relation.lead_id = lead.id
+        and relation.archived_at is null
+        and lead.organization_id = new.organization_id
+        and lead.archived_at is null
+        and lead.access_scope <> 'cofounders';
+
+      update public.crm_contacts contact
+      set access_scope = 'cofounders'
+      from public.crm_contact_tags relation
+      where relation.tag_id = new.id
+        and relation.contact_id = contact.id
+        and relation.archived_at is null
+        and contact.organization_id = new.organization_id
+        and contact.archived_at is null
+        and contact.access_scope <> 'cofounders';
+
+      update public.crm_tasks task
+      set access_scope = 'cofounders'
+      from public.crm_task_tags relation
+      where relation.tag_id = new.id
+        and relation.task_id = task.id
+        and relation.archived_at is null
+        and task.organization_id = new.organization_id
+        and task.archived_at is null
+        and task.access_scope <> 'cofounders';
+    end if;
+  else
+    raise exception 'Unsupported CRM classifier table: %', tg_table_name;
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke execute on function private.propagate_crm_classifier_scope()
+from public, anon, authenticated, service_role;
+
+drop trigger if exists propagate_crm_classifier_scope_trigger
+on public.crm_categories;
+create trigger propagate_crm_classifier_scope_trigger
+after insert or update on public.crm_categories
+for each row execute function private.propagate_crm_classifier_scope();
+
+drop trigger if exists propagate_crm_classifier_scope_trigger
+on public.crm_tags;
+create trigger propagate_crm_classifier_scope_trigger
+after insert or update on public.crm_tags
+for each row execute function private.propagate_crm_classifier_scope();
+
+-- Service-role writes bypass RLS, so relation triggers enforce active rows and
+-- tenant equality before a confidential tag can propagate.
+create or replace function private.enforce_crm_tag_relation_boundary()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  parent_organization_id uuid;
+  tag_organization_id uuid;
+begin
+  if new.archived_at is not null then
+    return new;
+  end if;
+
+  select tag.organization_id
+  into tag_organization_id
+  from public.crm_tags tag
+  where tag.id = new.tag_id
+    and tag.archived_at is null;
+  if not found then
+    raise exception 'CRM tag relation references a missing or archived tag'
+      using errcode = '23514';
+  end if;
+
+  if tg_table_name = 'crm_lead_tags' then
+    select lead.organization_id into parent_organization_id
+    from public.crm_leads lead
+    where lead.id = new.lead_id and lead.archived_at is null;
+  elsif tg_table_name = 'crm_contact_tags' then
+    select contact.organization_id into parent_organization_id
+    from public.crm_contacts contact
+    where contact.id = new.contact_id and contact.archived_at is null;
+  elsif tg_table_name = 'crm_task_tags' then
+    select task.organization_id into parent_organization_id
+    from public.crm_tasks task
+    where task.id = new.task_id and task.archived_at is null;
+  else
+    raise exception 'Unsupported CRM tag relation table: %', tg_table_name;
+  end if;
+
+  if not found then
+    raise exception 'CRM tag relation references a missing or archived target'
+      using errcode = '23514';
+  end if;
+  if parent_organization_id <> tag_organization_id then
+    raise exception 'CRM tag relation crosses organizations'
+      using errcode = '23514';
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke execute on function private.enforce_crm_tag_relation_boundary()
+from public, anon, authenticated, service_role;
+
+do $relation_boundary_triggers$
+declare
+  relation_table text;
+begin
+  foreach relation_table in array array[
+    'crm_lead_tags', 'crm_contact_tags', 'crm_task_tags'
+  ]
+  loop
+    execute format(
+      'drop trigger if exists enforce_crm_tag_relation_boundary_trigger on public.%I',
+      relation_table
+    );
+    execute format(
+      'create trigger enforce_crm_tag_relation_boundary_trigger before insert or update on public.%I for each row execute function private.enforce_crm_tag_relation_boundary()',
+      relation_table
+    );
+  end loop;
+end
+$relation_boundary_triggers$;
+
+create or replace function private.propagate_crm_tag_relation_scope()
+returns trigger
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  tag_scope text;
+begin
+  if new.archived_at is not null then
+    return new;
+  end if;
+
+  select tag.access_scope into tag_scope
+  from public.crm_tags tag
+  where tag.id = new.tag_id and tag.archived_at is null;
+
+  if tag_scope <> 'cofounders' then
+    return new;
+  end if;
+
+  if tg_table_name = 'crm_lead_tags' then
+    update public.crm_leads
+    set access_scope = 'cofounders'
+    where id = new.lead_id
+      and archived_at is null
+      and access_scope <> 'cofounders';
+  elsif tg_table_name = 'crm_contact_tags' then
+    update public.crm_contacts
+    set access_scope = 'cofounders'
+    where id = new.contact_id
+      and archived_at is null
+      and access_scope <> 'cofounders';
+  elsif tg_table_name = 'crm_task_tags' then
+    update public.crm_tasks
+    set access_scope = 'cofounders'
+    where id = new.task_id
+      and archived_at is null
+      and access_scope <> 'cofounders';
+  else
+    raise exception 'Unsupported CRM tag relation table: %', tg_table_name;
+  end if;
+
+  return new;
+end;
+$$;
+
+revoke execute on function private.propagate_crm_tag_relation_scope()
+from public, anon, authenticated, service_role;
+
+do $relation_scope_triggers$
+declare
+  relation_table text;
+begin
+  foreach relation_table in array array[
+    'crm_lead_tags', 'crm_contact_tags', 'crm_task_tags'
+  ]
+  loop
+    execute format(
+      'drop trigger if exists propagate_crm_tag_relation_scope_trigger on public.%I',
+      relation_table
+    );
+    execute format(
+      'create trigger propagate_crm_tag_relation_scope_trigger after insert or update of tag_id, archived_at on public.%I for each row execute function private.propagate_crm_tag_relation_scope()',
+      relation_table
+    );
+  end loop;
+end
+$relation_scope_triggers$;
+
+-- Categories and tags are classified after the first lead backfill above.
+-- Close that ordering gap before this migration is allowed to commit.
+update public.crm_leads lead
+set access_scope = 'cofounders'
+where lead.archived_at is null
+  and lead.access_scope <> 'cofounders'
+  and (
+    exists (
+      select 1
+      from public.crm_categories category
+      where category.organization_id = lead.organization_id
+        and category.status_key = lead.status
+        and category.archived_at is null
+        and category.access_scope = 'cofounders'
+    )
+    or exists (
+      select 1
+      from public.crm_lead_tags relation
+      join public.crm_tags tag on tag.id = relation.tag_id
+      where relation.lead_id = lead.id
+        and relation.archived_at is null
+        and tag.organization_id = lead.organization_id
+        and tag.archived_at is null
+      and tag.access_scope = 'cofounders'
+    )
+  );
+
+update public.crm_contacts contact
+set access_scope = 'cofounders'
+where contact.archived_at is null
+  and contact.access_scope <> 'cofounders'
+  and exists (
+    select 1
+    from public.crm_contact_tags relation
+    join public.crm_tags tag on tag.id = relation.tag_id
+    where relation.contact_id = contact.id
+      and relation.archived_at is null
+      and tag.organization_id = contact.organization_id
+      and tag.archived_at is null
+      and tag.access_scope = 'cofounders'
+  );
+
+update public.crm_tasks task
+set access_scope = 'cofounders'
+where task.archived_at is null
+  and task.access_scope <> 'cofounders'
+  and exists (
+    select 1
+    from public.crm_task_tags relation
+    join public.crm_tags tag on tag.id = relation.tag_id
+    where relation.task_id = task.id
+      and relation.archived_at is null
+      and tag.organization_id = task.organization_id
+      and tag.archived_at is null
+      and tag.access_scope = 'cofounders'
+  );
+
+do $classifier_preflight$
+begin
+  if exists (
+    select 1
+    from public.crm_leads lead
+    where lead.archived_at is null
+      and lead.access_scope <> 'cofounders'
+      and (
+        exists (
+          select 1
+          from public.crm_categories category
+          where category.organization_id = lead.organization_id
+            and category.status_key = lead.status
+            and category.archived_at is null
+            and category.access_scope = 'cofounders'
+        )
+        or exists (
+          select 1
+          from public.crm_lead_tags relation
+          join public.crm_tags tag on tag.id = relation.tag_id
+          where relation.lead_id = lead.id
+            and relation.archived_at is null
+            and tag.organization_id = lead.organization_id
+            and tag.archived_at is null
+            and tag.access_scope = 'cofounders'
+        )
+      )
+  ) then
+    raise exception 'CRM confidentiality preflight: a classifier-derived lead remains organization-visible';
+  end if;
+  if exists (
+    select 1
+    from public.crm_contacts contact
+    where contact.archived_at is null
+      and contact.access_scope <> 'cofounders'
+      and exists (
+        select 1
+        from public.crm_contact_tags relation
+        join public.crm_tags tag on tag.id = relation.tag_id
+        where relation.contact_id = contact.id
+          and relation.archived_at is null
+          and tag.organization_id = contact.organization_id
+          and tag.archived_at is null
+          and tag.access_scope = 'cofounders'
+      )
+  ) or exists (
+    select 1
+    from public.crm_tasks task
+    where task.archived_at is null
+      and task.access_scope <> 'cofounders'
+      and exists (
+        select 1
+        from public.crm_task_tags relation
+        join public.crm_tags tag on tag.id = relation.tag_id
+        where relation.task_id = task.id
+          and relation.archived_at is null
+          and tag.organization_id = task.organization_id
+          and tag.archived_at is null
+          and tag.access_scope = 'cofounders'
+      )
+  ) then
+    raise exception 'CRM confidentiality preflight: a tag-derived contact/task remains organization-visible';
+  end if;
+end
+$classifier_preflight$;
+
 create index if not exists crm_companies_scope_active_idx
   on public.crm_companies (organization_id, access_scope) where archived_at is null;
 create index if not exists crm_contacts_scope_active_idx

@@ -1273,17 +1273,9 @@ export function CrmPipelineClient({
       "Creation du dossier client sur Google Drive...",
     );
 
-    // Use companyName from lead directly (populated by fetchLeadsForTodoAction / fetchLeadsAction)
-    const companyName =
-      lead.companyName ??
-      (lead.notes ?? "")
-        .split("\n")
-        .find((l) => l.startsWith("Entreprise:"))
-        ?.replace("Entreprise:", "")
-        .trim() ??
-      lead.topic;
-
-    const res = await createGoogleDriveFolderAction(lead.id, companyName);
+    // The server resolves the canonical company through the authorized lead;
+    // no browser-provided label is trusted for provider-side folder creation.
+    const res = await createGoogleDriveFolderAction(lead.id);
 
     if (res.success && res.folderLink) {
       setDriveLink(res.folderLink);
