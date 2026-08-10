@@ -33,9 +33,11 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
 }));
 
 import {
+  checkGoogleAuthAction,
   createGoogleDriveFolderAction,
   createLeadAction,
   fetchCompanyDetailAction,
+  syncLeadToGoogleCalendarAction,
   updateLeadAction,
   updateLeadStatusAction,
   type CrmActionContext,
@@ -230,6 +232,108 @@ function respondForLead({
     return { data: null, error: null };
   };
 }
+
+describe("CRM Google connection scope quarantine", () => {
+  const broadDriveScope = "https://www.googleapis.com/auth/drive.readonly";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.afterCallbacks.length = 0;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("reports a connected Google account as unavailable when it retains a broad Drive scope", async () => {
+    const queries: QueryState[] = [];
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        queries.push({ ...state });
+        if (state.table === "organization_memberships") {
+          return { data: { organization_id: "org-1" }, error: null };
+        }
+        if (state.table === "integration_connections") {
+          return {
+            data: { scopes: [broadDriveScope], status: "connected" },
+            error: null,
+          };
+        }
+        return { data: null, error: null };
+      }),
+    );
+
+    await expect(checkGoogleAuthAction()).resolves.toBe(false);
+    expect(queries).toContainEqual(
+      expect.objectContaining({
+        columns: "status,scopes",
+        op: "select",
+        table: "integration_connections",
+      }),
+    );
+  });
+
+  it("does not read credentials or call Google when Calendar sync sees a broad Drive scope", async () => {
+    const credentialRead = vi.fn(() =>
+      JSON.stringify({
+        access_token: "legacy-access-token",
+        expiry_date: 0,
+        refresh_token: "legacy-refresh-token",
+      }),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("Google must remain unreachable"));
+    vi.stubEnv("GOOGLE_CLIENT_ID", "client-id");
+    vi.stubEnv("GOOGLE_CLIENT_SECRET", "client-secret");
+
+    const connection = {
+      id: "google-connection-1",
+      scopes: [broadDriveScope],
+      status: "connected",
+    } as Record<string, unknown>;
+    Object.defineProperty(connection, "encrypted_token_reference", {
+      enumerable: true,
+      get: credentialRead,
+    });
+
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        if (state.table === "organization_memberships") {
+          return { data: { organization_id: "org-1" }, error: null };
+        }
+        if (state.table === "crm_leads" && state.op === "select") {
+          return {
+            data: {
+              access_scope: "organization",
+              id: "lead-1",
+              lead_date: "2026-08-11T09:00:00.000Z",
+              next_action_date: null,
+              notes: null,
+              organization_id: "org-1",
+              topic: "Client meeting",
+            },
+            error: null,
+          };
+        }
+        if (state.table === "integration_connections") {
+          return { data: connection, error: null };
+        }
+        return { data: null, error: null };
+      }),
+    );
+
+    await expect(syncLeadToGoogleCalendarAction("lead-1")).resolves.toEqual({
+      error:
+        "Session Google expirée ou invalide. Veuillez déconnecter et reconnecter votre compte Google.",
+      success: false,
+    });
+    expect(credentialRead).not.toHaveBeenCalled();
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    fetchSpy.mockRestore();
+  });
+});
 
 describe("CRM lead status Drive folder creation", () => {
   beforeEach(() => {
