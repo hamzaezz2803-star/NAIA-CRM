@@ -11,6 +11,7 @@ import {
   ensureClientDriveFolder,
   isDriveServiceConfigured,
 } from "@/platform/integrations/google-drive-service";
+import { hasForbiddenGoogleDriveScope } from "@/platform/integrations/google-workspace-scopes";
 import { createSystemNotification } from "@/platform/notifications/actions";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -1954,7 +1955,7 @@ export async function checkGoogleAuthAction(): Promise<boolean> {
 
   const { data, error } = await supabase
     .from("integration_connections")
-    .select("status")
+    .select("status,scopes")
     .eq("organization_id", orgId)
     .eq("provider", "google")
     .eq("connected_by_profile_id", user.id)
@@ -1963,7 +1964,12 @@ export async function checkGoogleAuthAction(): Promise<boolean> {
 
   if (error || !data) return false;
 
-  return data.status === "connected";
+  return (
+    data.status === "connected" &&
+    !hasForbiddenGoogleDriveScope(
+      Array.isArray(data.scopes) ? (data.scopes as string[]) : [],
+    )
+  );
 }
 
 export async function disconnectGoogleAuthAction(): Promise<{
@@ -2193,8 +2199,14 @@ async function createLeadDriveFolderIfConfigured(
 async function getOrRefreshGoogleToken(
   supabase: SupabaseClient,
   orgId: string,
-  connection: { id: string; encrypted_token_reference: string | null },
+  connection: {
+    encrypted_token_reference: string | null;
+    id: string;
+    scopes?: string[] | null;
+  },
 ): Promise<string | null> {
+  if (hasForbiddenGoogleDriveScope(connection.scopes)) return null;
+
   const tokenData = JSON.parse(connection.encrypted_token_reference || "{}");
   const now = Date.now();
 

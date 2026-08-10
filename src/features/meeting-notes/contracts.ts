@@ -288,6 +288,7 @@ export type MeetingIntelligenceState = {
   error?: string;
   geminiArtifacts?: MeetingExternalArtifactSummary[];
   geminiDocumentAccess?: boolean;
+  googleWorkspaceReconnectRequired?: boolean;
   meetings: MeetingWorkspace[];
   organizationId?: string;
 };

@@ -41,6 +41,45 @@ describe("Google Calendar idempotency", () => {
 });
 
 describe("Gemini meeting-note mailbox isolation", () => {
+  it.each([
+    "https://www.googleapis.com/auth/drive",
+    "https://www.googleapis.com/auth/drive.readonly",
+    "https://www.googleapis.com/auth/drive.file",
+  ])("refuses a connected legacy credential with scope %s", async (scope) => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const connection = {
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "legacy-test-token",
+        expiry_date: Date.now() + 3_600_000,
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-legacy",
+      organization_id: "organization-1",
+      scopes: ["https://www.googleapis.com/auth/gmail.readonly", scope],
+    };
+    const query: Record<string, unknown> = {
+      maybeSingle: vi.fn().mockResolvedValue({ data: connection, error: null }),
+    };
+    for (const method of ["eq", "limit", "order", "select"]) {
+      query[method] = vi.fn(() => query);
+    }
+    const supabase = { from: vi.fn(() => query) };
+
+    await expect(
+      listGeminiMeetingNoteMessages(
+        {},
+        {
+          organizationId: "organization-1",
+          profileId: "profile-1",
+          supabase: supabase as never,
+        },
+      ),
+    ).rejects.toThrow(/must be reconnected.*too broad/iu);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("reads only exact Google senders and exports only the linked Google Doc", async () => {
     const body = [
       'Notes de "Projet Atlas"',

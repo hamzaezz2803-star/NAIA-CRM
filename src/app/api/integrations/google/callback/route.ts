@@ -3,7 +3,10 @@ import { NextResponse, type NextRequest } from "next/server";
 import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
 import { getAppBaseUrl } from "@/platform/auth/config";
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-import { GOOGLE_MEETING_NOTE_SCOPE } from "@/platform/integrations/google-workspace-scopes";
+import {
+  GOOGLE_MEETING_NOTE_SCOPE,
+  hasForbiddenGoogleDriveScope,
+} from "@/platform/integrations/google-workspace-scopes";
 
 const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
 const GOOGLE_OAUTH_USER_INTENT = "user";
@@ -133,11 +136,8 @@ export async function GET(request: NextRequest) {
         status: 400,
       });
     }
-    const hasUnexpectedDriveScope = candidateScopes.some(
-      (scope) =>
-        scope.startsWith("https://www.googleapis.com/auth/drive") &&
-        scope !== GOOGLE_MEETING_NOTE_SCOPE,
-    );
+    const hasUnexpectedDriveScope =
+      hasForbiddenGoogleDriveScope(candidateScopes);
     if (hasUnexpectedDriveScope) {
       return new NextResponse("Google returned an unauthorized Drive scope", {
         status: 400,
@@ -156,11 +156,8 @@ export async function GET(request: NextRequest) {
         status: 403,
       });
     }
-    const existingCredentialMayBeBroad = existingScopes.some(
-      (scope) =>
-        scope.startsWith("https://www.googleapis.com/auth/drive") &&
-        scope !== GOOGLE_MEETING_NOTE_SCOPE,
-    );
+    const existingCredentialMayBeBroad =
+      hasForbiddenGoogleDriveScope(existingScopes);
     let refreshToken = tokens.refresh_token;
     if (!refreshToken && !existingCredentialMayBeBroad) {
       try {

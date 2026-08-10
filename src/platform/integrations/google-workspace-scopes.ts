@@ -12,6 +12,32 @@ export const GOOGLE_USER_SCOPES = [
 export const GOOGLE_MEETING_NOTE_SCOPE =
   "https://www.googleapis.com/auth/drive.meet.readonly";
 
+const GOOGLE_DRIVE_SCOPE_PREFIX = "https://www.googleapis.com/auth/drive";
+
+/**
+ * Legacy user connections may predate the service-account boundary and carry
+ * broad Drive grants. Those credentials must be reconnected instead of being
+ * loaded: only the Meet-generated document scope is accepted client-side.
+ */
+export function hasForbiddenGoogleDriveScope(
+  scopes: readonly string[] | null | undefined,
+) {
+  return (scopes ?? []).some(
+    (scope) =>
+      scope.startsWith(GOOGLE_DRIVE_SCOPE_PREFIX) &&
+      scope !== GOOGLE_MEETING_NOTE_SCOPE,
+  );
+}
+
+export function canReadGoogleMeetingDocuments(
+  scopes: readonly string[] | null | undefined,
+) {
+  return (
+    !hasForbiddenGoogleDriveScope(scopes) &&
+    (scopes ?? []).includes(GOOGLE_MEETING_NOTE_SCOPE)
+  );
+}
+
 export const GOOGLE_MEETING_NOTE_SCOPES = [
   ...GOOGLE_USER_SCOPES,
   GOOGLE_MEETING_NOTE_SCOPE,

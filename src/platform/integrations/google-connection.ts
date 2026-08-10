@@ -4,7 +4,10 @@ import type { SupabaseClient, User } from "@supabase/supabase-js";
 
 import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
 
-import { GOOGLE_MEETING_NOTE_SCOPE } from "./google-workspace-scopes";
+import {
+  GOOGLE_MEETING_NOTE_SCOPE,
+  hasForbiddenGoogleDriveScope,
+} from "./google-workspace-scopes";
 
 // Persists the Google provider tokens returned by Supabase Auth at sign-in as
 // the user's own integration connection. Supabase does not store Google
@@ -53,11 +56,10 @@ export async function saveGoogleConnectionFromLogin({
     membership.role === "owner" &&
     canUseMeetingNotesEmail(user.email) &&
     existingScopes.includes(GOOGLE_MEETING_NOTE_SCOPE);
-  const hasForbiddenCurrentGrant = grantedScopes.some(
-    (scope) =>
-      scope.startsWith("https://www.googleapis.com/auth/drive") &&
-      (scope !== GOOGLE_MEETING_NOTE_SCOPE || !mayKeepExistingMeetGrant),
-  );
+  const hasForbiddenCurrentGrant =
+    hasForbiddenGoogleDriveScope(grantedScopes) ||
+    (grantedScopes.includes(GOOGLE_MEETING_NOTE_SCOPE) &&
+      !mayKeepExistingMeetGrant);
   if (hasForbiddenCurrentGrant) {
     return {
       error: "Google returned an unauthorized Drive scope.",
@@ -65,11 +67,8 @@ export async function saveGoogleConnectionFromLogin({
     };
   }
 
-  const existingCredentialMayBeBroad = existingScopes.some(
-    (scope) =>
-      scope.startsWith("https://www.googleapis.com/auth/drive") &&
-      scope !== GOOGLE_MEETING_NOTE_SCOPE,
-  );
+  const existingCredentialMayBeBroad =
+    hasForbiddenGoogleDriveScope(existingScopes);
   // Google only returns a refresh token on explicit consent. Keep an older
   // one only when its stored scope attestation is already narrow; otherwise
   // persisting it could re-mint a broader access token after expiry.

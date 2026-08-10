@@ -14,6 +14,7 @@ vi.mock("./access", () => ({
 }));
 
 import {
+  fetchMeetingIntelligenceAction,
   queueMeetingProcessingAction,
   registerMeetingSupportAction,
   saveMeetingCaptureDraftAction,
@@ -116,6 +117,43 @@ describe("one-step meeting capture validation", () => {
   });
 });
 
+describe("Meeting Intelligence Google scope state", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("surfaces an explicit reconnect state for a legacy broad Drive grant", async () => {
+    const meetings = makeThenableQuery({ data: [], error: null });
+    const artifacts = makeThenableQuery({ data: [], error: null });
+    const connection = makeThenableQuery({
+      data: {
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+        ],
+      },
+      error: null,
+    });
+    const supabase = {
+      from: vi.fn((table: string) => {
+        if (table === "meetings") return meetings;
+        if (table === "meeting_external_artifacts") return artifacts;
+        if (table === "integration_connections") return connection;
+        throw new Error(`Unexpected table ${table}`);
+      }),
+    };
+    grantAccess(supabase);
+
+    const state = await fetchMeetingIntelligenceAction();
+
+    expect(state).toMatchObject({
+      configured: true,
+      geminiDocumentAccess: false,
+      googleWorkspaceReconnectRequired: true,
+    });
+  });
+});
+
 function grantAccess(supabase: unknown) {
   mocks.requireMeetingNotesAccess.mockResolvedValue({
     organizationId,
@@ -181,5 +219,16 @@ function makeQuery(result: { data: unknown; error: unknown }) {
   }
   query.maybeSingle = vi.fn().mockResolvedValue(result);
   query.single = vi.fn().mockResolvedValue(result);
+  return query;
+}
+
+function makeThenableQuery(result: { data: unknown; error: unknown }) {
+  const query: Record<string, unknown> = {};
+  for (const method of ["eq", "limit", "order", "select"]) {
+    query[method] = vi.fn(() => query);
+  }
+  query.maybeSingle = vi.fn().mockResolvedValue(result);
+  query.then = (resolve: (value: typeof result) => unknown) =>
+    Promise.resolve(resolve(result));
   return query;
 }

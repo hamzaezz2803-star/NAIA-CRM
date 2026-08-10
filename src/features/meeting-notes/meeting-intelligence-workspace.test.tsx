@@ -515,6 +515,31 @@ describe("MeetingIntelligenceWorkspace", () => {
     ).toBeInTheDocument();
   });
 
+  it("blocks a legacy broad Drive connection and routes to explicit review", () => {
+    render(
+      <MeetingIntelligenceWorkspace
+        initialState={{
+          ...baseState,
+          geminiDocumentAccess: false,
+          googleWorkspaceReconnectRequired: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Connexion Google à revoir")).toBeInTheDocument();
+    expect(
+      screen.getByText(/ancienne autorisation Drive trop large a été bloquée/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Revoir la connexion Google" }),
+    ).toHaveAttribute("href", "/integrations");
+    expect(
+      screen.queryByRole("button", {
+        name: "Autoriser les documents Meet",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
   it("uses in-app navigation when the browser blocks the Google popup", () => {
     vi.spyOn(window, "open").mockReturnValue(null);
     render(<MeetingIntelligenceWorkspace initialState={baseState} />);

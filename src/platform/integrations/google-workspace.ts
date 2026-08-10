@@ -5,6 +5,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 
+import {
+  canReadGoogleMeetingDocuments,
+  hasForbiddenGoogleDriveScope,
+} from "./google-workspace-scopes";
+
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 
 // Optional execution context for trusted server-side bridges (for example the
@@ -511,12 +516,8 @@ export async function listGeminiMeetingNoteMessages(
   const accessToken = await getGoogleAccessToken(connection, context?.supabase);
   const boundedMaxResults = Math.max(1, Math.min(maxResults, 200));
   const boundedDays = Math.max(1, Math.min(newerThanDays, 365));
-  const canReadLinkedDocuments = (connection.scopes ?? []).some((scope) =>
-    [
-      "https://www.googleapis.com/auth/drive",
-      "https://www.googleapis.com/auth/drive.readonly",
-      "https://www.googleapis.com/auth/drive.meet.readonly",
-    ].includes(scope),
+  const canReadLinkedDocuments = canReadGoogleMeetingDocuments(
+    connection.scopes,
   );
   const messages: Array<{ id: string; threadId?: string }> = [];
   let nextPageToken = pageToken?.trim() || undefined;
@@ -848,7 +849,14 @@ async function getGoogleWorkspaceConnection(
     throw new Error("Google Workspace is not connected for this user.");
   }
 
-  return data as GoogleConnectionRow;
+  const connection = data as GoogleConnectionRow;
+  if (hasForbiddenGoogleDriveScope(connection.scopes)) {
+    throw new Error(
+      "Google Workspace must be reconnected because its legacy Drive permission is too broad.",
+    );
+  }
+
+  return connection;
 }
 
 async function getGoogleAccessToken(

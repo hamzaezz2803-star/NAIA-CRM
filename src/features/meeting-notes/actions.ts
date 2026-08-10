@@ -14,7 +14,10 @@ import {
   createGoogleCalendarReminder,
   listGeminiMeetingNoteMessages,
 } from "@/platform/integrations/google-workspace";
-import { GOOGLE_MEETING_NOTE_SCOPE } from "@/platform/integrations/google-workspace-scopes";
+import {
+  canReadGoogleMeetingDocuments,
+  hasForbiddenGoogleDriveScope,
+} from "@/platform/integrations/google-workspace-scopes";
 
 import { requireMeetingNotesAccess } from "./access";
 import {
@@ -171,13 +174,9 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
     const googleScopes = Array.isArray(googleConnection?.scopes)
       ? (googleConnection.scopes as string[])
       : [];
-    const geminiDocumentAccess = googleScopes.some((scope) =>
-      [
-        "https://www.googleapis.com/auth/drive",
-        "https://www.googleapis.com/auth/drive.readonly",
-        GOOGLE_MEETING_NOTE_SCOPE,
-      ].includes(scope),
-    );
+    const googleWorkspaceReconnectRequired =
+      hasForbiddenGoogleDriveScope(googleScopes);
+    const geminiDocumentAccess = canReadGoogleMeetingDocuments(googleScopes);
 
     const latestJobByMeeting = new Map<string, MeetingJobSummary>();
     for (const row of jobsResult.data ?? []) {
@@ -269,6 +268,7 @@ export async function fetchMeetingIntelligenceAction(): Promise<MeetingIntellige
       configured: true,
       geminiDocumentAccess,
       geminiArtifacts,
+      googleWorkspaceReconnectRequired,
       meetings: shaped,
       organizationId,
     };

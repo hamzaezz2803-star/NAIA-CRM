@@ -7,7 +7,10 @@ import {
   type IntegrationHealth,
   plannedIntegrationProviders,
 } from "./contracts";
-import { GOOGLE_USER_REQUIRED_SCOPES } from "./google-workspace-scopes";
+import {
+  GOOGLE_USER_REQUIRED_SCOPES,
+  hasForbiddenGoogleDriveScope,
+} from "./google-workspace-scopes";
 
 type IntegrationConnectionRow = {
   encrypted_token_reference: string | null;
@@ -32,6 +35,8 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       provider.provider === "google"
         ? GOOGLE_USER_REQUIRED_SCOPES.filter((scope) => !scopes.includes(scope))
         : [];
+    const legacyDrivePermission =
+      provider.provider === "google" && hasForbiddenGoogleDriveScope(scopes);
 
     if (!provider.isImplemented) {
       return {
@@ -54,6 +59,23 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
 
     if (connection?.status === "connected") {
       const hasTokenReference = Boolean(connection.encrypted_token_reference);
+
+      if (legacyDrivePermission) {
+        return {
+          capabilities: [...provider.capabilities],
+          detail:
+            "Cette connexion utilise une ancienne autorisation Drive trop large. Reconnecte Google Workspace avec les autorisations minimales.",
+          envVars: [...provider.envVars],
+          externalAccountLabel: connection.external_account_label ?? undefined,
+          isImplemented: true,
+          label: provider.label,
+          missingEnvVars,
+          plannedScopes: [...provider.plannedScopes],
+          provider: provider.provider,
+          scopes,
+          status: "needs-review",
+        };
+      }
 
       if (
         missingEnvVars.length === 0 &&

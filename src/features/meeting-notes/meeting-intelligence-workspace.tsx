@@ -2,6 +2,7 @@
 
 import {
   AlertCircle,
+  AlertTriangle,
   Bell,
   BookOpen,
   CalendarDays,
@@ -32,7 +33,7 @@ import {
   useState,
 } from "react";
 
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { createBrowserSupabaseClient } from "@/platform/auth/supabase-client";
 import type { GoogleCalendarEventSummary } from "@/platform/integrations/google-workspace";
 
@@ -1202,6 +1203,41 @@ export function MeetingIntelligenceWorkspace({
               </p>
             </div>
           </div>
+        ) : workspaceState.googleWorkspaceReconnectRequired ? (
+          <>
+            <div className="flex items-start gap-2" role="alert">
+              <AlertTriangle
+                className="mt-0.5 h-4 w-4 shrink-0 text-amber-600 dark:text-amber-300"
+                aria-hidden="true"
+              />
+              <div>
+                <p
+                  className="text-sm font-medium"
+                  style={{ color: "var(--maison-text-primary)" }}
+                >
+                  Connexion Google à revoir
+                </p>
+                <p
+                  className="mt-0.5 text-xs"
+                  style={{ color: "var(--maison-text-muted)" }}
+                >
+                  Une ancienne autorisation Drive trop large a été bloquée.
+                  Reconnectez Google depuis Intégrations avec les droits
+                  minimaux.
+                </p>
+              </div>
+            </div>
+            <a
+              className={buttonVariants({
+                className: "h-10 shrink-0",
+                variant: "outline",
+              })}
+              href="/integrations"
+            >
+              <ExternalLink className="h-4 w-4" aria-hidden="true" />
+              Revoir la connexion Google
+            </a>
+          </>
         ) : (
           <>
             <div className="flex items-start gap-2">
