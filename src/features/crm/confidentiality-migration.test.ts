@@ -10,6 +10,19 @@ const migration = readFileSync(
   "utf8",
 );
 
+const releaseMigration = readFileSync(
+  resolve(
+    process.cwd(),
+    "supabase/migrations/20260810000025_crm_confidentiality_release_boundaries.sql",
+  ),
+  "utf8",
+);
+
+const crmActions = readFileSync(
+  resolve(process.cwd(), "src/features/crm/actions.ts"),
+  "utf8",
+);
+
 describe("CRM confidentiality and import migration contract", () => {
   it("uses auth.users exact cofounders and a private helper schema", () => {
     expect(migration).toContain("create schema if not exists private");
@@ -69,6 +82,68 @@ describe("CRM confidentiality and import migration contract", () => {
     }
     expect(migration).toContain("old.access_scope = 'cofounders'");
     expect(migration).toContain("new.access_scope := 'cofounders'");
+    expect(releaseMigration).toContain("new.topic, new.status, new.source");
+  });
+
+  it("derives category/tag scope and propagates the full lead family durably", () => {
+    expect(migration).toContain(
+      "Escalating a parent also escalates every existing descendant",
+    );
+    expect(releaseMigration).toContain("private.derive_crm_lead_access_scope");
+    expect(releaseMigration).toContain("category.status_key = new.status");
+    expect(releaseMigration).toContain(
+      "private.propagate_crm_tag_relation_scope",
+    );
+    expect(releaseMigration).toContain("private.propagate_crm_parent_scope");
+    expect(releaseMigration).toContain(
+      "private.propagate_crm_lead_family_scope",
+    );
+    expect(releaseMigration).toContain(
+      "private.enforce_crm_tag_relation_boundary",
+    );
+    expect(releaseMigration).toContain(
+      "private.enforce_crm_confidential_assignee",
+    );
+    expect(releaseMigration).toContain("private.enforce_crm_lead_child_scope");
+    expect(releaseMigration).toContain(
+      "private.crm_text_requires_cofounder(note.content)",
+    );
+    expect(releaseMigration).toContain(
+      "private.crm_text_requires_cofounder(follow_up.comment)",
+    );
+    expect(releaseMigration).toContain(
+      "CRM assignee must belong to the record organization",
+    );
+    expect(releaseMigration).toContain("old.access_scope = 'cofounders'");
+  });
+
+  it("creates lead families atomically and revalidates bridge execution", () => {
+    expect(releaseMigration).toContain("public.create_crm_lead_atomic");
+    expect(releaseMigration).toContain(
+      "Only a cofounder may create a confidential CRM lead family",
+    );
+    expect(releaseMigration).toContain("requested_tag_names text[]");
+    expect(releaseMigration).toContain("public.claim_crm_bridge_action");
+    expect(releaseMigration).toContain(
+      "public.execute_crm_bridge_lead_status_action",
+    );
+    expect(releaseMigration).toContain("lead.archived_at is null");
+    expect(releaseMigration).toContain("actor_profile_id");
+    expect(releaseMigration).toContain("for update of membership, user_record");
+    expect(releaseMigration).toContain("set search_path = ''");
+    expect(releaseMigration).toContain("public.replace_crm_lead_tags_atomic");
+    expect(releaseMigration).toContain("public.claim_naia_web_action");
+    expect(releaseMigration).not.toMatch(/delete\s+from\s+public\.crm_/i);
+  });
+
+  it("keeps confidential provider data local and preserves legacy attendees", () => {
+    const calendarSync = crmActions.slice(
+      crmActions.indexOf("async function syncLeadToGoogleCalendar"),
+    );
+    expect(calendarSync).toContain("allowsCrmProviderSideEffects");
+    expect(calendarSync).toContain('method: "PATCH"');
+    expect(calendarSync).toContain("sendUpdates=none");
+    expect(calendarSync).not.toContain("attendees:");
   });
 
   it("binds every ledger child to the same organization as its run", () => {

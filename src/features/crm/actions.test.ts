@@ -72,8 +72,9 @@ describe("fetchCompanyDetailAction dummy fallback", () => {
 
 type QueryState = {
   table: string;
-  op: "delete" | "insert" | "select" | "update";
+  op: "delete" | "insert" | "rpc" | "select" | "update";
   columns?: string;
+  functionName?: string;
   payload?: unknown;
 };
 
@@ -83,6 +84,7 @@ type FakeQueryBuilder = {
   delete: () => FakeQueryBuilder;
   eq: () => FakeQueryBuilder;
   insert: (payload: unknown) => FakeQueryBuilder;
+  is: () => FakeQueryBuilder;
   limit: () => FakeQueryBuilder;
   maybeSingle: () => Promise<unknown>;
   order: () => FakeQueryBuilder;
@@ -126,6 +128,9 @@ function createFakeSupabase(respond: QueryResponder) {
           state.payload = payload;
           return builder;
         },
+        is() {
+          return builder;
+        },
         limit() {
           return builder;
         },
@@ -152,16 +157,28 @@ function createFakeSupabase(respond: QueryResponder) {
       };
       return builder;
     },
+    rpc(functionName: string, payload: unknown) {
+      return Promise.resolve(
+        respond({
+          functionName,
+          op: "rpc",
+          payload,
+          table: "rpc",
+        }),
+      );
+    },
   };
 }
 
 function respondForLead({
   companyName,
+  accessScope = "organization",
   driveFolderUrl = null,
   previousStatus = "contacted",
   onUpdate,
 }: {
   companyName: string | null;
+  accessScope?: "cofounders" | "organization";
   driveFolderUrl?: string | null;
   previousStatus?: string;
   onUpdate?: (state: QueryState) => void;
@@ -181,6 +198,7 @@ function respondForLead({
       }
       return {
         data: {
+          access_scope: accessScope,
           company: companyName ? { name: companyName } : null,
           company_id: companyName ? "company-1" : null,
           drive_folder_url: driveFolderUrl,
@@ -248,6 +266,23 @@ describe("CRM lead status Drive folder creation", () => {
     );
 
     const result = await updateLeadStatusAction("lead-1", "contacted");
+    await flushAfterCallbacks();
+
+    expect(result).toEqual({ success: true });
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+  });
+
+  it("never creates a Drive folder for a confidential lead", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(
+        respondForLead({
+          accessScope: "cofounders",
+          companyName: "Confidential Candidate",
+        }),
+      ),
+    );
+
+    const result = await updateLeadStatusAction("lead-1", "meeting-booked");
     await flushAfterCallbacks();
 
     expect(result).toEqual({ success: true });
@@ -349,6 +384,43 @@ describe("CRM lead status Drive folder creation", () => {
     expect(mocks.afterCallbacks).toHaveLength(0);
     expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
   });
+
+  it("replaces tags atomically without deleting junction rows", async () => {
+    const terminalQueries: QueryState[] = [];
+    const fallback = respondForLead({ companyName: "Total Energies" });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        terminalQueries.push({ ...state });
+        if (state.op === "rpc") {
+          return { data: { active_tag_count: 2 }, error: null };
+        }
+        return fallback(state);
+      }),
+    );
+
+    const result = await updateLeadAction("lead-1", {
+      tagIds: ["tag-a", "tag-b"],
+    });
+
+    expect(result.success).toBe(true);
+    expect(terminalQueries).toContainEqual(
+      expect.objectContaining({
+        functionName: "replace_crm_lead_tags_atomic",
+        op: "rpc",
+        payload: {
+          requested_actor_profile_id: "user-1",
+          requested_lead_id: "lead-1",
+          requested_organization_id: "org-1",
+          requested_tag_ids: ["tag-a", "tag-b"],
+        },
+      }),
+    );
+    expect(
+      terminalQueries.some(
+        (query) => query.table === "crm_lead_tags" && query.op === "delete",
+      ),
+    ).toBe(false);
+  });
 });
 
 describe("createLeadAction contact enrichment", () => {
@@ -357,31 +429,28 @@ describe("createLeadAction contact enrichment", () => {
     mocks.afterCallbacks.length = 0;
   });
 
-  it("fills only missing fields on an existing contact", async () => {
-    const contactUpdates: Array<Record<string, unknown>> = [];
+  it("delegates company, contact, lead and tag writes to one atomic RPC", async () => {
+    const atomicCalls: QueryState[] = [];
     const client = createFakeSupabase((state) => {
-      if (state.table === "crm_companies" && state.op === "select") {
-        return { data: { id: "company-winxo" }, error: null };
-      }
-      if (state.table === "crm_contacts" && state.op === "select") {
+      if (
+        state.op === "rpc" &&
+        state.functionName === "create_crm_lead_atomic"
+      ) {
+        atomicCalls.push(state);
         return {
           data: {
-            email: null,
-            id: "contact-youssef",
-            job_title: null,
-            linkedin_url: "https://linkedin.com/in/youssef",
-            phone: null,
+            access_scope: "organization",
+            company_id: "company-winxo",
+            contact_id: "contact-youssef",
+            lead_id: "lead-winxo",
           },
           error: null,
         };
       }
-      if (state.table === "crm_contacts" && state.op === "update") {
-        contactUpdates.push(state.payload as Record<string, unknown>);
-        return { data: null, error: null };
-      }
-      if (state.table === "crm_leads" && state.op === "insert") {
+      if (state.table === "crm_leads" && state.op === "select") {
         return {
           data: {
+            access_scope: "organization",
             company_id: "company-winxo",
             contact_id: "contact-youssef",
             contact_job_title: "Directeur d'exploitation",
@@ -421,13 +490,83 @@ describe("createLeadAction contact enrichment", () => {
     );
 
     expect(result.success).toBe(true);
-    expect(contactUpdates).toEqual([
+    expect(atomicCalls).toHaveLength(1);
+    expect(atomicCalls[0]?.payload).toMatchObject({
+      requested_actor_profile_id: "profile-ali",
+      requested_company_name: "Winxo",
+      requested_contact_email: "yzaidi@winxo.com",
+      requested_contact_job_title: "Directeur d'exploitation",
+      requested_contact_name: "Youssef Zaidi",
+      requested_contact_phone: "0661420960",
+      requested_organization_id: "org-1",
+      requested_topic: "Présentation pour Winxo",
+    });
+  });
+
+  it("never calls Calendar or Drive for a confidential lead", async () => {
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockRejectedValue(new Error("provider call must stay unreachable"));
+    const client = createFakeSupabase((state) => {
+      if (state.op === "rpc") {
+        return {
+          data: {
+            access_scope: "cofounders",
+            company_id: "company-private",
+            contact_id: "contact-private",
+            lead_id: "lead-private",
+          },
+          error: null,
+        };
+      }
+      if (state.table === "crm_leads" && state.op === "select") {
+        return {
+          data: {
+            access_scope: "cofounders",
+            company_id: "company-private",
+            contact_id: "contact-private",
+            contact_job_title: "Stagiaire",
+            contact_linkedin_url: null,
+            created_at: "2026-08-10T09:00:00.000Z",
+            id: "lead-private",
+            last_contacted_at: null,
+            lead_date: "2026-08-11T09:00:00.000Z",
+            next_action: "Entretien",
+            next_action_date: null,
+            notes: "Candidature stage",
+            organization_id: "org-1",
+            source: "NAIA",
+            status: "meeting-booked",
+            topic: "Entretien stagiaire",
+            updated_at: "2026-08-10T09:00:00.000Z",
+          },
+          error: null,
+        };
+      }
+      return { data: null, error: null };
+    }) as unknown as SupabaseClient;
+
+    const result = await createLeadAction(
       {
-        email: "yzaidi@winxo.com",
-        job_title: "Directeur d'exploitation",
-        phone: "0661420960",
+        companyName: "Private candidate",
+        contactJobTitle: "Stagiaire",
+        contactName: "Candidate",
+        leadDate: "2026-08-11T09:00:00.000Z",
+        status: "meeting-booked",
+        topic: "Entretien stagiaire",
       },
-    ]);
+      trustedContext(client),
+    );
+
+    expect(result).toMatchObject({
+      accessScope: "cofounders",
+      calendarSynced: false,
+      success: true,
+    });
+    expect(result.calendarError).toContain("désactivée");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mocks.ensureClientDriveFolder).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
   });
 });
 

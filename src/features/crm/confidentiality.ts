@@ -17,3 +17,7 @@ export function containsSensitiveCrmText(...values: unknown[]) {
 export function classifyCrmAccessScope(...values: unknown[]): CrmAccessScope {
   return containsSensitiveCrmText(...values) ? "cofounders" : "organization";
 }
+
+export function allowsCrmProviderSideEffects(scope: CrmAccessScope) {
+  return scope === "organization";
+}
