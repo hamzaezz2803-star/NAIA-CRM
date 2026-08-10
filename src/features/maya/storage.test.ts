@@ -47,7 +47,7 @@ describe("Maya pitch storage", () => {
     expect(isNabilFinalPitchFileName("HPS_vDraft.pptx")).toBe(false);
   });
 
-  it("creates client Pitch folders and writes a draft", async () => {
+  it("creates client 01_Pitch folders and writes a draft", async () => {
     const adapter = createLocalMayaPitchStorageAdapter(tempRoot);
     const result = await adapter.writeDraft({
       clientName: "HPS",
@@ -56,11 +56,11 @@ describe("Maya pitch storage", () => {
     });
 
     expect(result.filePath).toBe(
-      path.join(tempRoot, "HPS", "Pitch", "draft.pptx"),
+      path.join(tempRoot, "HPS", "01_Pitch", "draft.pptx"),
     );
     expect(await readFile(result.filePath, "utf8")).toBe("pptx-binary");
     await expect(
-      stat(path.join(tempRoot, "HPS", "Pitch")),
+      stat(path.join(tempRoot, "HPS", "01_Pitch")),
     ).resolves.toBeTruthy();
   });
 });

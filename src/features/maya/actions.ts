@@ -1,69 +1,59 @@
 "use server";
 
-import { mkdtemp, rm, stat } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { revalidatePath } from "next/cache";
 
-import { fetchLeadsAction } from "@/features/crm/actions";
-
+import type { MayaTemplateFamily, MayaTemplateSource } from "./contracts";
 import {
-  type MayaBrief,
-  DEFAULT_MAYA_OUTPUT_ROOT,
-  DEFAULT_MAYA_SOURCE_FOLDER,
-  type MayaDeckPlan,
-} from "./contracts";
+  getMayaCrmLeadContext,
+  listMayaCrmLeadContexts,
+  resolveMayaCrmDriveFolderUrl,
+  type MayaCrmLeadContext,
+} from "./crm";
+import {
+  downloadMayaDriveDeckToTemp,
+  findMayaDriveDraftByExactName,
+  findMayaDriveDraftById,
+  findMayaDriveArtifacts,
+  generateMayaDriveFileId,
+  getMayaApprovedTemplateFileId,
+  getMayaClientsRootFolderId,
+  getMayaDriveTemplateFile,
+  hasMayaClientDriveConfig,
+  inspectMayaDriveDestination,
+  uploadMayaDriveDraft,
+  verifyMayaDrivePptxHash,
+} from "./drive";
 import { generateMayaPitchDraft } from "./generator";
-import {
-  findLatestGenericDeck,
-  indexMayaDeck,
-  listMayaDeckFiles,
-} from "./pptx";
-import { enhanceMayaDeckPlanWithOpenAI } from "./openai-planner";
-import {
-  buildMayaDeckPlan,
-  buildMayaPitchBriefFromLead,
-  buildMissingMayaPitchQuestions,
-} from "./planning";
 import {
   requireMayaPitchGenerationAccess,
   requireMayaPitchGeneratorAccess,
 } from "./access";
 import {
-  downloadMayaDriveDeckToTemp,
-  findMayaDriveDraftForClient,
-  findMayaDriveFinalForClient,
-  getMayaDriveConfigFromEnv,
-  hasMayaDriveFolderConfig,
-  listMayaDriveDeckFiles,
-  uploadMayaDriveDraftArtifacts,
-} from "./drive";
-import {
   buildMayaDraftFileName,
   createLocalMayaPitchStorageAdapter,
-  isNabilFinalPitchFileName,
-  sanitizeMayaClientName,
 } from "./storage";
+import {
+  claimMayaPitchUpload,
+  completeMayaPitchUploadClaim,
+  failMayaPitchUploadClaim,
+  renewMayaPitchUploadClaim,
+} from "./upload-claims";
 
 export type MayaPitchQueueItem = {
   clientName: string;
   contactName?: string;
-  contextDefaults: {
-    contactName?: string;
-    contactRole?: string;
-    industry?: string;
-    meetingObjective?: string;
-    websiteUrl?: string;
-  };
+  destinationError?: string;
+  destinationFolderUrl?: string;
   draftFileName?: string;
   draftFilePath?: string;
   finalFileName?: string;
   leadId: string;
   leadStatus: string;
-  missingQuestions: string[];
-  plan?: MayaDeckPlan;
-  status: "needs-context" | "ready" | "draft-ready" | "final-uploaded";
+  status: "blocked" | "ready" | "draft-ready" | "final-uploaded";
 };
 
 export type MayaPitchQueueResult =
@@ -73,125 +63,64 @@ export type MayaPitchQueueResult =
     }
   | {
       authorized: true;
-      genericDeckFileName?: string;
       items: MayaPitchQueueItem[];
-      sourceFolder: string;
       sourceWarnings: string[];
+      templates: MayaTemplateSource[];
     };
 
 export type MayaPitchDraftFormState = {
   draftFileName?: string;
   draftFilePath?: string;
   leadId?: string;
-  manifestPath?: string;
   message?: string;
+  sourceFileName?: string;
   status: "idle" | "success" | "error";
 };
 
-type MayaPitchDraftContextInput = {
-  contactName?: string;
-  contactRole?: string;
-  extraContext?: string;
-  generateAnyway?: boolean;
-  industry?: string;
-  meetingObjective?: string;
-  requireCompleteContext?: boolean;
-  websiteUrl?: string;
+export type MayaPitchGenerationConfirmation = {
+  confirmed: boolean;
+  family: MayaTemplateFamily;
 };
 
 export async function fetchMayaPitchQueueAction(): Promise<MayaPitchQueueResult> {
+  let access: Awaited<ReturnType<typeof requireMayaPitchGeneratorAccess>>;
   try {
-    await requireMayaPitchGeneratorAccess();
+    access = await requireMayaPitchGeneratorAccess();
   } catch (error) {
     return {
       authorized: false,
-      reason:
-        error instanceof Error
-          ? error.message
-          : "Maya pitch generator access is restricted.",
+      reason: readErrorMessage(
+        error,
+        "Maya pitch generator access is restricted.",
+      ),
     };
   }
 
-  const leads = await fetchLeadsAction();
-  const library = await loadMayaPitchLibrary();
+  const [templates, leadResult] = await Promise.all([
+    loadMayaTemplateSources(),
+    listMayaCrmLeadContexts({ organizationId: access.organizationId })
+      .then((leads) => ({ leads, warning: null }))
+      .catch((error: unknown) => ({
+        leads: [] as MayaCrmLeadContext[],
+        warning: readErrorMessage(error, "Maya could not read CRM leads."),
+      })),
+  ]);
+  const sourceWarnings = templates
+    .flatMap((template) => (template.warning ? [template.warning] : []))
+    .concat(leadResult.warning ? [leadResult.warning] : []);
 
-  try {
-    const meetingBookedLeads = leads.filter(
-      (lead) => lead.status === "meeting-booked",
-    );
-    const lookupWarnings: string[] = [];
-    const items = await Promise.all(
-      meetingBookedLeads.map(async (lead) => {
-        const brief = buildMayaPitchBriefFromLead(lead);
-        const plan = library.genericDeck
-          ? buildMayaDeckPlan({
-              brief,
-              genericDeck: library.genericDeck,
-              learningEvents: [],
-            })
-          : undefined;
-        const draft = await findDraftForClient(brief.clientName).catch(
-          (error: unknown) => {
-            lookupWarnings.push(
-              buildMayaDriveLookupWarning("drafts", brief.clientName, error),
-            );
-            return null;
-          },
-        );
-        const final = await findFinalForClient(brief.clientName).catch(
-          (error: unknown) => {
-            lookupWarnings.push(
-              buildMayaDriveLookupWarning(
-                "versions finales",
-                brief.clientName,
-                error,
-              ),
-            );
-            return null;
-          },
-        );
+  const items = await Promise.all(
+    leadResult.leads.map(async (lead) =>
+      buildMayaPitchQueueItem(lead, sourceWarnings),
+    ),
+  );
 
-        return {
-          clientName: brief.clientName,
-          contactName: brief.contactName,
-          contextDefaults: {
-            contactName: brief.contactName,
-            contactRole: brief.contactRole,
-            industry: brief.industry,
-            meetingObjective: brief.meetingObjective,
-            websiteUrl: brief.websiteUrl,
-          },
-          draftFileName: draft?.fileName,
-          draftFilePath: draft?.filePath,
-          finalFileName: final?.fileName,
-          leadId: lead.id,
-          leadStatus: lead.status,
-          missingQuestions: brief.missingQuestions,
-          plan,
-          status: final
-            ? "final-uploaded"
-            : draft
-              ? "draft-ready"
-              : brief.missingQuestions.length
-                ? "needs-context"
-                : "ready",
-        } satisfies MayaPitchQueueItem;
-      }),
-    );
-
-    return {
-      authorized: true,
-      genericDeckFileName: library.genericDeck?.fileName,
-      items,
-      sourceFolder: getMayaSourceLabel(),
-      sourceWarnings: [
-        ...(library.genericDeck?.residueWarnings ?? library.warnings),
-        ...lookupWarnings,
-      ],
-    };
-  } finally {
-    await cleanupMayaPitchLibrary(library);
-  }
+  return {
+    authorized: true,
+    items,
+    sourceWarnings,
+    templates,
+  };
 }
 
 export async function generateMayaPitchDraftFormAction(
@@ -199,16 +128,25 @@ export async function generateMayaPitchDraftFormAction(
   formData: FormData,
 ): Promise<MayaPitchDraftFormState> {
   const leadId = readFormText(formData, "leadId") ?? "";
+  const family = readTemplateFamily(formData.get("family"));
+  if (!family) {
+    return {
+      leadId,
+      message: "Famille de document invalide.",
+      status: "error",
+    };
+  }
+
   const result = await generateMayaPitchDraftForLeadAction(leadId, {
-    ...readMayaDraftContextInput(formData),
-    requireCompleteContext: true,
+    confirmed: formData.get("confirmTemplateCopy") === "on",
+    family,
   });
   revalidatePath("/proposals");
 
   if (!result.success) {
     return {
       leadId,
-      message: result.error ?? "Maya n'a pas pu générer le draft PPTX.",
+      message: result.error ?? "Maya n'a pas pu copier le draft PPTX.",
       status: "error",
     };
   }
@@ -217,338 +155,467 @@ export async function generateMayaPitchDraftFormAction(
     draftFileName: result.draftFileName,
     draftFilePath: result.draftFilePath,
     leadId,
-    manifestPath: result.manifestPath,
-    message: `Draft PPTX généré dans le Drive privé Qarizmi: ${result.draftFileName}`,
+    message: result.reusedExistingDraft
+      ? `Le draft existe déjà dans 01_Pitch; aucun doublon n'a été créé: ${result.draftFileName}`
+      : `Copie PPTX fidèle déposée dans le Drive privé Qarizmi: ${result.draftFileName}`,
+    sourceFileName: result.sourceFileName,
     status: "success",
   };
 }
 
 export async function generateMayaPitchDraftForLeadAction(
   leadId: string,
-  context: MayaPitchDraftContextInput = {},
+  confirmation: MayaPitchGenerationConfirmation = {
+    confirmed: false,
+    family: "pitch",
+  },
 ) {
-  // Generation only starts from an explicit human click (never on a lead
-  // status change) and is locked server-side to owner roles.
-  await requireMayaPitchGenerationAccess();
-
-  const leads = await fetchLeadsAction();
-  const lead = leads.find((candidate) => candidate.id === leadId);
-  if (!lead) {
-    return { error: "Lead not found", success: false };
-  }
-
-  const brief = applyMayaPitchContextOverrides(
-    buildMayaPitchBriefFromLead(lead),
-    context,
-  );
-
-  if (
-    context.requireCompleteContext &&
-    brief.missingQuestions.length &&
-    !context.generateAnyway
-  ) {
+  const access = await requireMayaPitchGenerationAccess();
+  if (!confirmation.confirmed) {
     return {
       error:
-        "Complète les questions de contexte ou coche l'option pour générer un draft provisoire.",
-      success: false,
+        "Confirme explicitement la copie du modèle et son dépôt dans 01_Pitch.",
+      success: false as const,
+    };
+  }
+  if (confirmation.family === "commercial-proposal") {
+    return {
+      error:
+        "La proposition commerciale reste en validation manuelle; aucun fichier n'a été copié.",
+      success: false as const,
+    };
+  }
+  if (!hasMayaClientDriveConfig()) {
+    return {
+      error:
+        "Le Drive privé Maya n'est pas entièrement configuré; aucun fichier n'a été créé localement.",
+      success: false as const,
     };
   }
 
-  const library = await loadMayaPitchLibrary();
-  let tempOutputRoot: string | null = null;
+  let sourceTempRoot: string | null = null;
+  let outputTempRoot: string | null = null;
+  let activeClaim: {
+    claimId: string;
+    leaseToken: string;
+    reservedDriveFileId: string;
+  } | null = null;
+  let claimFinalized = false;
 
   try {
-    if (!library.genericDeckFile || !library.genericDeck) {
-      // Surface the pitch library failure (e.g. an actionable Drive download
-      // error) instead of a misleading "not found".
-      return {
-        error: library.warnings[0] ?? "Generic pitch deck not found",
-        success: false,
-      };
+    const clientsRootFolderId = getMayaClientsRootFolderId();
+    const [lead, sourceTemplate] = await Promise.all([
+      getMayaCrmLeadContext({
+        leadId,
+        organizationId: access.organizationId,
+      }),
+      getMayaDriveTemplateFile({ family: confirmation.family }),
+    ]);
+    const clientFolderUrl = resolveMayaCrmDriveFolderUrl(lead);
+    const destination = await inspectMayaDriveDestination({
+      clientFolderUrl,
+      expectedRootFolderId: clientsRootFolderId,
+    });
+    const generationDate = new Date();
+    const expectedFileName = buildMayaDraftFileName({
+      clientName: lead.clientName,
+      date: generationDate,
+    });
+    if (!sourceTemplate.expectedSha256) {
+      throw new Error(
+        "Le SHA-256 audité du Teaser est indisponible; aucun upload Drive n'est autorisé.",
+      );
     }
 
-    const basePlan = buildMayaDeckPlan({
-      brief,
-      genericDeck: library.genericDeck,
-      learningEvents: [],
+    const candidateDriveFileId = await generateMayaDriveFileId();
+    const uploadClaim = await claimMayaPitchUpload({
+      draftFileName: expectedFileName,
+      leadId: lead.leadId,
+      organizationId: access.organizationId,
+      pitchFolderId: destination.pitchFolderId,
+      reservedDriveFileId: candidateDriveFileId,
+      supabase: access.supabase,
+      templateDriveFileId: sourceTemplate.driveFileId,
+      templateSha256: sourceTemplate.expectedSha256,
     });
-    const planned = await enhanceMayaDeckPlanWithOpenAI({
-      basePlan,
-      genericDeck: library.genericDeck,
-      learningEvents: [],
-    });
-    const plan = planned.warning
-      ? {
-          ...planned.plan,
-          residueWarnings: [...planned.plan.residueWarnings, planned.warning],
-        }
-      : planned.plan;
-    tempOutputRoot = hasMayaDriveFolderConfig()
-      ? await mkdtemp(path.join(os.tmpdir(), "maya-drive-output-"))
-      : null;
-    const result = await generateMayaPitchDraft({
-      genericDeckFilePath: library.genericDeckFile.filePath,
-      plan,
-      storage: createLocalMayaPitchStorageAdapter(
-        tempOutputRoot ?? getMayaOutputRoot(),
-      ),
-    });
-
-    if (hasMayaDriveFolderConfig()) {
-      const upload = await uploadMayaDriveDraftArtifacts({
-        clientName: brief.clientName,
-        draftFileName: result.draft.fileName,
-        draftFilePath: result.draft.filePath,
-        manifestPath: result.manifestPath,
+    if (uploadClaim.action === "uploaded") {
+      await verifyMayaDrivePptxHash({
+        driveFileId: uploadClaim.driveFileId,
+        expectedFileName,
+        expectedParentFolderId: destination.pitchFolderId,
+        expectedSha256: sourceTemplate.expectedSha256,
       });
-
       return {
-        draftFileName: upload.draftFileName,
-        draftFilePath: upload.draftFilePath,
-        manifestPath: upload.manifestPath,
-        success: true,
+        draftFileName: expectedFileName,
+        draftFilePath:
+          uploadClaim.driveFileUrl ??
+          `https://drive.google.com/file/d/${uploadClaim.driveFileId}/view`,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
+    if (uploadClaim.action === "busy") {
+      return {
+        error:
+          "Une copie de ce pitch est déjà en cours. Réessaie après sa finalisation; aucun second upload n'a été lancé.",
+        success: false as const,
+      };
+    }
+    activeClaim = {
+      claimId: uploadClaim.claimId,
+      leaseToken: uploadClaim.leaseToken,
+      reservedDriveFileId: uploadClaim.reservedDriveFileId,
+    };
+
+    const reservedExisting = await findMayaDriveDraftById({
+      driveFileId: activeClaim.reservedDriveFileId,
+      expectedFileName,
+      expectedParentFolderId: destination.pitchFolderId,
+      expectedSha256: sourceTemplate.expectedSha256,
+    });
+    if (reservedExisting) {
+      const reservedExistingUrl =
+        reservedExisting.webViewLink ??
+        `https://drive.google.com/file/d/${reservedExisting.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: reservedExisting.id,
+        driveFileUrl: reservedExistingUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: expectedFileName,
+        draftFilePath: reservedExistingUrl,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
       };
     }
 
-    return {
+    const existing = await findMayaDriveDraftByExactName({
+      draftFileName: expectedFileName,
+      pitchFolderId: destination.pitchFolderId,
+    });
+    if (existing) {
+      await verifyMayaDrivePptxHash({
+        driveFileId: existing.id,
+        expectedFileName,
+        expectedParentFolderId: destination.pitchFolderId,
+        expectedSha256: sourceTemplate.expectedSha256,
+        fileName: existing.name,
+        mimeType: existing.mimeType,
+        parents: existing.parents,
+      });
+      const existingFileUrl =
+        existing.webViewLink ??
+        `https://drive.google.com/file/d/${existing.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: existing.id,
+        driveFileUrl: existingFileUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: expectedFileName,
+        draftFilePath: existingFileUrl,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
+
+    const downloadedTemplate =
+      await downloadMayaDriveDeckToTemp(sourceTemplate);
+    sourceTempRoot = path.dirname(downloadedTemplate.filePath);
+    outputTempRoot = await mkdtemp(
+      path.join(os.tmpdir(), "maya-faithful-output-"),
+    );
+    const result = await generateMayaPitchDraft({
+      clientName: lead.clientName,
+      date: generationDate,
+      expectedSourceSha256: sourceTemplate.expectedSha256,
+      family: confirmation.family,
+      sourceDeckFilePath: downloadedTemplate.filePath,
+      storage: createLocalMayaPitchStorageAdapter(outputTempRoot),
+    });
+    if (result.sourceSha256 !== result.targetSha256) {
+      throw new Error("La vérification de fidélité binaire a échoué.");
+    }
+
+    // Revalidate immediately before the external write: the folder may have
+    // moved or another request may have created today's draft while the source
+    // was being scanned.
+    const uploadDestination = await inspectMayaDriveDestination({
+      clientFolderUrl,
+      expectedRootFolderId: clientsRootFolderId,
+    });
+    if (uploadDestination.pitchFolderId !== destination.pitchFolderId) {
+      throw new Error(
+        "La destination 01_Pitch a changé pendant la préparation; l'upload est bloqué.",
+      );
+    }
+    const concurrentDraft = await findMayaDriveDraftByExactName({
+      draftFileName: result.draft.fileName,
+      pitchFolderId: uploadDestination.pitchFolderId,
+    });
+    if (concurrentDraft) {
+      await verifyMayaDrivePptxHash({
+        driveFileId: concurrentDraft.id,
+        expectedFileName: result.draft.fileName,
+        expectedParentFolderId: uploadDestination.pitchFolderId,
+        expectedSha256: sourceTemplate.expectedSha256,
+        fileName: concurrentDraft.name,
+        mimeType: concurrentDraft.mimeType,
+        parents: concurrentDraft.parents,
+      });
+      const concurrentDraftUrl =
+        concurrentDraft.webViewLink ??
+        `https://drive.google.com/file/d/${concurrentDraft.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: concurrentDraft.id,
+        driveFileUrl: concurrentDraftUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: result.draft.fileName,
+        draftFilePath: concurrentDraftUrl,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
+
+    // Renew under the row lock immediately before the external write. If an
+    // expired lease was reclaimed while the PPTX was being scanned, the stale
+    // worker stops here and cannot create a second Drive file.
+    await renewMayaPitchUploadClaim({
+      claimId: activeClaim.claimId,
+      leaseToken: activeClaim.leaseToken,
+      supabase: access.supabase,
+    });
+
+    const createdDuringPreparation = await findMayaDriveDraftById({
+      driveFileId: activeClaim.reservedDriveFileId,
+      expectedFileName: result.draft.fileName,
+      expectedParentFolderId: uploadDestination.pitchFolderId,
+      expectedSha256: sourceTemplate.expectedSha256,
+    });
+    if (createdDuringPreparation) {
+      const createdDuringPreparationUrl =
+        createdDuringPreparation.webViewLink ??
+        `https://drive.google.com/file/d/${createdDuringPreparation.id}/view`;
+      await completeMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        driveFileId: createdDuringPreparation.id,
+        driveFileUrl: createdDuringPreparationUrl,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      });
+      claimFinalized = true;
+      return {
+        draftFileName: result.draft.fileName,
+        draftFilePath: createdDuringPreparationUrl,
+        reusedExistingDraft: true,
+        sourceFileName: sourceTemplate.fileName,
+        success: true as const,
+      };
+    }
+    const upload = await uploadMayaDriveDraft({
+      driveFileId: activeClaim.reservedDriveFileId,
       draftFileName: result.draft.fileName,
       draftFilePath: result.draft.filePath,
-      manifestPath: result.manifestPath,
-      success: true,
-    };
-  } finally {
-    if (tempOutputRoot) {
-      await rm(tempOutputRoot, { force: true, recursive: true });
-    }
-    await cleanupMayaPitchLibrary(library);
-  }
-}
-
-async function loadMayaPitchLibrary() {
-  const cleanupPaths: string[] = [];
-
-  try {
-    if (hasMayaDriveFolderConfig()) {
-      const driveConfig = getMayaDriveConfigFromEnv();
-      const driveDeckFiles = await listMayaDriveDeckFiles({
-        sourceFolderId: driveConfig.sourceFolderId,
-      });
-      const genericDriveDeckFile = findLatestGenericDeck(driveDeckFiles) as
-        (typeof driveDeckFiles)[number] | null;
-      const genericDeckFile = genericDriveDeckFile
-        ? await downloadMayaDriveDeckToTemp(genericDriveDeckFile)
-        : null;
-      if (genericDeckFile) {
-        cleanupPaths.push(path.dirname(genericDeckFile.filePath));
-      }
-      const genericDeck = genericDeckFile
-        ? await indexMayaDeck(genericDeckFile.filePath)
-        : null;
-
-      return {
-        cleanupPaths,
-        deckFiles: driveDeckFiles,
-        genericDeck,
-        genericDeckFile,
-        warnings: genericDeck ? genericDeck.residueWarnings : [],
-      };
-    }
-
-    const deckFiles = await listMayaDeckFiles(getMayaSourceFolder());
-    const genericDeckFile = findLatestGenericDeck(deckFiles);
-    const genericDeck = genericDeckFile
-      ? await indexMayaDeck(genericDeckFile.filePath)
-      : null;
+      pitchFolderId: uploadDestination.pitchFolderId,
+    });
+    await completeMayaPitchUploadClaim({
+      claimId: activeClaim.claimId,
+      driveFileId: upload.driveFileId,
+      driveFileUrl: upload.draftFilePath,
+      leaseToken: activeClaim.leaseToken,
+      supabase: access.supabase,
+    });
+    claimFinalized = true;
 
     return {
-      cleanupPaths,
-      deckFiles,
-      genericDeck,
-      genericDeckFile,
-      warnings: genericDeck ? genericDeck.residueWarnings : [],
+      draftFileName: upload.draftFileName,
+      draftFilePath: upload.draftFilePath,
+      reusedExistingDraft: false,
+      sourceFileName: sourceTemplate.fileName,
+      success: true as const,
     };
   } catch (error) {
-    await cleanupMayaTempPaths(cleanupPaths);
+    const errorMessage = readErrorMessage(
+      error,
+      "Maya n'a pas pu copier le pitch.",
+    );
+    if (activeClaim && !claimFinalized) {
+      await failMayaPitchUploadClaim({
+        claimId: activeClaim.claimId,
+        errorMessage,
+        leaseToken: activeClaim.leaseToken,
+        supabase: access.supabase,
+      }).catch(() => false);
+    }
+    return {
+      error: errorMessage,
+      success: false as const,
+    };
+  } finally {
+    await Promise.all([
+      cleanupMayaTempRoot(sourceTempRoot, "maya-drive-deck-"),
+      cleanupMayaTempRoot(outputTempRoot, "maya-faithful-output-"),
+    ]);
+  }
+}
+
+async function buildMayaPitchQueueItem(
+  lead: MayaCrmLeadContext,
+  warnings: string[],
+): Promise<MayaPitchQueueItem> {
+  try {
+    if (!hasMayaClientDriveConfig()) {
+      throw new Error("Le Drive privé Maya n'est pas configuré.");
+    }
+    const driveFolderUrl = resolveMayaCrmDriveFolderUrl(lead);
+    const artifacts = await findMayaDriveArtifacts({
+      clientFolderUrl: driveFolderUrl,
+      expectedRootFolderId: getMayaClientsRootFolderId(),
+    });
 
     return {
-      cleanupPaths: [],
-      deckFiles: [],
-      genericDeck: null,
-      genericDeckFile: null,
-      warnings: [
-        error instanceof Error
-          ? error.message
-          : "Maya could not read the pitch source folder.",
-      ],
+      clientName: lead.clientName,
+      contactName: lead.contactName,
+      destinationFolderUrl: artifacts.destination.pitchFolderUrl,
+      draftFileName: artifacts.draft?.fileName,
+      draftFilePath: artifacts.draft?.filePath,
+      finalFileName: artifacts.final?.fileName,
+      leadId: lead.leadId,
+      leadStatus: lead.leadStatus,
+      status: artifacts.final
+        ? "final-uploaded"
+        : artifacts.draft
+          ? "draft-ready"
+          : "ready",
+    };
+  } catch (error) {
+    const destinationError = readErrorMessage(
+      error,
+      "Destination Drive non vérifiable.",
+    );
+    warnings.push(`${lead.clientName}: ${destinationError}`);
+    return {
+      clientName: lead.clientName,
+      contactName: lead.contactName,
+      destinationError,
+      leadId: lead.leadId,
+      leadStatus: lead.leadStatus,
+      status: "blocked",
     };
   }
 }
 
-async function cleanupMayaPitchLibrary({
-  cleanupPaths,
-}: {
-  cleanupPaths?: string[];
-}) {
-  await cleanupMayaTempPaths(cleanupPaths ?? []);
-}
-
-async function cleanupMayaTempPaths(cleanupPaths: string[]) {
-  await Promise.all(
-    cleanupPaths
-      .filter(isMayaDriveTempRoot)
-      .map((cleanupPath) => rm(cleanupPath, { force: true, recursive: true })),
-  );
-}
-
-function isMayaDriveTempRoot(cleanupPath: string) {
-  const resolvedPath = path.resolve(cleanupPath);
-  const resolvedTempDir = path.resolve(os.tmpdir());
-
-  return (
-    resolvedPath.startsWith(`${resolvedTempDir}${path.sep}`) &&
-    path.basename(resolvedPath).startsWith("maya-drive-deck-")
-  );
-}
-
-async function findDraftForClient(clientName: string) {
-  if (hasMayaDriveFolderConfig()) {
-    return findMayaDriveDraftForClient({
-      clientName,
-    });
+async function loadMayaTemplateSources(): Promise<MayaTemplateSource[]> {
+  if (!hasMayaClientDriveConfig()) {
+    return [
+      unavailableTemplate(
+        "pitch",
+        "Le Drive privé Maya n'est pas entièrement configuré.",
+      ),
+      manualProposalTemplate(),
+    ];
   }
 
-  return findLocalDraftForClient(clientName);
+  const pitch = await loadMayaTemplateSource("pitch");
+  const proposal = getMayaApprovedTemplateFileId("commercial-proposal")
+    ? await loadMayaTemplateSource("commercial-proposal")
+    : manualProposalTemplate();
+
+  return [pitch, proposal];
 }
 
-function buildMayaDriveLookupWarning(
-  kind: "drafts" | "versions finales",
-  clientName: string,
-  error: unknown,
+async function loadMayaTemplateSource(
+  family: MayaTemplateFamily,
+): Promise<MayaTemplateSource> {
+  try {
+    const file = await getMayaDriveTemplateFile({ family });
+    return {
+      availability: family === "pitch" ? "ready" : "manual-review",
+      driveFileId: file.driveFileId,
+      family,
+      fileName: file.fileName,
+      modifiedAt: file.modifiedAt.toISOString(),
+      sha256: file.expectedSha256,
+      sizeBytes: file.sizeBytes,
+      sourceLabel: `Google Drive · ${file.driveFileId}`,
+      warning:
+        family === "commercial-proposal"
+          ? "Les propositions commerciales restent bloquées pour revue manuelle."
+          : undefined,
+      webViewLink: file.webViewLink,
+    };
+  } catch (error) {
+    return unavailableTemplate(
+      family,
+      readErrorMessage(error, "Modèle Drive indisponible."),
+    );
+  }
+}
+
+function unavailableTemplate(
+  family: MayaTemplateFamily,
+  warning: string,
+): MayaTemplateSource {
+  return {
+    availability: "unavailable",
+    family,
+    sourceLabel: "Google Drive",
+    warning,
+  };
+}
+
+function manualProposalTemplate(): MayaTemplateSource {
+  return {
+    availability: "manual-review",
+    family: "commercial-proposal",
+    sourceLabel: "Validation manuelle",
+    warning:
+      "La famille proposition commerciale n'effectue aucune copie automatique en V1.",
+  };
+}
+
+async function cleanupMayaTempRoot(
+  tempRoot: string | null,
+  expectedPrefix: string,
 ) {
-  const message =
-    error instanceof Error ? error.message : "erreur Google Drive inconnue";
-
-  return `Maya n'a pas pu vérifier les ${kind} existants pour ${clientName}: ${message}`;
+  if (!tempRoot) return;
+  const resolvedRoot = path.resolve(tempRoot);
+  const resolvedTempDir = path.resolve(os.tmpdir());
+  if (
+    resolvedRoot.startsWith(`${resolvedTempDir}${path.sep}`) &&
+    path.basename(resolvedRoot).startsWith(expectedPrefix)
+  ) {
+    await rm(resolvedRoot, { force: true, recursive: true });
+  }
 }
 
-function applyMayaPitchContextOverrides(
-  brief: MayaBrief,
-  context: MayaPitchDraftContextInput,
-): MayaBrief {
-  const extraContext = normalizeFormText(context.extraContext);
-  const crmContext = extraContext
-    ? [brief.crmContext, `Contexte ajouté pour Maya: ${extraContext}`]
-        .filter(Boolean)
-        .join("\n")
-    : brief.crmContext;
-
-  const enrichedBrief: MayaBrief = {
-    ...brief,
-    contactName: normalizeFormText(context.contactName) ?? brief.contactName,
-    contactRole: normalizeFormText(context.contactRole) ?? brief.contactRole,
-    crmContext,
-    industry: normalizeFormText(context.industry) ?? brief.industry,
-    meetingObjective:
-      normalizeFormText(context.meetingObjective) ?? brief.meetingObjective,
-    websiteUrl: normalizeFormText(context.websiteUrl) ?? brief.websiteUrl,
-  };
-  const missingQuestions = buildMissingMayaPitchQuestions(enrichedBrief);
-
-  return {
-    ...enrichedBrief,
-    missingQuestions,
-    status: missingQuestions.length ? "needs-context" : "ready",
-  };
-}
-
-function readMayaDraftContextInput(
-  formData: FormData,
-): MayaPitchDraftContextInput {
-  return {
-    contactName: readFormText(formData, "contactName"),
-    contactRole: readFormText(formData, "contactRole"),
-    extraContext: readFormText(formData, "extraContext"),
-    generateAnyway: formData.get("generateAnyway") === "on",
-    industry: readFormText(formData, "industry"),
-    meetingObjective: readFormText(formData, "meetingObjective"),
-    websiteUrl: readFormText(formData, "websiteUrl"),
-  };
+function readTemplateFamily(value: FormDataEntryValue | null) {
+  return value === "pitch" || value === "commercial-proposal" ? value : null;
 }
 
 function readFormText(formData: FormData, fieldName: string) {
   const value = formData.get(fieldName);
-  return typeof value === "string" ? normalizeFormText(value) : undefined;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized || undefined;
 }
 
-function normalizeFormText(value: string | undefined) {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
-}
-
-async function findFinalForClient(clientName: string) {
-  if (hasMayaDriveFolderConfig()) {
-    return findMayaDriveFinalForClient({
-      clientName,
-    });
-  }
-
-  return findLocalFinalForClient(clientName);
-}
-
-async function findLocalDraftForClient(clientName: string) {
-  const fileName = buildMayaDraftFileName({
-    clientName,
-    date: new Date(),
-  });
-  const filePath = path.join(
-    getMayaOutputRoot(),
-    sanitizeMayaClientName(clientName),
-    "Pitch",
-    fileName,
-  );
-
-  return (await fileExists(filePath)) ? { fileName, filePath } : null;
-}
-
-async function findLocalFinalForClient(clientName: string) {
-  const folderPath = path.join(
-    getMayaOutputRoot(),
-    sanitizeMayaClientName(clientName),
-    "Pitch",
-  );
-  try {
-    const { readdir } = await import("node:fs/promises");
-    const files = await readdir(folderPath);
-    const fileName = files.find(isNabilFinalPitchFileName);
-    return fileName
-      ? { fileName, filePath: path.join(folderPath, fileName) }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-async function fileExists(filePath: string) {
-  try {
-    await stat(filePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function getMayaSourceFolder() {
-  return process.env.MAYA_PITCH_SOURCE_FOLDER ?? DEFAULT_MAYA_SOURCE_FOLDER;
-}
-
-function getMayaSourceLabel() {
-  if (hasMayaDriveFolderConfig()) {
-    return `Google Drive folder ${getMayaDriveConfigFromEnv().sourceFolderId}`;
-  }
-
-  return getMayaSourceFolder();
-}
-
-function getMayaOutputRoot() {
-  return process.env.MAYA_PITCH_OUTPUT_ROOT ?? DEFAULT_MAYA_OUTPUT_ROOT;
+function readErrorMessage(error: unknown, fallback: string) {
+  return error instanceof Error ? error.message : fallback;
 }

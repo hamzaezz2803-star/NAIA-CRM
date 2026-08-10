@@ -39,13 +39,14 @@ export async function requireMayaPitchGeneratorAccess() {
   return {
     organizationId: membership.organization_id as string,
     role: membership.role as string,
+    supabase,
     user,
   };
 }
 
 /**
- * Stricter gate for the generation actions themselves: generation is never
- * automatic (it costs OpenAI tokens) and stays reserved to owner roles.
+ * Stricter gate for the Drive-writing action itself: cloning is never
+ * automatic and stays reserved to owner roles.
  */
 export async function requireMayaPitchGenerationAccess() {
   const access = await requireMayaPitchGeneratorAccess();
