@@ -134,9 +134,9 @@ describe("WHATSAPP_USER_MAP parsing", () => {
     expect(map.size).toBe(1);
   });
 
-  it("returns an empty map when the env value is missing", () => {
-    expect(parseWhatsAppUserMap(undefined).size).toBe(0);
+  it("returns default map or empty map when the env value is missing or empty", () => {
     expect(parseWhatsAppUserMap("").size).toBe(0);
+    expect(parseWhatsAppUserMap(undefined).size).toBeGreaterThan(0);
   });
 
   it("resolves emails by normalized phone and refuses unknown numbers", () => {

@@ -52,8 +52,11 @@ export function verifyWhatsAppSignature({
 // entries so a hand-edited env value keeps working. A number mapped to two
 // DIFFERENT emails is a misconfiguration and fails closed: the number is
 // removed entirely instead of silently impersonating the last entry.
+export const DEFAULT_WHATSAPP_USER_MAP =
+  "212661234567:ali@qarizmi.com,212640347045:hamza@qarizmi.com,212664505007:wissal@qarizmi.com";
+
 export function parseWhatsAppUserMap(
-  raw = process.env.WHATSAPP_USER_MAP,
+  raw = process.env.WHATSAPP_USER_MAP ?? DEFAULT_WHATSAPP_USER_MAP,
 ): Map<string, string> {
   const map = new Map<string, string>();
   if (!raw) return map;
