@@ -14,11 +14,12 @@ const fetchTasksSource = actionsSource.slice(
 );
 
 describe("CRM task archive boundary", () => {
-  it("excludes archived tasks and leads from reads and on-demand backfill", () => {
+  it("keeps task reads side-effect free and excludes archived tasks", () => {
     expect(fetchTasksSource).toContain('.from("crm_tasks")');
-    expect(fetchTasksSource).toContain('.from("crm_leads")');
-    expect(fetchTasksSource.match(/\.is\("archived_at", null\)/g)).toHaveLength(
-      3,
-    );
+    expect(fetchTasksSource).not.toContain('.from("crm_leads")');
+    expect(fetchTasksSource).toContain('.is("archived_at", null)');
+    expect(fetchTasksSource).not.toContain(".insert(");
+    expect(fetchTasksSource).not.toContain(".update(");
+    expect(fetchTasksSource).not.toContain(".delete(");
   });
 });

@@ -1,7 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { describe, expect, it, vi } from "vitest";
 
-import { fetchCrmPipelineSnapshot } from "./pipeline-data";
+import {
+  CRM_PIPELINE_LEAD_COLUMNS,
+  fetchCrmPipelineSnapshot,
+} from "./pipeline-data";
 
 type QueryResponse = { data: unknown; error: unknown };
 
@@ -94,6 +97,9 @@ describe("fetchCrmPipelineSnapshot", () => {
             created_at: "2026-08-09T20:00:00.000Z",
             crm_lead_tags: [],
             id: "lead-1",
+            next_action_completed_at: "2026-08-09T21:00:00.000Z",
+            next_action_completed_by_profile_id: "profile-nabil",
+            next_action_state: "done",
             organization_id: "org-1",
             pipeline_position: 1024,
             status: "lead-to-contact",
@@ -117,7 +123,16 @@ describe("fetchCrmPipelineSnapshot", () => {
     expect(snapshot).toMatchObject({
       canReorder: true,
       categories: [{ id: "category-1", statusKey: "lead-to-contact" }],
-      leads: [{ companyName: "TGCC", id: "lead-1", pipelinePosition: 1024 }],
+      leads: [
+        {
+          companyName: "TGCC",
+          id: "lead-1",
+          nextActionCompletedAt: "2026-08-09T21:00:00.000Z",
+          nextActionCompletedByProfileId: "profile-nabil",
+          nextActionState: "done",
+          pipelinePosition: 1024,
+        },
+      ],
       loadedAt: "2026-08-09T22:00:00.000Z",
       source: "database",
     });
@@ -128,5 +143,10 @@ describe("fetchCrmPipelineSnapshot", () => {
       "crm_categories",
     ]);
     expect(fake.writes).toEqual([]);
+    expect(CRM_PIPELINE_LEAD_COLUMNS).toContain("next_action_state");
+    expect(CRM_PIPELINE_LEAD_COLUMNS).toContain("next_action_completed_at");
+    expect(CRM_PIPELINE_LEAD_COLUMNS).toContain(
+      "next_action_completed_by_profile_id",
+    );
   });
 });

@@ -27,6 +27,23 @@ The shell CRM entry opens the working pipeline directly at `/dashboard/leads`. T
 
 CRM lead priority is persisted per organization and status in `crm_leads.pipeline_position`. The Kanban uses an accessible pointer, touch and keyboard sortable interaction; a same-column drop is committed through the tenant-scoped, `SECURITY INVOKER` `reorder_crm_pipeline_leads` RPC. The RPC compares the order captured at drag start, locks that column and applies the full permutation atomically without changing the lead's business `updated_at`. A real status change resets the card to the top of its destination column.
 
+The production CRM presents the canonical `crm_companies` and `crm_contacts`
+relations as each card's identity. Legacy note/topic parsing remains a
+compatibility fallback only; the compact Kanban omits separate project/topic
+and source metadata. Next-action completion is modeled independently from the
+pipeline stage through `crm_leads.next_action_state` (`pending` or `done`) and
+its completion audit fields, so checking off work never moves the lead.
+
+`crm_tasks.task_kind` distinguishes manual tasks, lead-next-action projections,
+and meeting recommendations. The database maintains at most one active
+lead-next-action projection per lead; read paths never mutate or backfill task
+rows. During Trello reconciliation, the reviewed Ali/Nabil assignment labels
+resolve to organization members and are not retained as CRM tags. Only
+unambiguous, high-confidence contact coordinates may populate canonical
+contacts; ambiguous values remain review evidence. Confidential or unreviewed
+families stay cofounder-scoped, and cleanup is a tenant-scoped soft archive
+filtered from production reads rather than physical deletion.
+
 NAIA has a stable route at `/naia`. It is the voice-first orchestrator for the platform modules and routes user intent to specialized agents such as CRM, finance, delivery, HR, integrations, and developer workflow. The NAIA home uses the imported Jarvis wake/sphere visual in `src/features/naia/vendor/jarvis` with a local notice; review AGPL obligations before public redistribution.
 
 NAIA agent pages currently live under `/naia/leads`, `/naia/cash-flow`, `/naia/crm`, `/naia/projects`, and `/naia/hr`. The home cockpit keeps the sphere/orbit experience and routes voice/text commands to these modules.

@@ -13,6 +13,7 @@ export const GMAIL_TRIAGE_CRM_STATUSES = [
   "won",
 ] as const;
 const ACTIVE_CRM_STATUSES = new Set<string>(GMAIL_TRIAGE_CRM_STATUSES);
+const CRM_TIME_ZONE = "Africa/Casablanca";
 
 const AUTOMATED_LOCAL_PART =
   /(?:^|[._+\-])(alerts?|bounces?|dependabot|do[._+\-]?not[._+\-]?reply|donotreply|mailer[._+\-]?daemon|no[._+\-]?reply|noreply|notifications?|postmaster|updates?)(?:$|[._+\-])/iu;
@@ -53,7 +54,13 @@ export type GmailTriageReason =
 
 export type GmailTriageLeadContext = Pick<
   CrmLeadSummary,
-  "companyName" | "contactEmail" | "id" | "nextAction" | "status" | "topic"
+  | "companyName"
+  | "contactEmail"
+  | "id"
+  | "nextAction"
+  | "nextActionState"
+  | "status"
+  | "topic"
 > & {
   nextActionDate?: string;
 };
@@ -256,7 +263,14 @@ function triageThread({
     reasons.push("gmail-starred");
   }
 
-  if (crmLead?.nextActionDate && crmLead.nextActionDate <= dateKey(now)) {
+  const crmDueDate = crmLead?.nextActionDate
+    ? crmDeadlineDateKey(crmLead.nextActionDate)
+    : undefined;
+  if (
+    crmLead?.nextActionState !== "done" &&
+    crmDueDate &&
+    crmDueDate <= zonedDateKey(now, CRM_TIME_ZONE)
+  ) {
     score += 10;
     reasons.push("overdue-crm-action");
   }
@@ -401,8 +415,25 @@ function normalizeEmail(value: string | null | undefined) {
   return email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/u.test(email) ? email : undefined;
 }
 
-function dateKey(date: Date) {
-  return date.toISOString().slice(0, 10);
+function crmDeadlineDateKey(value: string) {
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  const date = new Date(value);
+  return Number.isFinite(date.getTime())
+    ? zonedDateKey(date, CRM_TIME_ZONE)
+    : undefined;
+}
+
+function zonedDateKey(date: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    day: "2-digit",
+    month: "2-digit",
+    timeZone,
+    year: "numeric",
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts.map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function normalizeSubject(value: string) {

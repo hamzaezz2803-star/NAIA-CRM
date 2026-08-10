@@ -22,7 +22,33 @@ type ReminderLeadRow = {
   next_action: string | null;
   next_action_date: string | null;
   lead_date: string | null;
+  next_action_state: "pending" | "done";
 };
+
+const CRM_TIME_ZONE = "Africa/Casablanca";
+const crmDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  day: "2-digit",
+  month: "2-digit",
+  timeZone: CRM_TIME_ZONE,
+  year: "numeric",
+});
+
+function getCrmDateKey(value: Date | string): string | null {
+  if (typeof value === "string") {
+    const trimmedValue = value.trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmedValue)) return trimmedValue;
+  }
+
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+
+  const parts = crmDateFormatter.formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value;
+  const month = parts.find((part) => part.type === "month")?.value;
+  const day = parts.find((part) => part.type === "day")?.value;
+
+  return year && month && day ? `${year}-${month}-${day}` : null;
+}
 
 export type AppNotification = {
   id: string;
@@ -96,11 +122,15 @@ export async function getNotifications(): Promise<AppNotification[]> {
 
   // Fetch smart CRM reminders
   // A reminder is shown for leads with lead_date/legacy next_action_date <= today.
-  const today = new Date().toISOString().split("T")[0]; // YYYY-MM-DD
+  const today = getCrmDateKey(new Date());
   const { data: leads, error: leadsError } = await supabase
     .from("crm_leads")
-    .select("id, topic, lead_date, next_action_date, next_action")
+    .select(
+      "id, topic, lead_date, next_action_date, next_action, next_action_state",
+    )
     .eq("organization_id", organizationId)
+    .eq("next_action_state", "pending")
+    .is("archived_at", null)
     .not("status", "in", '("won","dead-end")');
 
   if (!leadsError && leads) {
@@ -109,9 +139,17 @@ export async function getNotifications(): Promise<AppNotification[]> {
         lead,
         dueDate: lead.lead_date ?? lead.next_action_date,
       }))
-      .filter(({ dueDate }) => dueDate && dueDate.slice(0, 10) <= today)
-      .map(({ lead, dueDate }) => {
-        const dateStr = (dueDate as string).slice(0, 10);
+      .map(({ lead, dueDate }) => ({
+        lead,
+        dueDate,
+        dueDateKey: dueDate ? getCrmDateKey(dueDate) : null,
+      }))
+      .filter(
+        ({ dueDateKey }) =>
+          dueDateKey !== null && today !== null && dueDateKey <= today,
+      )
+      .map(({ lead, dueDate, dueDateKey }) => {
+        const dateStr = dueDateKey as string;
         const notificationId = buildCrmReminderNotificationId(lead.id, dateStr);
         return {
           id: notificationId,
@@ -247,11 +285,13 @@ export async function deleteAllNotifications(): Promise<boolean> {
 
   // 1. Tombstone all currently active CRM lead reminders so "Tout supprimer"
   // clears them and prevents them from reappearing on next refresh.
-  const today = new Date().toISOString().split("T")[0];
+  const today = getCrmDateKey(new Date());
   const { data: leads, error: leadsError } = await supabase
     .from("crm_leads")
-    .select("id, topic, lead_date, next_action_date")
+    .select("id, topic, lead_date, next_action_date, next_action_state")
     .eq("organization_id", organizationId)
+    .eq("next_action_state", "pending")
+    .is("archived_at", null)
     .not("status", "in", '("won","dead-end")');
 
   if (leadsError) {
@@ -268,14 +308,21 @@ export async function deleteAllNotifications(): Promise<boolean> {
         leadId: lead.id,
         dueDate: lead.lead_date ?? lead.next_action_date,
       }))
-      .filter(({ dueDate }) => dueDate && dueDate.slice(0, 10) <= today);
+      .map(({ leadId, dueDate }) => ({
+        leadId,
+        dueDateKey: dueDate ? getCrmDateKey(dueDate) : null,
+      }))
+      .filter(
+        ({ dueDateKey }) =>
+          dueDateKey !== null && today !== null && dueDateKey <= today,
+      );
 
     if (overdueLeads.length > 0) {
-      const markerRows = overdueLeads.map(({ leadId, dueDate }) => ({
+      const markerRows = overdueLeads.map(({ leadId, dueDateKey }) => ({
         organization_id: organizationId,
         profile_id: userId,
         title: "lead-reminder-dismissed",
-        description: `${leadId}:${(dueDate as string).slice(0, 10)}`,
+        description: `${leadId}:${dueDateKey as string}`,
         type: "system",
         is_read: true,
       }));

@@ -1926,6 +1926,7 @@ async function applyRecommendation({
       meeting_action_execution_id: actionExecutionId,
       organization_id: organizationId,
       status: "todo",
+      task_kind: "meeting-recommendation",
       title: action.title,
     });
     if (error) {

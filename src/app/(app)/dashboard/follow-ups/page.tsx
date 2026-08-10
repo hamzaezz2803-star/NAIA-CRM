@@ -9,13 +9,13 @@ import {
   Calendar,
   AlertCircle,
   CheckCircle2,
-  Building2,
   ChevronDown,
   ChevronUp,
   History,
   Check,
   X,
   User,
+  Search,
 } from "lucide-react";
 import {
   fetchLeadsAction,
@@ -28,6 +28,57 @@ import toast from "react-hot-toast";
 const inputCls =
   "flex w-full rounded-md border px-3 py-2.5 text-sm placeholder:text-stone-400 focus:outline-none transition" +
   " border-[var(--maison-border)] bg-[var(--maison-page)] text-[var(--maison-text-primary)] focus:border-[var(--maison-brass)] focus:ring-2 focus:ring-[var(--maison-brass)]/20";
+
+function readLegacyLeadField(
+  notes: string | undefined,
+  labels: string[],
+): string | undefined {
+  if (!notes) return undefined;
+
+  const normalizedLabels = labels.map((label) => label.toLocaleLowerCase("fr"));
+
+  for (const rawLine of notes.split("\n")) {
+    const line = rawLine.trim();
+    const separatorIndex = line.indexOf(":");
+    if (separatorIndex === -1) continue;
+
+    const label = line.slice(0, separatorIndex).trim().toLocaleLowerCase("fr");
+    if (!normalizedLabels.includes(label)) continue;
+
+    const value = line.slice(separatorIndex + 1).trim();
+    if (value) return value;
+  }
+
+  return undefined;
+}
+
+function getLeadIdentity(lead: CrmLeadSummary): {
+  companyName: string;
+  contactName?: string;
+} {
+  const legacyCompanyName = readLegacyLeadField(lead.notes, [
+    "Entreprise",
+    "Société",
+    "Company",
+  ]);
+  const legacyContactName = readLegacyLeadField(lead.notes, [
+    "Contact",
+    "Nom du contact",
+  ]);
+
+  return {
+    companyName: lead.companyName?.trim() || legacyCompanyName || lead.topic,
+    contactName: lead.contactName?.trim() || legacyContactName,
+  };
+}
+
+function normalizeSearchValue(value: string | undefined): string {
+  return (value ?? "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("fr")
+    .trim();
+}
 
 function formatTimeAgo(dateStr?: string): string {
   if (!dateStr) return "Jamais";
@@ -51,6 +102,7 @@ function formatTimeAgo(dateStr?: string): string {
 export default function FollowUpsPage() {
   const [leads, setLeads] = useState<CrmLeadSummary[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [search, setSearch] = useState("");
 
   // Follow-up logging modal
   const [selectedLead, setSelectedLead] = useState<CrmLeadSummary | null>(null);
@@ -82,6 +134,20 @@ export default function FollowUpsPage() {
   const activeLeads = leads.filter(
     (l) => l.status !== "won" && l.status !== "dead-end",
   );
+  const normalizedSearch = normalizeSearchValue(search);
+  const filteredLeads = activeLeads.filter((lead) => {
+    if (!normalizedSearch) return true;
+
+    const identity = getLeadIdentity(lead);
+    return [
+      identity.companyName,
+      identity.contactName,
+      lead.contactEmail,
+      lead.contactPhone,
+      lead.topic,
+      lead.nextAction,
+    ].some((value) => normalizeSearchValue(value).includes(normalizedSearch));
+  });
 
   // Calculate statistics
   const totalActive = activeLeads.length;
@@ -92,6 +158,7 @@ export default function FollowUpsPage() {
   }).length;
 
   const overdueFollowUps = activeLeads.filter((l) => {
+    if (l.nextActionState === "done") return false;
     if (!l.leadDate) return false;
     try {
       return new Date(l.leadDate) < new Date();
@@ -368,12 +435,33 @@ export default function FollowUpsPage() {
         </div>
       ) : (
         <div
-          className="rounded-xl overflow-hidden shadow-sm"
+          className="overflow-hidden rounded-xl shadow-sm"
           style={{
             background: "var(--maison-card)",
             border: "1px solid var(--maison-border)",
           }}
         >
+          <div
+            className="border-b p-3"
+            style={{ borderColor: "var(--maison-border)" }}
+          >
+            <div className="relative max-w-md">
+              <Search
+                aria-hidden="true"
+                className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2"
+                style={{ color: "var(--maison-text-muted)" }}
+              />
+              <input
+                aria-label="Rechercher une entreprise ou un contact"
+                className={`${inputCls} pl-9`}
+                onChange={(event) => setSearch(event.target.value)}
+                placeholder="Rechercher une entreprise ou un contact"
+                type="search"
+                value={search}
+              />
+            </div>
+          </div>
+
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left text-sm">
               <thead
@@ -385,7 +473,7 @@ export default function FollowUpsPage() {
                 }}
               >
                 <tr>
-                  <th className="px-6 py-3.5">Projet / Entreprise</th>
+                  <th className="px-6 py-3.5">Entreprise / Contact</th>
                   <th className="px-6 py-3.5">Statut</th>
                   <th className="px-6 py-3.5">Dernier Contact</th>
                   <th className="px-6 py-3.5">Prochaine Action</th>
@@ -396,7 +484,7 @@ export default function FollowUpsPage() {
                 className="divide-y"
                 style={{ borderColor: "var(--maison-border)" }}
               >
-                {activeLeads.map((lead) => {
+                {filteredLeads.map((lead) => {
                   const isExpanded = expandedLeadIds.includes(lead.id);
                   const status = statusConfig[lead.status] || {
                     label: lead.status,
@@ -404,12 +492,7 @@ export default function FollowUpsPage() {
                     text: "text-stone-600",
                   };
 
-                  // Parse company from notes
-                  const companyLine = (lead.notes ?? "")
-                    .split("\n")
-                    .find((l) => l.startsWith("Entreprise:"))
-                    ?.replace("Entreprise:", "")
-                    .trim();
+                  const identity = getLeadIdentity(lead);
 
                   return (
                     <React.Fragment key={lead.id}>
@@ -432,15 +515,17 @@ export default function FollowUpsPage() {
                             className="font-semibold"
                             style={{ color: "var(--maison-text-primary)" }}
                           >
-                            {lead.topic}
+                            {identity.companyName}
                           </p>
-                          {companyLine && (
+                          {identity.contactName && (
                             <p
                               className="flex items-center gap-1 text-[11px] mt-0.5"
-                              style={{ color: "var(--maison-text-secondary)" }}
+                              style={{
+                                color: "var(--maison-text-secondary)",
+                              }}
                             >
-                              <Building2 className="h-3 w-3 flex-shrink-0" />
-                              {companyLine}
+                              <User className="h-3 w-3 flex-shrink-0" />
+                              {identity.contactName}
                             </p>
                           )}
                         </td>
@@ -474,14 +559,18 @@ export default function FollowUpsPage() {
                             <div>
                               <p
                                 className="text-xs font-medium truncate max-w-[180px]"
-                                style={{ color: "var(--maison-text-primary)" }}
+                                style={{
+                                  color: "var(--maison-text-primary)",
+                                }}
                               >
                                 {lead.nextAction}
                               </p>
                               {lead.leadDate && (
                                 <p
                                   className="flex items-center gap-1 text-[10px] mt-0.5"
-                                  style={{ color: "var(--maison-text-muted)" }}
+                                  style={{
+                                    color: "var(--maison-text-muted)",
+                                  }}
                                 >
                                   <Calendar className="h-3 w-3" />
                                   {new Date(lead.leadDate).toLocaleDateString(
@@ -506,7 +595,9 @@ export default function FollowUpsPage() {
                               onClick={() => toggleHistory(lead.id)}
                               variant="ghost"
                               className="h-8 gap-1 px-2.5 text-xs hover:bg-[var(--maison-border-subtle)]"
-                              style={{ color: "var(--maison-text-secondary)" }}
+                              style={{
+                                color: "var(--maison-text-secondary)",
+                              }}
                             >
                               <History className="h-3.5 w-3.5 text-stone-400" />
                               <span>Historique</span>
@@ -574,7 +665,9 @@ export default function FollowUpsPage() {
                                 histories[lead.id].length === 0 ? (
                                 <p
                                   className="text-xs italic py-1"
-                                  style={{ color: "var(--maison-text-muted)" }}
+                                  style={{
+                                    color: "var(--maison-text-muted)",
+                                  }}
                                 >
                                   Aucun historique de relance enregistré.
                                   Cliquez sur le bouton &quot;Relancer&quot;
@@ -653,6 +746,17 @@ export default function FollowUpsPage() {
                     </React.Fragment>
                   );
                 })}
+                {filteredLeads.length === 0 && (
+                  <tr>
+                    <td
+                      className="px-6 py-10 text-center text-xs"
+                      colSpan={5}
+                      style={{ color: "var(--maison-text-muted)" }}
+                    >
+                      Aucun lead ne correspond à cette recherche.
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -690,7 +794,10 @@ export default function FollowUpsPage() {
                   className="text-xs truncate mt-0.5"
                   style={{ color: "var(--maison-text-secondary)" }}
                 >
-                  {selectedLead.topic}
+                  {getLeadIdentity(selectedLead).companyName}
+                  {getLeadIdentity(selectedLead).contactName
+                    ? ` · ${getLeadIdentity(selectedLead).contactName}`
+                    : ""}
                 </p>
               </div>
               <button

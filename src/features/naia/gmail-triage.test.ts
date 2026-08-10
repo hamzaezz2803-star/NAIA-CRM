@@ -56,6 +56,7 @@ describe("Gmail contextual triage", () => {
           id: "lead-tgcc",
           nextAction: "Valider le prochain atelier",
           nextActionDate: "2026-08-09",
+          nextActionState: "pending",
           status: "meeting-booked",
           topic: "TGCC — SOCLE",
         },
@@ -88,6 +89,68 @@ describe("Gmail contextual triage", () => {
         "overdue-crm-action",
       ]),
     );
+  });
+
+  it("does not score a completed CRM action as overdue", () => {
+    const [result] = triageGmailThreads({
+      accountEmail: "ali@qarizmi.com",
+      crmLeads: [
+        {
+          contactEmail: "client@tgcc.ma",
+          id: "lead-tgcc",
+          nextAction: "Action terminée",
+          nextActionDate: "2026-08-09",
+          nextActionState: "done",
+          status: "meeting-booked",
+          topic: "TGCC",
+        },
+      ],
+      now: NOW,
+      threads: [
+        thread("client-done", [
+          incoming({
+            from: "Client TGCC <client@tgcc.ma>",
+            internalDate: "1786266000000",
+            labelIds: ["INBOX", "IMPORTANT"],
+            subject: "Prochaine étape",
+            to: "Ali <ali@qarizmi.com>",
+          }),
+        ]),
+      ],
+    });
+
+    expect(result.reasons).not.toContain("overdue-crm-action");
+  });
+
+  it("compares timestamped CRM deadlines on the Casablanca calendar date", () => {
+    const now = new Date("2026-08-09T23:30:00.000Z");
+    const [result] = triageGmailThreads({
+      accountEmail: "ali@qarizmi.com",
+      crmLeads: [
+        {
+          contactEmail: "client@tgcc.ma",
+          id: "lead-casablanca-date",
+          nextAction: "Relancer aujourd'hui au Maroc",
+          nextActionDate: "2026-08-09T23:15:00.000Z",
+          nextActionState: "pending",
+          status: "to-follow-up",
+          topic: "Échéance Casablanca",
+        },
+      ],
+      now,
+      threads: [
+        thread("casablanca-date", [
+          incoming({
+            from: "Client TGCC <client@tgcc.ma>",
+            internalDate: new Date("2026-08-09T22:00:00.000Z")
+              .getTime()
+              .toString(),
+          }),
+        ]),
+      ],
+    });
+
+    expect(result.reasons).toContain("overdue-crm-action");
   });
 
   it("drops a conversation when a sent message follows the latest inbound", () => {

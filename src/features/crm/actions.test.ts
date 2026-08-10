@@ -53,11 +53,63 @@ import {
   extractLeadFromNaturalTextAction,
   fetchCompanyDetailAction,
   generateFollowUpDraftAction,
+  setLeadNextActionStateAction,
   syncLeadToGoogleCalendarAction,
   updateLeadAction,
   updateLeadStatusAction,
   type CrmActionContext,
 } from "./actions";
+
+describe("setLeadNextActionStateAction", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("uses the dedicated atomic RPC with optimistic action evidence", async () => {
+    const terminalQueries: QueryState[] = [];
+    const fallback = respondForLead({ companyName: "Atlas" });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        terminalQueries.push({ ...state });
+        if (
+          state.op === "rpc" &&
+          state.functionName === "set_crm_lead_next_action_state"
+        ) {
+          return {
+            data: {
+              lead_id: "lead-1",
+              next_action_completed_at: "2026-08-10T12:00:00.000Z",
+              next_action_completed_by_profile_id: "user-1",
+              next_action_state: "done",
+            },
+            error: null,
+          };
+        }
+        return fallback(state);
+      }),
+    );
+
+    const result = await setLeadNextActionStateAction("lead-1", "done", {
+      leadDate: "2026-08-10T15:00:00.000Z",
+      nextAction: "Relancer le client",
+    });
+
+    expect(result).toMatchObject({ state: "done", success: true });
+    expect(terminalQueries).toContainEqual(
+      expect.objectContaining({
+        functionName: "set_crm_lead_next_action_state",
+        payload: {
+          expected_due_date: "2026-08-10T15:00:00.000Z",
+          expected_next_action: "Relancer le client",
+          requested_actor_profile_id: "user-1",
+          requested_lead_id: "lead-1",
+          requested_organization_id: "org-1",
+          requested_state: "done",
+        },
+      }),
+    );
+  });
+});
 
 describe("fetchCompanyDetailAction dummy fallback", () => {
   beforeEach(() => {
@@ -208,7 +260,10 @@ function respondForLead({
   onUpdate?: (state: QueryState) => void;
 }): QueryResponder {
   return (state) => {
-    if (state.op === "rpc" && state.functionName === "update_crm_lead_atomic") {
+    if (
+      state.op === "rpc" &&
+      state.functionName === "update_crm_lead_uat_atomic"
+    ) {
       return {
         data: {
           access_scope: accessScope,
@@ -1265,7 +1320,7 @@ describe("CRM lead status Drive folder creation", () => {
     expect(result.success).toBe(true);
     expect(terminalQueries).toContainEqual(
       expect.objectContaining({
-        functionName: "update_crm_lead_atomic",
+        functionName: "update_crm_lead_uat_atomic",
         op: "rpc",
         payload: expect.objectContaining({
           requested_actor_profile_id: "user-1",
@@ -1289,7 +1344,7 @@ describe("CRM lead status Drive folder creation", () => {
         terminalQueries.push({ ...state });
         if (
           state.op === "rpc" &&
-          state.functionName === "update_crm_lead_atomic"
+          state.functionName === "update_crm_lead_uat_atomic"
         ) {
           return {
             data: null,
@@ -1318,10 +1373,10 @@ describe("CRM lead status Drive folder creation", () => {
     });
     expect(terminalQueries).toContainEqual(
       expect.objectContaining({
-        functionName: "update_crm_lead_atomic",
+        functionName: "update_crm_lead_uat_atomic",
         payload: expect.objectContaining({
-          requested_auto_company_name: "Secret Interns",
-          requested_auto_contact_name: "Candidate Person",
+          requested_company_name: "Secret Interns",
+          requested_contact_name: "Candidate Person",
         }),
       }),
     );

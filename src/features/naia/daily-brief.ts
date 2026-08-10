@@ -25,13 +25,20 @@ import { resolveBridgeUser, type NaiaBridgeUser } from "@/platform/naia/bridge";
 const DEFAULT_RECIPIENT = "ali@qarizmi.com";
 const DEFAULT_TIME_ZONE = "Africa/Casablanca";
 const COFOUNDER_EMAILS = new Set(["ali@qarizmi.com", "nabil@qarizmi.com"]);
+const TERMINAL_CRM_STATUSES = new Set(["won", "dead-end"]);
+const DAILY_BRIEF_CRM_STATUSES = GMAIL_TRIAGE_CRM_STATUSES.filter(
+  (status) => !TERMINAL_CRM_STATUSES.has(status),
+);
 const FAST_OPERATION_TIMEOUT_MS = 5_000;
 const PROVIDER_OPERATION_TIMEOUT_MS = 12_000;
 
 export type DailyBriefTask = {
   dueAt?: string;
   id: string;
+  leadId?: string;
+  leadStatus?: string;
   status: string;
+  taskKind?: "manual" | "lead-next-action" | "meeting-recommendation";
   title: string;
 };
 
@@ -42,6 +49,7 @@ export type DailyBriefLead = {
   leadDate?: string;
   nextAction?: string;
   nextActionDate?: string;
+  nextActionState?: "pending" | "done";
   status: string;
   topic: string;
 };
@@ -72,7 +80,10 @@ type DailyBriefRunRow = {
 type CrmTaskRow = {
   due_date: string | null;
   id: string;
+  lead: { status: string | null } | null;
+  lead_id: string | null;
   status: string;
+  task_kind: "manual" | "lead-next-action" | "meeting-recommendation";
   title: string;
 };
 
@@ -83,6 +94,7 @@ type CrmLeadRow = {
   lead_date: string | null;
   next_action: string | null;
   next_action_date: string | null;
+  next_action_state: "pending" | "done";
   status: string;
   topic: string;
 };
@@ -372,7 +384,7 @@ export async function loadDailyBriefData({
 
   const tasksPromise = supabase
     .from("crm_tasks")
-    .select("id,title,status,due_date")
+    .select("id,title,status,due_date,lead_id,task_kind,lead:lead_id(status)")
     .eq("organization_id", user.organizationId)
     .is("archived_at", null)
     .in("status", ["todo", "in-progress"])
@@ -381,12 +393,12 @@ export async function loadDailyBriefData({
   const leadsPromise = supabase
     .from("crm_leads")
     .select(
-      "id,topic,status,next_action,next_action_date,lead_date,company:company_id(name),contact:contact_id(email)",
+      "id,topic,status,next_action,next_action_date,next_action_state,lead_date,company:company_id(name),contact:contact_id(email)",
     )
     .eq("organization_id", user.organizationId)
     .is("archived_at", null)
-    .in("status", [...GMAIL_TRIAGE_CRM_STATUSES])
-    .order("next_action_date", { ascending: true, nullsFirst: false })
+    .in("status", DAILY_BRIEF_CRM_STATUSES)
+    .order("lead_date", { ascending: true, nullsFirst: false })
     .limit(1000);
   const calendarPromise = listGoogleCalendarEvents(
     {
@@ -444,7 +456,8 @@ export async function loadDailyBriefData({
       id: lead.id,
       leadDate: lead.lead_date ?? undefined,
       nextAction: lead.next_action ?? undefined,
-      nextActionDate: lead.next_action_date ?? undefined,
+      nextActionDate: lead.lead_date ?? lead.next_action_date ?? undefined,
+      nextActionState: lead.next_action_state ?? "pending",
       status: lead.status,
       topic: lead.topic,
     }),
@@ -460,12 +473,21 @@ export async function loadDailyBriefData({
       threads: gmailThreads,
     }),
     leads,
-    tasks: ((tasksResult.data ?? []) as CrmTaskRow[]).map((task) => ({
-      dueAt: task.due_date ?? undefined,
-      id: task.id,
-      status: task.status,
-      title: task.title,
-    })),
+    tasks: ((tasksResult.data ?? []) as unknown as CrmTaskRow[])
+      .map((task) => ({
+        dueAt: task.due_date ?? undefined,
+        id: task.id,
+        leadId: task.lead_id ?? undefined,
+        leadStatus: task.lead?.status ?? undefined,
+        status: task.status,
+        taskKind: task.task_kind ?? "manual",
+        title: task.title,
+      }))
+      .filter(
+        (task) =>
+          task.taskKind !== "lead-next-action" ||
+          !isTerminalCrmStatus(task.leadStatus),
+      ),
     warnings: [...new Set(warnings)],
   };
 }
@@ -504,23 +526,47 @@ export function buildDailyBriefMessage({
   const today = localDateKey(now, timeZone);
   const weekEnd = addDaysToDateKey(today, 7);
   const firstName = displayName.trim().split(/\s+/)[0] || "Ali";
-  const overdueTasks = data.tasks.filter(
+  const activeTasks = data.tasks.filter(
+    (task) =>
+      task.taskKind !== "lead-next-action" ||
+      !isTerminalCrmStatus(task.leadStatus),
+  );
+  const overdueTasks = activeTasks.filter(
     (task) =>
       task.dueAt && localDateKey(new Date(task.dueAt), timeZone) < today,
   );
-  const todayTasks = data.tasks.filter(
+  const todayTasks = activeTasks.filter(
     (task) =>
       task.dueAt && localDateKey(new Date(task.dueAt), timeZone) === today,
   );
-  const weekTasks = data.tasks.filter((task) => {
+  const weekTasks = activeTasks.filter((task) => {
     if (!task.dueAt) return false;
     const date = localDateKey(new Date(task.dueAt), timeZone);
     return date > today && date <= weekEnd;
   });
-  const overdueLeads = data.leads.filter(
-    (lead) => lead.nextActionDate && lead.nextActionDate < today,
+  const projectedLeadIds = new Set(
+    activeTasks
+      .filter((task) => task.taskKind === "lead-next-action" && task.leadId)
+      .map((task) => task.leadId as string),
   );
-  const todayLeads = data.leads.filter((lead) => lead.nextActionDate === today);
+  const overdueLeads = data.leads.filter((lead) => {
+    const dueAt = lead.leadDate ?? lead.nextActionDate;
+    return Boolean(
+      hasPendingDailyBriefAction(lead) &&
+      dueAt &&
+      localDateKey(new Date(dueAt), timeZone) < today &&
+      !projectedLeadIds.has(lead.id),
+    );
+  });
+  const todayLeads = data.leads.filter((lead) => {
+    const dueAt = lead.leadDate ?? lead.nextActionDate;
+    return Boolean(
+      hasPendingDailyBriefAction(lead) &&
+      dueAt &&
+      localDateKey(new Date(dueAt), timeZone) === today &&
+      !projectedLeadIds.has(lead.id),
+    );
+  });
   const todayEvents = data.calendarEvents.filter(
     (event) => event.start && eventDateKey(event.start, timeZone) === today,
   );
@@ -530,7 +576,13 @@ export function buildDailyBriefMessage({
     return date > today && date <= weekEnd;
   });
   const weekMeetings = data.leads.filter((lead) => {
-    if (lead.status !== "meeting-booked" || !lead.leadDate) return false;
+    if (
+      lead.status !== "meeting-booked" ||
+      !lead.leadDate ||
+      !hasPendingDailyBriefAction(lead)
+    ) {
+      return false;
+    }
     const date = eventDateKey(lead.leadDate, timeZone);
     return date >= today && date <= weekEnd;
   });
@@ -638,6 +690,18 @@ export function buildDailyBriefMessage({
     blocks,
     text: fallbackSections.join("\n"),
   };
+}
+
+function hasPendingDailyBriefAction(lead: DailyBriefLead) {
+  return Boolean(
+    lead.nextAction?.trim() &&
+    lead.nextActionState !== "done" &&
+    !isTerminalCrmStatus(lead.status),
+  );
+}
+
+function isTerminalCrmStatus(status: string | undefined) {
+  return Boolean(status && TERMINAL_CRM_STATUSES.has(status));
 }
 
 function formatWarning(warning: string) {

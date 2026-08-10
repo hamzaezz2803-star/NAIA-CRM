@@ -100,8 +100,85 @@ describe("normalizeTrelloExport", () => {
         }),
       ],
     });
+    expect(clientLead?.payload).toMatchObject({
+      dueComplete: false,
+      nextAction: "Échéance Trello",
+      nextActionState: "pending",
+    });
     expect(JSON.stringify(first)).not.toContain("intern@example.test");
     expect(JSON.stringify(first)).not.toContain("private audit trail");
+  });
+
+  it("preserves Trello due completion and derives the due next-action state", () => {
+    const dryRun = normalizeTrelloExport({
+      ...syntheticBoard,
+      cards: [
+        {
+          ...syntheticBoard.cards[0],
+          dueComplete: true,
+          id: "card-due-complete",
+        },
+        {
+          ...syntheticBoard.cards[0],
+          id: "card-due-incomplete",
+        },
+      ],
+    });
+    const completed = dryRun.items.find(
+      (item) => item.externalId === "card-due-complete",
+    );
+    const incomplete = dryRun.items.find(
+      (item) => item.externalId === "card-due-incomplete",
+    );
+
+    expect(completed?.payload).toMatchObject({
+      dueComplete: true,
+      leadDate: "2026-08-11T09:30:00.000Z",
+      nextAction: "Échéance Trello",
+      nextActionState: "done",
+    });
+    expect(incomplete?.payload).toMatchObject({
+      dueComplete: false,
+      nextAction: "Échéance Trello",
+      nextActionState: "pending",
+    });
+  });
+
+  it("keeps an explicit incomplete checklist item pending even when the card due date is complete", () => {
+    const dryRun = normalizeTrelloExport({
+      ...syntheticBoard,
+      cards: [
+        {
+          ...syntheticBoard.cards[0],
+          dueComplete: true,
+          id: "card-checklist-pending",
+        },
+      ],
+      checklists: [
+        {
+          checkItems: [
+            {
+              id: "check-item-pending",
+              name: "Envoyer la proposition",
+              pos: 1,
+              state: "incomplete",
+            },
+          ],
+          id: "checklist-pending",
+          idCard: "card-checklist-pending",
+          name: "Suivi",
+        },
+      ],
+    });
+    const lead = dryRun.items.find(
+      (item) => item.externalId === "card-checklist-pending",
+    );
+
+    expect(lead?.payload).toMatchObject({
+      dueComplete: true,
+      nextAction: "Envoyer la proposition",
+      nextActionState: "pending",
+    });
   });
 
   it("fails closed when a credential-like key is present", () => {
@@ -237,37 +314,70 @@ describe("normalizeTrelloExport", () => {
     expect(dryRun.warnings.join(" ")).not.toMatch(/tronqu/i);
   });
 
-  it("allows only the three explicitly reviewed labels on the commercial board", () => {
+  it("turns the reviewed Ali and Nabil label IDs into assignments without staging tags", () => {
     const reviewed = normalizeTrelloExport({
       ...syntheticBoard,
       cards: [
         {
           closed: false,
           desc: "",
-          id: "card-reviewed-labels",
-          idLabels: ["label-ali", "label-nabil", "label-updated"],
+          id: "card-ali",
+          idLabels: ["69de18c5a11891f0f0aae8f0", "label-updated"],
           idList: "list-pipeline",
-          name: "Lead commercial synthétique",
+          name: "Lead commercial Ali",
+        },
+        {
+          closed: false,
+          desc: "",
+          id: "card-nabil",
+          idLabels: ["69de18c5a11891f0f0aae8ec"],
+          idList: "list-pipeline",
+          name: "Lead commercial Nabil",
         },
       ],
       id: "69de18c4a11891f0f0aae68a",
       labels: [
-        { color: "blue", id: "label-ali", name: "Ali" },
-        { color: "green", id: "label-nabil", name: "Nabil" },
+        { color: "blue", id: "69de18c5a11891f0f0aae8f0", name: "Ali" },
+        { color: "green", id: "69de18c5a11891f0f0aae8ec", name: "Nabil" },
         { color: "yellow", id: "label-updated", name: "Updated" },
       ],
       lists: [
         { closed: false, id: "list-pipeline", name: "Contacted", pos: 1 },
       ],
     });
-    const reviewedLead = reviewed.items.find(
-      (item) => item.externalId === "card-reviewed-labels",
+    const aliLead = reviewed.items.find(
+      (item) => item.externalId === "card-ali",
+    );
+    const nabilLead = reviewed.items.find(
+      (item) => item.externalId === "card-nabil",
+    );
+    const stagedTags = reviewed.items.filter(
+      (item) => item.entityType === "tag",
     );
 
-    expect(reviewedLead?.accessScope).toBe("organization");
-    expect(reviewedLead?.privacyReasons).toContain(
+    expect(aliLead).toMatchObject({
+      accessScope: "organization",
+      payload: {
+        assignedToEmail: "ali@qarizmi.com",
+        labelExternalIds: ["label-updated"],
+      },
+      validationErrors: [],
+    });
+    expect(nabilLead).toMatchObject({
+      accessScope: "organization",
+      payload: {
+        assignedToEmail: "nabil@qarizmi.com",
+        labelExternalIds: [],
+      },
+      validationErrors: [],
+    });
+    expect(aliLead?.privacyReasons).toContain(
       "label:explicit-sales-label-allowlist",
     );
+    expect(stagedTags.map((item) => item.externalId)).toEqual([
+      "label-updated",
+    ]);
+    expect(reviewed.counts.tags).toBe(1);
 
     const unknown = normalizeTrelloExport({
       ...syntheticBoard,
@@ -282,15 +392,88 @@ describe("normalizeTrelloExport", () => {
         },
       ],
       id: "69de18c4a11891f0f0aae68a",
-      labels: [{ color: "purple", id: "label-unknown", name: "Unknown label" }],
+      labels: [{ color: "purple", id: "label-unknown", name: "Ali" }],
       lists: [
         { closed: false, id: "list-pipeline", name: "Contacted", pos: 1 },
       ],
     });
+    const unknownLead = unknown.items.find(
+      (item) => item.externalId === "card-unknown-label",
+    );
+    expect(unknownLead?.accessScope).toBe("cofounders");
+    expect(unknownLead?.payload.assignedToEmail).toBeUndefined();
     expect(
-      unknown.items.find((item) => item.externalId === "card-unknown-label")
-        ?.accessScope,
-    ).toBe("cofounders");
+      unknown.items.some(
+        (item) =>
+          item.entityType === "tag" && item.externalId === "label-unknown",
+      ),
+    ).toBe(true);
+  });
+
+  it("fails closed when a card has multiple founder assignment labels", () => {
+    const dryRun = normalizeTrelloExport({
+      ...syntheticBoard,
+      cards: [
+        {
+          closed: false,
+          desc: "",
+          id: "card-double-assignment",
+          idLabels: ["69de18c5a11891f0f0aae8f0", "69de18c5a11891f0f0aae8ec"],
+          idList: "list-pipeline",
+          name: "Lead commercial ambigu",
+        },
+      ],
+      id: "69de18c4a11891f0f0aae68a",
+      labels: [
+        { color: "blue", id: "69de18c5a11891f0f0aae8f0", name: "Ali" },
+        { color: "green", id: "69de18c5a11891f0f0aae8ec", name: "Nabil" },
+      ],
+      lists: [
+        { closed: false, id: "list-pipeline", name: "Contacted", pos: 1 },
+      ],
+    });
+    const lead = dryRun.items.find(
+      (item) => item.externalId === "card-double-assignment",
+    );
+
+    expect(lead).toMatchObject({
+      accessScope: "cofounders",
+      payload: { labelExternalIds: [] },
+      privacyReasons: [
+        "list:explicit-sales-stage-allowlist",
+        "fail-closed:multiple-assignee-labels",
+      ],
+      validationErrors: ["trello:multiple-assignee-labels"],
+    });
+    expect(lead?.payload.assignedToEmail).toBeUndefined();
+    expect(dryRun.items.filter((item) => item.entityType === "tag")).toEqual(
+      [],
+    );
+    expect(dryRun.warnings.join(" ")).toMatch(
+      /plusieurs labels d'assignation refusée/i,
+    );
+  });
+
+  it("treats Ali and Nabil as assignees only on the reviewed commercial board", () => {
+    const foreignBoard = normalizeTrelloExport({
+      ...syntheticBoard,
+      cards: [
+        {
+          ...syntheticBoard.cards[0],
+          idLabels: ["label-ali"],
+        },
+      ],
+      labels: [{ color: "blue", id: "label-ali", name: "Ali" }],
+    });
+    const lead = foreignBoard.items.find((item) => item.entityType === "lead");
+
+    expect(lead?.payload.assignedToEmail).toBeUndefined();
+    expect(lead?.payload.labelExternalIds).toEqual(["label-ali"]);
+    expect(
+      foreignBoard.items.some(
+        (item) => item.entityType === "tag" && item.externalId === "label-ali",
+      ),
+    ).toBe(true);
   });
 
   it("preserves unnamed labels privately, including unused definitions and card relations", () => {

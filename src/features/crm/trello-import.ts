@@ -109,6 +109,7 @@ const trelloCardSchema = z
     closed: z.boolean().default(false),
     desc: z.string().max(100_000).default(""),
     due: z.string().nullable().optional(),
+    dueComplete: z.boolean().default(false),
     id: trelloId,
     idLabels: z.array(trelloId).max(200).default([]),
     idList: trelloId,
@@ -151,7 +152,15 @@ const ORGANIZATION_SAFE_LABEL_PATTERN =
 const BOARD_LABEL_ALLOWLIST: Readonly<Record<string, ReadonlySet<string>>> = {
   // Commercial Lead Consulting board. Exact, reviewed labels only; every
   // unknown label on this or another board remains founder-only.
-  "69de18c4a11891f0f0aae68a": new Set(["ali", "nabil", "updated"]),
+  "69de18c4a11891f0f0aae68a": new Set(["updated"]),
+};
+const ASSIGNEE_EMAIL_BY_BOARD_LABEL_ID: Readonly<
+  Record<string, Readonly<Record<string, string>>>
+> = {
+  "69de18c4a11891f0f0aae68a": {
+    "69de18c5a11891f0f0aae8ec": "nabil@qarizmi.com",
+    "69de18c5a11891f0f0aae8f0": "ali@qarizmi.com",
+  },
 };
 const CREDENTIAL_KEY_TERMS = [
   "token",
@@ -314,6 +323,10 @@ function isOrganizationSafeLabel(boardId: string, labelName: string) {
     ORGANIZATION_SAFE_LABEL_PATTERN.test(labelName.trim()) ||
     BOARD_LABEL_ALLOWLIST[boardId]?.has(normalized) === true
   );
+}
+
+function assignedToEmailForLabel(boardId: string, labelId: string) {
+  return ASSIGNEE_EMAIL_BY_BOARD_LABEL_ID[boardId]?.[labelId];
 }
 
 function duplicateCounts(values: string[]) {
@@ -584,6 +597,7 @@ export function normalizeTrelloExport(
     { accessScope: CrmAccessScope; reasons: string[] }
   >();
   for (const label of board.labels) {
+    if (assignedToEmailForLabel(board.id, label.id)) continue;
     if (!label.name.trim() || containsSensitiveCrmText(label.name)) {
       labelPrivacy.set(label.id, {
         accessScope: "cofounders",
@@ -657,6 +671,7 @@ export function normalizeTrelloExport(
   }
 
   for (const label of board.labels) {
+    if (assignedToEmailForLabel(board.id, label.id)) continue;
     const privacy = labelPrivacy.get(label.id) ?? {
       accessScope: "cofounders" as const,
       reasons: ["fail-closed:missing-label-rule"],
@@ -758,6 +773,16 @@ export function normalizeTrelloExport(
       .flatMap((checklist) => checklist.checkItems)
       .sort((left, right) => (left.pos ?? 0) - (right.pos ?? 0))
       .find((item) => item.state !== "complete");
+    const assignmentLabels = card.idLabels.flatMap((labelId) => {
+      const label = labelsById.get(labelId);
+      const email = label
+        ? assignedToEmailForLabel(board.id, label.id)
+        : undefined;
+      return email ? [{ email, labelId }] : [];
+    });
+    const assignedToEmail =
+      assignmentLabels.length === 1 ? assignmentLabels[0]?.email : undefined;
+    const hasAmbiguousAssignment = assignmentLabels.length > 1;
     const privacyReasons: string[] = [];
     let accessScope: CrmAccessScope = "organization";
     let hasUnnamedLabel = false;
@@ -773,6 +798,7 @@ export function normalizeTrelloExport(
     }
     for (const labelId of card.idLabels) {
       const label = labelsById.get(labelId);
+      if (label && assignedToEmailForLabel(board.id, label.id)) continue;
       if (label && !label.name.trim()) {
         accessScope = "cofounders";
         hasUnnamedLabel = true;
@@ -796,13 +822,21 @@ export function normalizeTrelloExport(
     if (hasUnnamedLabel) {
       privacyReasons.push("label:fail-closed:unnamed-label");
     }
+    if (hasAmbiguousAssignment) {
+      accessScope = "cofounders";
+      privacyReasons.push("fail-closed:multiple-assignee-labels");
+      warnings.push(
+        `Carte Trello avec plusieurs labels d'assignation refusée (${card.id}).`,
+      );
+    }
     const due = validDueDate(card.due);
     if (card.due && !due) {
       warnings.push(`Échéance Trello invalide ignorée (${card.id}).`);
     }
-    const knownLabelIds = card.idLabels.filter((labelId) =>
-      labelsById.has(labelId),
-    );
+    const knownLabelIds = card.idLabels.filter((labelId) => {
+      const label = labelsById.get(labelId);
+      return label ? !assignedToEmailForLabel(board.id, label.id) : false;
+    });
     const unknownLabelCount = card.idLabels.filter(
       (labelId) => !labelsById.has(labelId),
     ).length;
@@ -817,14 +851,20 @@ export function normalizeTrelloExport(
         externalId: card.id,
         parentExternalId: list?.id ?? orphanCategoryExternalId,
         payload: {
+          ...(assignedToEmail ? { assignedToEmail } : {}),
+          dueComplete: card.dueComplete,
           labelExternalIds: knownLabelIds,
           ...(due ? { leadDate: due } : {}),
           ...(firstIncompleteItem?.name.trim()
             ? {
                 nextAction: firstIncompleteItem.name.trim(),
+                nextActionState: "pending",
               }
             : due
-              ? { nextAction: "Échéance Trello" }
+              ? {
+                  nextAction: "Échéance Trello",
+                  nextActionState: card.dueComplete ? "done" : "pending",
+                }
               : {}),
           notes: normalizedNotes,
           source: "Trello",
@@ -838,7 +878,9 @@ export function normalizeTrelloExport(
           topic: card.name.trim() || "Carte Trello sans titre",
         },
         privacyReasons: [...new Set(privacyReasons)],
-        validationErrors: [],
+        validationErrors: hasAmbiguousAssignment
+          ? ["trello:multiple-assignee-labels"]
+          : [],
       }),
     );
   }

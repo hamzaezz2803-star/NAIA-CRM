@@ -165,6 +165,35 @@ the server snapshot. Pointer, touch and keyboard users share the same drag
 handle; moving a card to another status keeps the existing reviewed status
 action and places it at the top of the destination column.
 
+## Production CRM Presentation And Import Contract
+
+- The company and contact relations are the canonical lead identity. Legacy
+  note/topic parsing is a compatibility fallback only when a canonical
+  relation is absent; reviewed writes must populate the canonical records.
+  Kanban cards stay compact and show that company/contact identity plus the
+  useful action context, without a separate project/topic line or source badge.
+- `crm_leads.next_action_state` is either `pending` or `done` and is independent
+  from the pipeline stage. Completing a next action records completion metadata
+  but never moves the lead to another status; changing the action or its due
+  date reopens it as `pending`.
+- `crm_tasks.task_kind` makes provenance explicit: `manual`,
+  `lead-next-action`, or `meeting-recommendation`. A
+  `lead-next-action` row is a projection of its lead and is maintained by the
+  database boundary. Task reads are strictly read-only and must never perform
+  an insert, update, delete, or opportunistic backfill.
+- The two explicitly reviewed founder-assignment labels from Trello map to the
+  corresponding Ali or Nabil organization member. They are assignment
+  metadata, not CRM tags, and are removed from tag staging. Multiple assignment
+  labels, unknown identities, or membership conflicts fail closed for review.
+- Import enrichment may write an email or phone only when one unambiguous,
+  high-confidence value can be linked to the canonical contact. Conflicting or
+  uncertain candidates stay in the preserved source notes/staging evidence and
+  are surfaced for human review instead of being guessed.
+- Confidential or unreviewed import families remain `cofounders` scoped.
+  Cleanup uses `archived_at` on leads, tasks, tags, relations, and import
+  references; production reads filter archived rows, and no imported source
+  record is physically deleted.
+
 If CRM later needs dashboard widgets, expose a CRM-owned widget descriptor from `src/features/crm` and coordinate with Ali before adding it to the Dashboard.
 
 ## Events And Workflows

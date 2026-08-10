@@ -34,6 +34,7 @@ type FakeQueryBuilder = {
   delete: () => FakeQueryBuilder;
   eq: (column: string, value: unknown) => FakeQueryBuilder;
   insert: (payload: unknown) => FakeQueryBuilder;
+  is: (column: string, value: unknown) => FakeQueryBuilder;
   limit: () => FakeQueryBuilder;
   not: () => FakeQueryBuilder;
   order: () => FakeQueryBuilder;
@@ -68,6 +69,10 @@ function createFakeSupabase(respond: QueryResponder) {
         insert(payload: unknown) {
           state.operation = "insert";
           state.payload = payload;
+          return builder;
+        },
+        is(column, value) {
+          state.filters.push({ column, value });
           return builder;
         },
         limit() {
@@ -299,6 +304,64 @@ describe("deleteAllNotifications", () => {
       }),
     ]);
   });
+
+  it("uses the Casablanca calendar day for reminder tombstones around midnight", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-09T23:30:00.000Z"));
+
+    try {
+      const operations: QueryState[] = [];
+      mocks.createServerSupabaseClient.mockResolvedValue(
+        createFakeSupabase((state) => {
+          operations.push({
+            ...state,
+            payload: state.payload,
+          });
+          const membership = membershipResponse(state);
+          if (membership) return membership;
+
+          if (state.table === "crm_leads" && state.operation === "select") {
+            return {
+              data: [
+                {
+                  id: "lead-due-in-casablanca",
+                  lead_date: "2026-08-09T23:15:00.000Z",
+                  next_action_date: null,
+                  next_action_state: "pending",
+                  topic: "Échéance locale",
+                },
+                {
+                  id: "lead-due-tomorrow-in-casablanca",
+                  lead_date: "2026-08-10T23:15:00.000Z",
+                  next_action_date: null,
+                  next_action_state: "pending",
+                  topic: "Échéance demain",
+                },
+              ],
+              error: null,
+            };
+          }
+
+          return { data: null, error: null };
+        }),
+      );
+
+      await expect(deleteAllNotifications()).resolves.toBe(true);
+
+      const insert = operations.find(
+        (state) =>
+          state.table === "notifications" && state.operation === "insert",
+      );
+      expect(insert?.payload).toEqual([
+        expect.objectContaining({
+          description: "lead-due-in-casablanca:2026-08-10",
+          title: "lead-reminder-dismissed",
+        }),
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe("CRM reminder persistence", () => {
@@ -355,6 +418,53 @@ describe("CRM reminder persistence", () => {
         id: "lead-reminder-lead-1:2026-07-23",
         is_read: false,
         title: "Rappel Lead : HPS",
+      }),
+    ]);
+  });
+
+  it("uses the Casablanca calendar day for visibility and reminder keys around midnight", async () => {
+    vi.setSystemTime(new Date("2026-08-09T23:30:00.000Z"));
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase((state) => {
+        const membership = membershipResponse(state);
+        if (membership) return membership;
+
+        if (state.table === "notifications" && state.operation === "select") {
+          return { data: [], error: null };
+        }
+
+        if (state.table === "crm_leads" && state.operation === "select") {
+          return {
+            data: [
+              {
+                id: "lead-due-in-casablanca",
+                lead_date: "2026-08-09T23:15:00.000Z",
+                next_action: "Relancer ce matin",
+                next_action_date: null,
+                next_action_state: "pending",
+                topic: "Échéance locale",
+              },
+              {
+                id: "lead-due-tomorrow-in-casablanca",
+                lead_date: "2026-08-10T23:15:00.000Z",
+                next_action: "Relancer demain",
+                next_action_date: null,
+                next_action_state: "pending",
+                topic: "Échéance demain",
+              },
+            ],
+            error: null,
+          };
+        }
+
+        return { data: null, error: null };
+      }),
+    );
+
+    await expect(getNotifications()).resolves.toEqual([
+      expect.objectContaining({
+        id: "lead-reminder-lead-due-in-casablanca:2026-08-10",
+        title: "Rappel Lead : Échéance locale",
       }),
     ]);
   });

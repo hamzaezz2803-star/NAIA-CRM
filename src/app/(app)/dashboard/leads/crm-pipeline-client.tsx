@@ -59,6 +59,7 @@ import {
   generateFollowUpDraftAction,
   createGoogleDriveFolderAction,
   updateLeadAction,
+  setLeadNextActionStateAction,
   syncLeadToGoogleCalendarAction,
   createCategoryAction,
   updateCategoryAction,
@@ -91,6 +92,11 @@ import type {
   CrmLeadNote,
 } from "@/features/crm/contracts";
 import { formatCrmDateTimeForInput } from "@/features/crm/date-time";
+import {
+  getCrmPipelineDateState,
+  getCrmPipelineLeadIdentity,
+  partitionCrmPipelineActionLeads,
+} from "@/features/crm/pipeline-presentation";
 import { usePublishNaiaPageContext } from "@/features/naia/naia-page-context";
 import { GOOGLE_REVOCATION_CONFIRMATION } from "@/platform/integrations/google-revocation-contract";
 import toast from "react-hot-toast";
@@ -122,22 +128,6 @@ function formatLeadDateForDisplay(dateStr?: string): string {
   } catch {
     return dateStr;
   }
-}
-
-function inferCompanyNameFromTopic(topic: string) {
-  const cleanTopic = topic.trim();
-  const companyPrefix = cleanTopic.split(" - ")[0]?.trim();
-
-  if (
-    companyPrefix &&
-    companyPrefix.length >= 3 &&
-    !/^projet\b/i.test(companyPrefix)
-  ) {
-    return companyPrefix;
-  }
-
-  const meetingMatch = cleanTopic.match(/(?:avec|chez)\s+(.+)$/i);
-  return meetingMatch?.[1]?.trim() ?? "";
 }
 
 // ────────────────────────────────────────────────────────────
@@ -357,14 +347,8 @@ export function CrmPipelineClient({
   const uniqueCompanies = Array.from(
     new Set(
       leads
-        .map((l) => {
-          const noteLines = (l.notes ?? "").split("\n");
-          return noteLines
-            .find((line) => line.startsWith("Entreprise:"))
-            ?.replace("Entreprise:", "")
-            .trim();
-        })
-        .filter(Boolean) as string[],
+        .map((lead) => getCrmPipelineLeadIdentity(lead).companyName)
+        .filter(Boolean),
     ),
   ).sort();
 
@@ -373,12 +357,7 @@ export function CrmPipelineClient({
       return false;
     }
     if (filterCompany !== "all") {
-      const noteLines = (lead.notes ?? "").split("\n");
-      const companyName =
-        noteLines
-          .find((l) => l.startsWith("Entreprise:"))
-          ?.replace("Entreprise:", "")
-          .trim() ?? "";
+      const { companyName } = getCrmPipelineLeadIdentity(lead);
       if (companyName !== filterCompany) {
         return false;
       }
@@ -534,7 +513,6 @@ export function CrmPipelineClient({
   });
 
   // Edit form fields state
-  const [editTopic, setEditTopic] = useState("");
   const [editCompanyName, setEditCompanyName] = useState("");
   const [editContactName, setEditContactName] = useState("");
   const [editJobTitle, setEditJobTitle] = useState("");
@@ -591,9 +569,8 @@ export function CrmPipelineClient({
       )
       .join("\n");
 
-    setEditTopic(lead.topic);
-    setEditCompanyName(company);
-    setEditContactName(contact);
+    setEditCompanyName(lead.companyName?.trim() || company);
+    setEditContactName(lead.contactName?.trim() || contact);
     // Read job title and LinkedIn from proper DB fields (fall back to notes for legacy data)
     setEditJobTitle(
       lead.contactJobTitle ??
@@ -611,8 +588,8 @@ export function CrmPipelineClient({
           .trim() ??
         "",
     );
-    setEditEmail(email);
-    setEditPhone(phone);
+    setEditEmail(lead.contactEmail?.trim() || email);
+    setEditPhone(lead.contactPhone?.trim() || phone);
     setEditSource(lead.source ?? "");
     setEditNextAction(lead.nextAction ?? "");
     setEditLeadDate(formatCrmDateTimeForInput(lead.leadDate ?? ""));
@@ -621,7 +598,11 @@ export function CrmPipelineClient({
 
     // Populate assignment and tags
     setEditAssignee(lead.assignedToProfileId ?? "");
-    setEditTags((lead.tags ?? []).map((t) => t.id));
+    setEditTags(
+      (lead.tags ?? [])
+        .filter((tag) => !/^(ali|nabil)$/i.test(tag.name.trim()))
+        .map((tag) => tag.id),
+    );
 
     // Reset notes forms and fetch notes from backend
     setNewNoteText("");
@@ -666,7 +647,6 @@ export function CrmPipelineClient({
   }, [isRecording]);
 
   // Form fields (from extracted or manual)
-  const [formTopic, setFormTopic] = useState("");
   const [formCompanyName, setFormCompanyName] = useState("");
   const [formContactName, setFormContactName] = useState("");
   const [formJobTitle, setFormJobTitle] = useState("");
@@ -696,7 +676,6 @@ export function CrmPipelineClient({
   const [isCreatingFolder, setIsCreatingFolder] = useState(false);
   const [isSyncingCalendar, setIsSyncingCalendar] = useState(false);
   const [modalError, setModalError] = useState<string | null>(null);
-  const [isStatusDropdownOpen, setIsStatusDropdownOpen] = useState(false);
   const [isFormStatusDropdownOpen, setIsFormStatusDropdownOpen] =
     useState(false);
 
@@ -875,7 +854,11 @@ export function CrmPipelineClient({
         const auxiliary = await fetchCrmPipelineAuxiliaryAction();
         if (isMounted) {
           setIsGoogleConnected(auxiliary.isGoogleConnected);
-          setTags(auxiliary.tags);
+          setTags(
+            auxiliary.tags.filter(
+              (tag) => !/^(ali|nabil)$/i.test(tag.name.trim()),
+            ),
+          );
           setTeamMembers(auxiliary.teamMembers);
         }
       } catch (err) {
@@ -1107,7 +1090,6 @@ export function CrmPipelineClient({
 
     if (res.success && res.extracted) {
       const e = res.extracted;
-      setFormTopic(e.topic ?? "");
       setFormCompanyName(e.companyName ?? "");
       setFormContactName(e.contactName ?? "");
       setFormEmail(e.contactEmail ?? "");
@@ -1131,8 +1113,8 @@ export function CrmPipelineClient({
   // ── Create lead ─────────────────────────────────────────
   async function handleCreateLead(e: React.FormEvent) {
     e.preventDefault();
-    if (!formTopic.trim()) {
-      setFormError("Le sujet est obligatoire.");
+    if (!formCompanyName.trim()) {
+      setFormError("Le nom de l’entreprise est obligatoire.");
       return;
     }
     setIsSubmitting(true);
@@ -1141,19 +1123,14 @@ export function CrmPipelineClient({
 
     // Concat legacy contact info inside notes for display compatibility
     const res = await createLeadAction({
-      topic: formTopic,
+      topic: formCompanyName.trim(),
+      companyName: formCompanyName.trim(),
+      contactName: formContactName.trim() || undefined,
+      contactEmail: formEmail.trim() || undefined,
+      contactPhone: formPhone.trim() || undefined,
       source: formSource || undefined,
       status: formStatus,
-      notes:
-        [
-          formCompanyName && `Entreprise: ${formCompanyName}`,
-          formContactName && `Contact: ${formContactName}`,
-          formEmail && `Email: ${formEmail}`,
-          formPhone && `Tél: ${formPhone}`,
-          formNotes,
-        ]
-          .filter(Boolean)
-          .join("\n") || undefined,
+      notes: formNotes.trim() || undefined,
       nextAction: formNextAction || undefined,
       leadDate: formLeadDate || undefined,
       contactJobTitle: formJobTitle || undefined,
@@ -1179,8 +1156,8 @@ export function CrmPipelineClient({
   async function handleUpdateLead(e: React.FormEvent) {
     e.preventDefault();
     if (!selectedLead) return;
-    if (!editTopic.trim()) {
-      setModalError("Le nom du projet est obligatoire.");
+    if (!editCompanyName.trim()) {
+      setModalError("Le nom de l’entreprise est obligatoire.");
       return;
     }
     setIsSubmitting(true);
@@ -1188,19 +1165,14 @@ export function CrmPipelineClient({
     const updateToastId = toast.loading("Mise à jour du lead...");
 
     const res = await updateLeadAction(selectedLead.id, {
-      topic: editTopic,
+      topic: editCompanyName.trim(),
+      companyName: editCompanyName.trim(),
+      contactName: editContactName.trim(),
+      contactEmail: editEmail.trim(),
+      contactPhone: editPhone.trim(),
       status: editStatus,
       source: editSource || undefined,
-      notes:
-        [
-          editCompanyName && `Entreprise: ${editCompanyName}`,
-          editContactName && `Contact: ${editContactName}`,
-          editEmail && `Email: ${editEmail}`,
-          editPhone && `Tél: ${editPhone}`,
-          editNotes,
-        ]
-          .filter(Boolean)
-          .join("\n") || undefined,
+      notes: editNotes.trim() || undefined,
       nextAction: editNextAction || undefined,
       leadDate: editLeadDate || undefined,
       contactJobTitle: editJobTitle,
@@ -1223,9 +1195,46 @@ export function CrmPipelineClient({
     setIsSubmitting(false);
   }
 
+  async function handleToggleNextActionState(lead: CrmLeadSummary) {
+    if (!lead.nextAction?.trim() && !lead.leadDate) return;
+    const nextState = lead.nextActionState === "done" ? "pending" : "done";
+    const toastId = toast.loading(
+      nextState === "done" ? "Action marquée comme faite…" : "Réouverture…",
+    );
+    const res = await setLeadNextActionStateAction(lead.id, nextState, {
+      leadDate: lead.leadDate,
+      nextAction: lead.nextAction,
+    });
+
+    if (!res.success || !res.state) {
+      toast.error(res.error ?? "Impossible de modifier l’action.", {
+        id: toastId,
+      });
+      return;
+    }
+
+    const update = (current: CrmLeadSummary): CrmLeadSummary => ({
+      ...current,
+      nextActionCompletedAt: res.completedAt,
+      nextActionCompletedByProfileId: res.completedByProfileId,
+      nextActionState: res.state,
+    });
+    setLeads((current) =>
+      current.map((item) => (item.id === lead.id ? update(item) : item)),
+    );
+    setSelectedLead((current) =>
+      current?.id === lead.id ? update(current) : current,
+    );
+    toast.success(
+      res.state === "done" ? "Action terminée" : "Action rouverte",
+      {
+        id: toastId,
+      },
+    );
+  }
+
   function resetForm() {
     setNaturalText("");
-    setFormTopic("");
     setFormCompanyName("");
     setFormContactName("");
     setFormJobTitle("");
@@ -1240,7 +1249,6 @@ export function CrmPipelineClient({
     setFormError(null);
     setExtractError(null);
     setIsFormStatusDropdownOpen(false);
-    setIsStatusDropdownOpen(false);
     setFormAssignee("");
     setFormTags([]);
   }
@@ -1345,17 +1353,17 @@ export function CrmPipelineClient({
     }
   }
 
-  // ── Delete lead ─────────────────────────────────────────
+  // ── Archive lead ────────────────────────────────────────
   async function handleDelete(leadId: string) {
-    const deleteToastId = toast.loading("Suppression du lead...");
+    const deleteToastId = toast.loading("Archivage du lead...");
     startTransition(async () => {
       const res = await deleteLeadAction(leadId);
       if (res.success) {
         setLeads((prev) => prev.filter((l) => l.id !== leadId));
         if (selectedLead?.id === leadId) setSelectedLead(null);
-        toast.success("Lead supprimé avec succès.", { id: deleteToastId });
+        toast.success("Lead archivé avec succès.", { id: deleteToastId });
       } else {
-        toast.error(res.error || "Impossible de supprimer le lead.", {
+        toast.error(res.error || "Impossible d’archiver le lead.", {
           id: deleteToastId,
         });
       }
@@ -1503,21 +1511,9 @@ export function CrmPipelineClient({
     };
   }
 
-  // Check for overdue leads (active leads with leadDate in the past)
-  const overdueLeads = React.useMemo(() => {
-    return leads.filter((lead) => {
-      if (!lead.leadDate) return false;
-      if (lead.status === "won" || lead.status === "dead-end") return false;
-      try {
-        return new Date(lead.leadDate) < new Date();
-      } catch {
-        return false;
-      }
-    });
-  }, [leads]);
-
-  const activeLeads = leads.filter(
-    (l) => l.status !== "won" && l.status !== "dead-end",
+  const { overdue: overdueLeads, thisWeek: thisWeekLeads } = React.useMemo(
+    () => partitionCrmPipelineActionLeads(leads),
+    [leads],
   );
 
   return (
@@ -1544,25 +1540,6 @@ export function CrmPipelineClient({
             >
               Pipeline
             </h1>
-            <p
-              className="text-sm"
-              style={{ color: "var(--maison-text-secondary)" }}
-            >
-              {activeLeads.length} lead{activeLeads.length !== 1 ? "s" : ""}{" "}
-              actif{activeLeads.length !== 1 ? "s" : ""}
-              {overdueLeads.length > 0 && (
-                <>
-                  {" · "}
-                  <span
-                    className="font-semibold"
-                    style={{ color: "var(--maison-brass)" }}
-                  >
-                    {overdueLeads.length} relance
-                    {overdueLeads.length !== 1 ? "s" : ""} en retard
-                  </span>
-                </>
-              )}
-            </p>
           </div>
         </div>
 
@@ -1728,55 +1705,62 @@ export function CrmPipelineClient({
         </div>
       </div>
 
-      {overdueLeads.length > 0 && (
-        <section className="flex items-center gap-3 rounded-xl px-3 py-2 shadow-sm border border-red-200 bg-red-50">
-          <div className="flex shrink-0 items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-red-700">
-            <AlertCircle className="h-3.5 w-3.5 text-red-600" />
-            Retards ({overdueLeads.length})
+      <section className="grid gap-2 md:grid-cols-2" aria-label="Priorités CRM">
+        {[
+          {
+            accent: "border-red-200 bg-red-50 text-red-800",
+            icon: <AlertCircle className="h-3.5 w-3.5" />,
+            label: "Retards",
+            items: overdueLeads,
+          },
+          {
+            accent: "border-amber-200 bg-amber-50 text-amber-900",
+            icon: <CalendarDays className="h-3.5 w-3.5" />,
+            label: "Cette semaine",
+            items: thisWeekLeads,
+          },
+        ].map((group) => (
+          <div
+            key={group.label}
+            className={`min-w-0 rounded-xl border px-3 py-2 ${group.accent}`}
+          >
+            <div className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide">
+              {group.icon}
+              {group.label} ({group.items.length})
+            </div>
+            {group.items.length ? (
+              <div className="flex gap-2 overflow-x-auto pb-0.5">
+                {group.items.slice(0, 6).map((lead) => {
+                  const identity = getCrmPipelineLeadIdentity(lead);
+                  return (
+                    <button
+                      type="button"
+                      key={lead.id}
+                      onClick={() => openEditModal(lead)}
+                      className="min-w-[165px] max-w-[220px] rounded-lg border border-current/15 bg-white/70 px-2.5 py-1.5 text-left transition hover:bg-white"
+                    >
+                      <p className="truncate text-[11px] font-semibold">
+                        {identity.companyName}
+                      </p>
+                      <p className="truncate text-[10px] opacity-80">
+                        {formatLeadDateForDisplay(lead.leadDate)} ·{" "}
+                        {lead.nextAction}
+                      </p>
+                    </button>
+                  );
+                })}
+                {group.items.length > 6 ? (
+                  <span className="flex items-center text-[11px] font-semibold">
+                    +{group.items.length - 6}
+                  </span>
+                ) : null}
+              </div>
+            ) : (
+              <p className="text-[11px] opacity-70">Rien à signaler.</p>
+            )}
           </div>
-          <div className="flex min-w-0 flex-1 gap-2 overflow-x-auto">
-            {overdueLeads.slice(0, 8).map((lead) => {
-              const noteLines = (lead.notes ?? "").split("\n");
-              const companyName =
-                lead.companyName ??
-                noteLines
-                  .find((l) => l.startsWith("Entreprise:"))
-                  ?.replace("Entreprise:", "")
-                  .trim() ??
-                lead.topic;
-              const contactName = noteLines
-                .find((l) => l.startsWith("Contact:"))
-                ?.replace("Contact:", "")
-                .trim();
-
-              return (
-                <button
-                  type="button"
-                  key={lead.id}
-                  onClick={() => openEditModal(lead)}
-                  className="flex min-w-[190px] max-w-[240px] items-center gap-2 rounded-lg px-2.5 py-1.5 text-left transition hover:opacity-80 border border-red-200 bg-red-100/60"
-                >
-                  <Calendar className="h-3.5 w-3.5 shrink-0 text-red-500" />
-                  <div className="min-w-0">
-                    <p className="truncate text-[11px] font-semibold text-red-950">
-                      {companyName}
-                    </p>
-                    <p className="truncate text-[10px] text-red-800">
-                      {contactName ? `${contactName} · ` : ""}
-                      {formatLeadDateForDisplay(lead.leadDate)}
-                    </p>
-                  </div>
-                </button>
-              );
-            })}
-            {overdueLeads.length > 8 ? (
-              <span className="flex items-center rounded-md px-2 text-[11px] font-medium text-red-700">
-                +{overdueLeads.length - 8}
-              </span>
-            ) : null}
-          </div>
-        </section>
-      )}
+        ))}
+      </section>
 
       {/* Kanban Board View */}
       {isLoading ? (
@@ -1920,9 +1904,9 @@ export function CrmPipelineClient({
                               nextStatus={getNextStatus(lead.status)}
                               onSelect={() => openEditModal(lead)}
                               onMove={handleMoveStatus}
-                              onDelete={handleDelete}
                               onGenerateDraft={handleGenerateDraft}
                               onDriveClick={handleCreateDriveFolder}
+                              onToggleDone={handleToggleNextActionState}
                               canReorder={canReorderPipeline}
                             />
                           ))}
@@ -2124,15 +2108,8 @@ export function CrmPipelineClient({
                   </tr>
                 ) : (
                   filteredLeads.map((lead) => {
-                    const noteLines = (lead.notes ?? "").split("\n");
-                    const companyName = noteLines
-                      .find((l) => l.startsWith("Entreprise:"))
-                      ?.replace("Entreprise:", "")
-                      .trim();
-                    const contactName = noteLines
-                      .find((l) => l.startsWith("Contact:"))
-                      ?.replace("Contact:", "")
-                      .trim();
+                    const { companyName, contactName } =
+                      getCrmPipelineLeadIdentity(lead);
 
                     const colConfig = getColumnConfig(lead.status);
 
@@ -2244,7 +2221,8 @@ export function CrmPipelineClient({
                               onClick={() => handleDelete(lead.id)}
                               variant="ghost"
                               className="h-8 px-2 text-red-650 hover:bg-red-50 hover:text-red-700"
-                              title="Supprimer"
+                              title="Archiver le lead"
+                              aria-label={`Archiver ${companyName || lead.topic}`}
                             >
                               <Trash2 className="h-4 w-4" />
                             </Button>
@@ -2749,15 +2727,8 @@ export function CrmPipelineClient({
                   ) : (
                     <div className="grid gap-4 md:grid-cols-2">
                       {dayLeads.map((lead) => {
-                        const noteLines = (lead.notes ?? "").split("\n");
-                        const companyName = noteLines
-                          .find((l) => l.startsWith("Entreprise:"))
-                          ?.replace("Entreprise:", "")
-                          .trim();
-                        const contactName = noteLines
-                          .find((l) => l.startsWith("Contact:"))
-                          ?.replace("Contact:", "")
-                          .trim();
+                        const { companyName, contactName } =
+                          getCrmPipelineLeadIdentity(lead);
                         const colConfig = getColumnConfig(lead.status);
 
                         return (
@@ -3043,21 +3014,11 @@ export function CrmPipelineClient({
 
             {/* Manual form */}
             <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label="Projet *" id="form-topic">
-                <input
-                  id="form-topic"
-                  className={inputCls}
-                  required
-                  placeholder="Ex: Intégration IA CRM"
-                  value={formTopic}
-                  onChange={(e) => setFormTopic(e.target.value)}
-                />
-              </FormField>
-
-              <FormField label="Entreprise (Optionnel)" id="form-company">
+              <FormField label="Entreprise *" id="form-company">
                 <input
                   id="form-company"
                   className={inputCls}
+                  required
                   placeholder="Ex: Atlas Telecom"
                   value={formCompanyName}
                   onChange={(e) => setFormCompanyName(e.target.value)}
@@ -3473,25 +3434,20 @@ export function CrmPipelineClient({
 
       {/* ── Lead Details Modal ────────────────────────── */}
       {selectedLead && (
-        <Modal title={selectedLead.topic} onClose={() => setSelectedLead(null)}>
+        <Modal
+          title={
+            editCompanyName || selectedLead.companyName || selectedLead.topic
+          }
+          onClose={() => setSelectedLead(null)}
+        >
           <form onSubmit={handleUpdateLead} className="space-y-5">
             {/* Manual edit form fields */}
             <div className="grid gap-4 sm:grid-cols-2">
-              <FormField label="Projet *" id="edit-topic">
-                <input
-                  id="edit-topic"
-                  className={inputCls}
-                  required
-                  placeholder="Ex: Intégration IA CRM"
-                  value={editTopic}
-                  onChange={(e) => setEditTopic(e.target.value)}
-                />
-              </FormField>
-
-              <FormField label="Entreprise (Optionnel)" id="edit-company">
+              <FormField label="Entreprise *" id="edit-company">
                 <input
                   id="edit-company"
                   className={inputCls}
+                  required
                   placeholder="Ex: Atlas Telecom"
                   value={editCompanyName}
                   onChange={(e) => setEditCompanyName(e.target.value)}
@@ -3506,79 +3462,6 @@ export function CrmPipelineClient({
                   value={editContactName}
                   onChange={(e) => setEditContactName(e.target.value)}
                 />
-              </FormField>
-
-              <FormField label="Fonction / Poste" id="edit-job-title">
-                <input
-                  id="edit-job-title"
-                  className={inputCls}
-                  placeholder="Ex: CEO, CTO, Manager commercial..."
-                  value={editJobTitle}
-                  onChange={(e) => setEditJobTitle(e.target.value)}
-                />
-              </FormField>
-
-              <FormField label="LinkedIn" id="edit-linkedin">
-                <div className="flex gap-2">
-                  <input
-                    id="edit-linkedin"
-                    className={inputCls + " flex-1"}
-                    placeholder="https://linkedin.com/in/profil ou laisser vide"
-                    value={editLinkedin}
-                    onChange={(e) => setEditLinkedin(e.target.value)}
-                  />
-                  {editLinkedin && (
-                    <a
-                      href={
-                        editLinkedin.startsWith("http")
-                          ? editLinkedin
-                          : `https://${editLinkedin}`
-                      }
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-50"
-                    >
-                      <svg
-                        xmlns="http://www.w3.org/2000/svg"
-                        viewBox="0 0 24 24"
-                        fill="currentColor"
-                        className="h-4 w-4"
-                      >
-                        <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
-                      </svg>
-                      Ouvrir
-                    </a>
-                  )}
-                  <Button
-                    type="button"
-                    variant="outline"
-                    title="Rechercher automatiquement sur LinkedIn"
-                    className="h-10 shrink-0 gap-1.5 text-xs border-blue-200 text-blue-700 hover:bg-blue-50 hover:text-blue-800"
-                    onClick={() => {
-                      const name = editContactName.trim();
-                      const company = editCompanyName.trim();
-                      if (!name && !company) return;
-                      const q = encodeURIComponent(
-                        `site:linkedin.com/in ${name}${company ? ` "${company}"` : ""}`,
-                      );
-                      window.open(
-                        `https://www.google.com/search?q=${q}`,
-                        "_blank",
-                        "noopener,noreferrer",
-                      );
-                    }}
-                  >
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      viewBox="0 0 24 24"
-                      fill="currentColor"
-                      className="h-4 w-4 text-blue-600"
-                    >
-                      <path d="M20.447 20.452h-3.554v-5.569c0-1.328-.027-3.037-1.852-3.037-1.853 0-2.136 1.445-2.136 2.939v5.667H9.351V9h3.414v1.561h.046c.477-.9 1.637-1.85 3.37-1.85 3.601 0 4.267 2.37 4.267 5.455v6.286zM5.337 7.433a2.062 2.062 0 0 1-2.063-2.065 2.064 2.064 0 1 1 2.063 2.065zm1.782 13.019H3.555V9h3.564v11.452zM22.225 0H1.771C.792 0 0 .774 0 1.729v20.542C0 23.227.792 24 1.771 24h20.451C23.2 24 24 23.227 24 22.271V1.729C24 .774 23.2 0 22.222 0h.003z" />
-                    </svg>
-                    Rechercher
-                  </Button>
-                </div>
               </FormField>
 
               <FormField label="Email" id="edit-email">
@@ -3602,16 +3485,6 @@ export function CrmPipelineClient({
                 />
               </FormField>
 
-              <FormField label="Source du lead" id="edit-source">
-                <input
-                  id="edit-source"
-                  className={inputCls}
-                  placeholder="Ex: LinkedIn, Salon..."
-                  value={editSource}
-                  onChange={(e) => setEditSource(e.target.value)}
-                />
-              </FormField>
-
               <FormField label="Action suivante" id="edit-next-action">
                 <input
                   id="edit-next-action"
@@ -3631,6 +3504,27 @@ export function CrmPipelineClient({
                   onChange={(e) => setEditLeadDate(e.target.value)}
                 />
               </FormField>
+
+              <FormField label="État de l’action" id="edit-action-state">
+                <button
+                  id="edit-action-state"
+                  type="button"
+                  disabled={
+                    !selectedLead.nextAction?.trim() && !selectedLead.leadDate
+                  }
+                  onClick={() => handleToggleNextActionState(selectedLead)}
+                  className={`flex h-10 w-full items-center justify-center gap-2 rounded-md border px-3 text-sm font-semibold transition disabled:cursor-not-allowed disabled:opacity-50 ${
+                    selectedLead.nextActionState === "done"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      : "border-stone-300 bg-white text-stone-700 hover:border-emerald-300 hover:bg-emerald-50"
+                  }`}
+                >
+                  <CheckCircle className="h-4 w-4" />
+                  {selectedLead.nextActionState === "done"
+                    ? "Faite · rouvrir"
+                    : "Marquer comme faite"}
+                </button>
+              </FormField>
             </div>
 
             <FormField label="Notes & Contexte" id="edit-notes">
@@ -3644,724 +3538,763 @@ export function CrmPipelineClient({
               />
             </FormField>
 
-            {/* Edit Assignee field */}
-            <FormField label="Assigné à" id="edit-assignee">
-              <select
-                id="edit-assignee"
-                className={inputCls}
-                value={editAssignee}
-                onChange={(e) => setEditAssignee(e.target.value)}
-              >
-                <option value="">Non assigné</option>
-                {teamMembers.map((m) => (
-                  <option key={m.id} value={m.id}>
-                    {m.fullName}
-                  </option>
-                ))}
-              </select>
-            </FormField>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <FormField label="Assigné à" id="edit-assignee">
+                <select
+                  id="edit-assignee"
+                  className={inputCls}
+                  value={editAssignee}
+                  onChange={(e) => setEditAssignee(e.target.value)}
+                >
+                  <option value="">Non assigné</option>
+                  {teamMembers.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.fullName}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+
+              <FormField label="Statut du lead" id="edit-status">
+                <select
+                  id="edit-status"
+                  className={inputCls}
+                  value={editStatus}
+                  onChange={(event) =>
+                    setEditStatus(event.target.value as CrmLeadStatus)
+                  }
+                >
+                  {categories.map((category) => (
+                    <option key={category.id} value={category.statusKey}>
+                      {category.name}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            </div>
 
             {/* Edit Tags field */}
-            <div className="space-y-2 border-t border-stone-100 pt-3">
-              <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider block">
-                Tags associés
-              </span>
+            <details className="rounded-lg border border-stone-200 bg-stone-50/50 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-stone-600">
+                Informations complémentaires et tags
+              </summary>
+              <div className="mt-3 space-y-4">
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <FormField label="Fonction / Poste" id="edit-job-title">
+                    <input
+                      id="edit-job-title"
+                      className={inputCls}
+                      placeholder="Ex: CEO, CTO, Manager commercial..."
+                      value={editJobTitle}
+                      onChange={(e) => setEditJobTitle(e.target.value)}
+                    />
+                  </FormField>
 
-              {/* Selected Tags list */}
-              <div className="flex flex-wrap gap-1.5 min-h-[36px] rounded-lg border border-stone-200 bg-stone-50/50 p-2">
-                {editTags.length === 0 ? (
-                  <span className="text-xs text-stone-400 italic">
-                    Aucun tag sélectionné
+                  <FormField label="LinkedIn" id="edit-linkedin">
+                    <div className="flex flex-wrap gap-2 sm:flex-nowrap">
+                      <input
+                        id="edit-linkedin"
+                        className={inputCls + " min-w-0 flex-1"}
+                        placeholder="https://linkedin.com/in/profil"
+                        value={editLinkedin}
+                        onChange={(e) => setEditLinkedin(e.target.value)}
+                      />
+                      {editLinkedin && (
+                        <a
+                          href={
+                            editLinkedin.startsWith("http")
+                              ? editLinkedin
+                              : `https://${editLinkedin}`
+                          }
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-md border border-blue-200 bg-white px-3 text-xs font-medium text-blue-700 transition hover:bg-blue-50"
+                        >
+                          Ouvrir
+                        </a>
+                      )}
+                      <Button
+                        type="button"
+                        variant="outline"
+                        title="Rechercher automatiquement sur LinkedIn"
+                        className="h-10 shrink-0 gap-1.5 border-blue-200 text-xs text-blue-700 hover:bg-blue-50 hover:text-blue-800"
+                        onClick={() => {
+                          const name = editContactName.trim();
+                          const company = editCompanyName.trim();
+                          if (!name && !company) return;
+                          const q = encodeURIComponent(
+                            `site:linkedin.com/in ${name}${company ? ` "${company}"` : ""}`,
+                          );
+                          window.open(
+                            `https://www.google.com/search?q=${q}`,
+                            "_blank",
+                            "noopener,noreferrer",
+                          );
+                        }}
+                      >
+                        Rechercher
+                      </Button>
+                    </div>
+                  </FormField>
+                </div>
+
+                <span className="text-xs font-semibold text-stone-500 uppercase tracking-wider block">
+                  Tags associés
+                </span>
+
+                {/* Selected Tags list */}
+                <div className="flex flex-wrap gap-1.5 min-h-[36px] rounded-lg border border-stone-200 bg-stone-50/50 p-2">
+                  {editTags.length === 0 ? (
+                    <span className="text-xs text-stone-400 italic">
+                      Aucun tag sélectionné
+                    </span>
+                  ) : (
+                    editTags.map((tagId) => {
+                      const t = tags.find((x) => x.id === tagId);
+                      if (!t) return null;
+                      return (
+                        <button
+                          key={tagId}
+                          type="button"
+                          onClick={() =>
+                            setEditTags((prev) =>
+                              prev.filter((x) => x !== tagId),
+                            )
+                          }
+                          className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold bg-stone-100 border-stone-200 text-stone-755 hover:bg-red-50 hover:text-red-755 hover:border-red-200 transition"
+                          title="Retirer"
+                        >
+                          {t.name}
+                          <X className="h-3 w-3" />
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+
+                {/* Available tags dropdown / list to select from */}
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-stone-500">
+                    Ajouter un tag :
                   </span>
-                ) : (
-                  editTags.map((tagId) => {
-                    const t = tags.find((x) => x.id === tagId);
-                    if (!t) return null;
-                    return (
-                      <button
-                        key={tagId}
-                        type="button"
-                        onClick={() =>
-                          setEditTags((prev) => prev.filter((x) => x !== tagId))
-                        }
-                        className="inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-xs font-semibold bg-stone-100 border-stone-200 text-stone-755 hover:bg-red-50 hover:text-red-755 hover:border-red-200 transition"
-                        title="Retirer"
+                  {tags
+                    .filter((t) => !editTags.includes(t.id))
+                    .map((t) => (
+                      <div
+                        key={t.id}
+                        className="inline-flex items-center rounded-full border bg-stone-50 border-stone-200 text-[11px] font-semibold pl-2 pr-1.5 py-0.5 hover:border-teal-500 hover:bg-teal-50 transition gap-1"
                       >
-                        {t.name}
-                        <X className="h-3 w-3" />
-                      </button>
-                    );
-                  })
-                )}
-              </div>
+                        <button
+                          type="button"
+                          onClick={() => setEditTags((prev) => [...prev, t.id])}
+                          className="hover:text-teal-700 font-bold"
+                        >
+                          + {t.name}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const newName = window.prompt(
+                              "Modifier le nom du tag :",
+                              t.name,
+                            );
+                            if (newName === null) return;
+                            if (!newName.trim()) return;
+                            const res = await updateTagAction(
+                              t.id,
+                              newName.trim(),
+                              t.color,
+                            );
+                            if (res.success && res.tag) {
+                              setTags((prev) =>
+                                prev
+                                  .map((x) => (x.id === t.id ? res.tag! : x))
+                                  .sort((a, b) => a.name.localeCompare(b.name)),
+                              );
+                              toast.success("Tag modifié !");
+                            } else {
+                              toast.error(res.error ?? "Erreur");
+                            }
+                          }}
+                          className="text-stone-400 hover:text-blue-650 font-bold text-[10px]"
+                          title="Modifier"
+                        >
+                          ✎
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const confirm = window.confirm(
+                              `Supprimer le tag "${t.name}" ?`,
+                            );
+                            if (!confirm) return;
+                            const res = await deleteTagAction(t.id);
+                            if (res.success) {
+                              setTags((prev) =>
+                                prev.filter((x) => x.id !== t.id),
+                              );
+                              setFormTags((prev) =>
+                                prev.filter((x) => x !== t.id),
+                              );
+                              setEditTags((prev) =>
+                                prev.filter((x) => x !== t.id),
+                              );
+                              toast.success("Tag supprimé !");
+                            } else {
+                              toast.error(res.error ?? "Erreur");
+                            }
+                          }}
+                          className="text-stone-400 hover:text-red-650 font-bold text-[10px]"
+                          title="Supprimer"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
 
-              {/* Available tags dropdown / list to select from */}
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-xs text-stone-500">Ajouter un tag :</span>
-                {tags
-                  .filter((t) => !editTags.includes(t.id))
-                  .map((t) => (
-                    <div
-                      key={t.id}
-                      className="inline-flex items-center rounded-full border bg-stone-50 border-stone-200 text-[11px] font-semibold pl-2 pr-1.5 py-0.5 hover:border-teal-500 hover:bg-teal-50 transition gap-1"
+                  {/* Create tag button inline */}
+                  {!isCreatingTag ? (
+                    <button
+                      type="button"
+                      onClick={() => setIsCreatingTag(true)}
+                      className="text-xs text-teal-600 hover:text-teal-800 font-semibold hover:underline"
                     >
-                      <button
-                        type="button"
-                        onClick={() => setEditTags((prev) => [...prev, t.id])}
-                        className="hover:text-teal-700 font-bold"
+                      + Créer un nouveau tag
+                    </button>
+                  ) : (
+                    <div className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white p-1">
+                      <input
+                        placeholder="Nom du tag"
+                        className="h-7 w-28 rounded border border-stone-305 px-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
+                        value={newTagName}
+                        onChange={(e) => setNewTagName(e.target.value)}
+                      />
+                      <select
+                        value={newTagColor}
+                        onChange={(e) => setNewTagColor(e.target.value)}
+                        className="h-7 rounded border border-stone-305 px-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
                       >
-                        + {t.name}
-                      </button>
+                        <option value="teal">Sarcelle</option>
+                        <option value="blue">Bleu</option>
+                        <option value="yellow">Jaune</option>
+                        <option value="indigo">Indigo</option>
+                        <option value="emerald">Émeraude</option>
+                        <option value="red">Rouge</option>
+                        <option value="purple">Violet</option>
+                        <option value="pink">Rose</option>
+                        <option value="orange">Orange</option>
+                      </select>
                       <button
                         type="button"
                         onClick={async () => {
-                          const newName = window.prompt(
-                            "Modifier le nom du tag :",
-                            t.name,
-                          );
-                          if (newName === null) return;
-                          if (!newName.trim()) return;
-                          const res = await updateTagAction(
-                            t.id,
-                            newName.trim(),
-                            t.color,
+                          if (!newTagName.trim()) return;
+                          const res = await createTagAction(
+                            newTagName,
+                            newTagColor,
                           );
                           if (res.success && res.tag) {
                             setTags((prev) =>
-                              prev
-                                .map((x) => (x.id === t.id ? res.tag! : x))
-                                .sort((a, b) => a.name.localeCompare(b.name)),
+                              [...prev, res.tag!].sort((a, b) =>
+                                a.name.localeCompare(b.name),
+                              ),
                             );
-                            toast.success("Tag modifié !");
+                            setEditTags((prev) => [...prev, res.tag!.id]);
+                            setNewTagName("");
+                            setIsCreatingTag(false);
+                            toast.success("Tag créé !");
                           } else {
                             toast.error(res.error ?? "Erreur");
                           }
                         }}
-                        className="text-stone-400 hover:text-blue-650 font-bold text-[10px]"
-                        title="Modifier"
+                        className="rounded bg-teal-600 px-2 py-1 text-xs font-bold text-white hover:bg-teal-700"
                       >
-                        ✎
+                        Créer
                       </button>
                       <button
                         type="button"
-                        onClick={async () => {
-                          const confirm = window.confirm(
-                            `Supprimer le tag "${t.name}" ?`,
-                          );
-                          if (!confirm) return;
-                          const res = await deleteTagAction(t.id);
-                          if (res.success) {
-                            setTags((prev) =>
-                              prev.filter((x) => x.id !== t.id),
-                            );
-                            setFormTags((prev) =>
-                              prev.filter((x) => x !== t.id),
-                            );
-                            setEditTags((prev) =>
-                              prev.filter((x) => x !== t.id),
-                            );
-                            toast.success("Tag supprimé !");
-                          } else {
-                            toast.error(res.error ?? "Erreur");
-                          }
-                        }}
-                        className="text-stone-400 hover:text-red-650 font-bold text-[10px]"
-                        title="Supprimer"
+                        onClick={() => setIsCreatingTag(false)}
+                        className="text-stone-400 hover:text-stone-700"
                       >
-                        ×
+                        <X className="h-4 w-4" />
                       </button>
                     </div>
-                  ))}
+                  )}
+                </div>
+              </div>
+            </details>
 
-                {/* Create tag button inline */}
-                {!isCreatingTag ? (
-                  <button
+            {modalError && (
+              <p className="text-xs font-semibold text-red-650">{modalError}</p>
+            )}
+
+            <details className="rounded-lg border border-stone-200 bg-stone-50/40 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-stone-600">
+                Actions avancées
+              </summary>
+              <div className="mt-3 space-y-4 border-t border-stone-200 pt-4">
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  <Button
                     type="button"
-                    onClick={() => setIsCreatingTag(true)}
-                    className="text-xs text-teal-600 hover:text-teal-800 font-semibold hover:underline"
+                    onClick={() => handleGenerateDraft(selectedLead)}
+                    disabled={isGenerating}
+                    variant="outline"
+                    className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50 h-9"
                   >
-                    + Créer un nouveau tag
-                  </button>
-                ) : (
-                  <div className="inline-flex items-center gap-1.5 rounded-lg border border-stone-200 bg-white p-1">
-                    <input
-                      placeholder="Nom du tag"
-                      className="h-7 w-28 rounded border border-stone-305 px-2 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
-                      value={newTagName}
-                      onChange={(e) => setNewTagName(e.target.value)}
-                    />
-                    <select
-                      value={newTagColor}
-                      onChange={(e) => setNewTagColor(e.target.value)}
-                      className="h-7 rounded border border-stone-305 px-1 text-xs focus:outline-none focus:ring-1 focus:ring-teal-650"
-                    >
-                      <option value="teal">Sarcelle</option>
-                      <option value="blue">Bleu</option>
-                      <option value="yellow">Jaune</option>
-                      <option value="indigo">Indigo</option>
-                      <option value="emerald">Émeraude</option>
-                      <option value="red">Rouge</option>
-                      <option value="purple">Violet</option>
-                      <option value="pink">Rose</option>
-                      <option value="orange">Orange</option>
-                    </select>
-                    <button
+                    {isGenerating ? (
+                      <>
+                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                        IA...
+                      </>
+                    ) : (
+                      <>
+                        <Bot className="mr-1.5 h-3.5 w-3.5" /> Relance IA
+                      </>
+                    )}
+                  </Button>
+
+                  {driveLink ? (
+                    <Button
                       type="button"
+                      onClick={() => window.open(driveLink, "_blank")}
+                      variant="outline"
+                      className="text-xs border-emerald-255 bg-emerald-50/20 text-emerald-750 hover:bg-emerald-50 h-9"
+                    >
+                      <FolderPlus className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
+                      Drive ↗
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      onClick={() => handleCreateDriveFolder(selectedLead)}
+                      disabled={isCreatingFolder}
+                      variant="outline"
+                      className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50 h-9"
+                    >
+                      {isCreatingFolder ? (
+                        <>
+                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                          Dossier...
+                        </>
+                      ) : (
+                        <>
+                          <FolderPlus className="mr-1.5 h-3.5 w-3.5 text-teal-600" />
+                          Drive Client
+                        </>
+                      )}
+                    </Button>
+                  )}
+                </div>
+
+                {calendarLink ? (
+                  <Button
+                    type="button"
+                    onClick={() => window.open(calendarLink, "_blank")}
+                    variant="outline"
+                    className="w-full text-xs border-amber-250 bg-amber-50/20 text-amber-750 hover:bg-amber-50 h-9"
+                  >
+                    <Calendar className="mr-2 h-4 w-4 text-amber-600" />
+                    Voir dans Google Calendar ↗
+                  </Button>
+                ) : selectedLead.leadDate ? (
+                  <Button
+                    type="button"
+                    onClick={() => handleSyncCalendar(selectedLead)}
+                    disabled={isSyncingCalendar}
+                    variant="outline"
+                    className="w-full text-xs border-amber-200 bg-amber-50/15 text-amber-800 hover:bg-amber-50 h-9"
+                  >
+                    {isSyncingCalendar ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin text-amber-600" />
+                        Synchronisation...
+                      </>
+                    ) : (
+                      <>
+                        <Calendar className="mr-2 h-4 w-4 text-amber-600" />
+                        Ajouter à Google Calendar
+                      </>
+                    )}
+                  </Button>
+                ) : null}
+
+                {/* Generated drafts display */}
+                {drafts &&
+                  draftLead?.id === selectedLead.id &&
+                  (() => {
+                    const noteLines = (selectedLead.notes ?? "").split("\n");
+                    const emailLine =
+                      selectedLead.contactEmail?.trim() ||
+                      noteLines
+                        .find((l) => l.startsWith("Email:"))
+                        ?.replace("Email:", "")
+                        .trim();
+
+                    const phoneLine = (
+                      selectedLead.contactPhone ||
+                      noteLines
+                        .find((l) => l.startsWith("Tél:"))
+                        ?.replace("Tél:", "") ||
+                      ""
+                    )
+                      .replace(/\D/g, "")
+                      .trim();
+
+                    const emailSubject = `NAIA OS - Suivi ${
+                      selectedLead.companyName || selectedLead.topic
+                    }`;
+                    const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(
+                      emailLine || "",
+                    )}&su=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(
+                      drafts.email,
+                    )}`;
+
+                    const waUrl = phoneLine
+                      ? `https://wa.me/${phoneLine}?text=${encodeURIComponent(
+                          drafts.whatsapp,
+                        )}`
+                      : `https://wa.me/?text=${encodeURIComponent(drafts.whatsapp)}`;
+
+                    return (
+                      <div className="space-y-4 pt-4 border-t border-stone-250 animate-fadeIn">
+                        <div className="rounded-xl border border-teal-200 bg-teal-50/15 overflow-hidden">
+                          <div className="flex items-center justify-between px-4 py-2.5 bg-teal-50 border-b border-teal-200">
+                            <span className="text-xs font-semibold text-teal-800 flex items-center gap-1.5">
+                              <Mail className="h-3.5 w-3.5" /> Email de relance
+                            </span>
+                            <a
+                              href={gmailUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded bg-teal-700 hover:bg-teal-850 px-2.5 py-1 text-[10px] font-bold text-white transition"
+                            >
+                              Ouvrir dans Gmail ↗
+                            </a>
+                          </div>
+                          <div className="px-4 py-3">
+                            <p className="text-xs text-stone-700 whitespace-pre-wrap leading-relaxed">
+                              {drafts.email}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="rounded-xl border border-teal-200 bg-teal-50/15 overflow-hidden">
+                          <div className="flex items-center justify-between px-4 py-2.5 bg-teal-50 border-b border-teal-200">
+                            <span className="text-xs font-semibold text-teal-800 flex items-center gap-1.5">
+                              <Phone className="h-3.5 w-3.5" /> WhatsApp Message
+                            </span>
+                            <a
+                              href={waUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="inline-flex items-center gap-1 rounded bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[10px] font-bold text-white transition"
+                            >
+                              Ouvrir dans WhatsApp ↗
+                            </a>
+                          </div>
+                          <div className="px-4 py-3">
+                            <p className="text-xs text-stone-700 whitespace-pre-wrap leading-relaxed">
+                              {drafts.whatsapp}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                {driveLink && (
+                  <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 flex flex-col gap-1.5 animate-fadeIn">
+                    <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
+                      <CheckCircle className="h-4 w-4 text-emerald-600" />
+                      Dossier Drive Client Prêt
+                    </h4>
+                    <p className="text-xs text-stone-600">
+                      Le dossier de fichiers commerciaux a été créé avec succès
+                      pour ce client.
+                    </p>
+                    <a
+                      href={driveLink}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-xs text-teal-700 font-bold hover:underline inline-flex items-center gap-1 mt-1"
+                    >
+                      Ouvrir le dossier Drive ↗
+                    </a>
+                  </div>
+                )}
+              </div>
+            </details>
+
+            <details className="rounded-lg border border-stone-200 bg-stone-50/40 px-3 py-2">
+              <summary className="cursor-pointer text-xs font-semibold text-stone-600">
+                Historique et notes de suivi
+                {notes.length ? ` (${notes.length})` : ""}
+              </summary>
+              {/* Notes Management Section */}
+              <div className="pt-4 border-t border-stone-200 space-y-4">
+                <h4 className="text-xs font-bold text-stone-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <FileText className="h-4 w-4 text-stone-400" />
+                  Notes de suivi commercial
+                </h4>
+
+                {/* Notes List */}
+                <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
+                  {isNotesLoading ? (
+                    <div className="flex justify-center py-4">
+                      <Loader2 className="h-5 w-5 animate-spin text-teal-650" />
+                    </div>
+                  ) : notes.length === 0 ? (
+                    <p className="text-xs text-stone-500 italic py-2 text-center">
+                      Aucune note de suivi enregistrée pour le moment.
+                    </p>
+                  ) : (
+                    notes.map((n) => (
+                      <div
+                        key={n.id}
+                        className="rounded-lg border border-stone-150 bg-stone-50/40 p-2.5 space-y-1.5 hover:border-stone-250 transition-colors"
+                      >
+                        <div className="flex items-center justify-between text-[11px]">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-stone-750 flex items-center gap-1">
+                              <span className="h-4 w-4 rounded-full bg-stone-200 flex items-center justify-center text-[9px]">
+                                {(n.createdByName || "M")
+                                  .charAt(0)
+                                  .toUpperCase()}
+                              </span>
+                              {n.createdByName || "Membre"}
+                            </span>
+                            {n.assignedToName && (
+                              <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-1 py-0.5 text-[9px] font-bold text-teal-700 border border-teal-200/50">
+                                Assigné à : {n.assignedToName}
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-stone-450 font-medium">
+                            <span className="flex flex-col items-end text-[9px] text-stone-500 leading-tight">
+                              <span>
+                                {new Date(n.createdAt).toLocaleString("fr-FR", {
+                                  dateStyle: "short",
+                                  timeStyle: "short",
+                                })}
+                              </span>
+                              {n.updatedAt &&
+                                new Date(n.updatedAt).getTime() -
+                                  new Date(n.createdAt).getTime() >
+                                  1000 && (
+                                  <span className="text-amber-600 font-semibold text-[8px]">
+                                    Modifié le :{" "}
+                                    {new Date(n.updatedAt).toLocaleString(
+                                      "fr-FR",
+                                      {
+                                        dateStyle: "short",
+                                        timeStyle: "short",
+                                      },
+                                    )}
+                                  </span>
+                                )}
+                            </span>
+                            <div className="flex gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingNoteId(n.id);
+                                  setEditingNoteText(n.content);
+                                  setEditingNoteAssigneeId(
+                                    n.assignedToProfileId ?? "",
+                                  );
+                                }}
+                                className="text-teal-650 hover:underline font-bold"
+                              >
+                                Modifier
+                              </button>
+                              <span>•</span>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const confirm = window.confirm(
+                                    "Supprimer cette note ?",
+                                  );
+                                  if (!confirm) return;
+                                  const res = await deleteLeadNoteAction(n.id);
+                                  if (res.success) {
+                                    setNotes((prev) =>
+                                      prev.filter((x) => x.id !== n.id),
+                                    );
+                                    toast.success("Note supprimée.");
+                                  } else {
+                                    toast.error(res.error ?? "Erreur");
+                                  }
+                                }}
+                                className="text-red-650 hover:underline font-bold"
+                              >
+                                Supprimer
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+
+                        {editingNoteId === n.id ? (
+                          <div className="space-y-2 mt-1">
+                            <textarea
+                              className="w-full rounded border border-stone-300 bg-white p-2 text-xs text-stone-900 focus:border-teal-750 focus:outline-none"
+                              rows={2}
+                              value={editingNoteText}
+                              onChange={(e) =>
+                                setEditingNoteText(e.target.value)
+                              }
+                            />
+                            <div className="flex items-center gap-2">
+                              <label className="text-[10px] text-stone-500 font-medium">
+                                Assigner à :
+                              </label>
+                              <select
+                                className="rounded border border-stone-300 bg-white p-1 text-[11px] text-stone-850 focus:border-teal-750 focus:outline-none"
+                                value={editingNoteAssigneeId}
+                                onChange={(e) =>
+                                  setEditingNoteAssigneeId(e.target.value)
+                                }
+                              >
+                                <option value="">Non assigné</option>
+                                {teamMembers.map((m) => (
+                                  <option key={m.id} value={m.id}>
+                                    {m.fullName}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="flex justify-end gap-1.5">
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className="h-7 text-[10px] px-2 text-stone-500 hover:bg-stone-100"
+                                onClick={() => setEditingNoteId(null)}
+                              >
+                                Annuler
+                              </Button>
+                              <Button
+                                type="button"
+                                className="h-7 text-[10px] px-2.5 bg-teal-600 hover:bg-teal-700 text-white"
+                                onClick={async () => {
+                                  if (!editingNoteText.trim()) return;
+                                  const res = await updateLeadNoteAction(
+                                    n.id,
+                                    editingNoteText,
+                                    editingNoteAssigneeId || undefined,
+                                  );
+                                  if (res.success && res.note) {
+                                    setNotes((prev) =>
+                                      prev.map((x) =>
+                                        x.id === n.id ? res.note! : x,
+                                      ),
+                                    );
+                                    setEditingNoteId(null);
+                                    toast.success("Note modifiée.");
+                                  } else {
+                                    toast.error(res.error ?? "Erreur");
+                                  }
+                                }}
+                              >
+                                Enregistrer
+                              </Button>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="text-xs text-stone-800 whitespace-pre-wrap leading-relaxed">
+                            {n.content}
+                          </p>
+                        )}
+                      </div>
+                    ))
+                  )}
+                </div>
+
+                {/* Add Note form */}
+                <div className="space-y-2">
+                  <textarea
+                    className="w-full rounded-lg border border-stone-300 bg-white p-2.5 text-xs text-stone-900 placeholder:text-stone-400 focus:border-teal-750 focus:outline-none focus:ring-1 focus:ring-teal-750"
+                    rows={2}
+                    placeholder="Saisir une nouvelle note commerciale (partagée avec l'équipe)..."
+                    value={newNoteText}
+                    onChange={(e) => setNewNoteText(e.target.value)}
+                  />
+                  <div className="flex items-center justify-between gap-4">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-[11px] text-stone-500 font-medium">
+                        Assigner à :
+                      </label>
+                      <select
+                        className="rounded border border-stone-300 bg-white px-1.5 py-1 text-[11px] text-stone-850 focus:border-teal-750 focus:outline-none"
+                        value={newNoteAssigneeId}
+                        onChange={(e) => setNewNoteAssigneeId(e.target.value)}
+                      >
+                        <option value="">Non assigné</option>
+                        {teamMembers.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.fullName}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <Button
+                      type="button"
+                      disabled={!newNoteText.trim()}
+                      className="h-8 text-xs bg-teal-600 hover:bg-teal-700 text-white flex items-center gap-1.5"
                       onClick={async () => {
-                        if (!newTagName.trim()) return;
-                        const res = await createTagAction(
-                          newTagName,
-                          newTagColor,
+                        if (!newNoteText.trim()) return;
+                        const res = await createLeadNoteAction(
+                          selectedLead.id,
+                          newNoteText,
+                          newNoteAssigneeId || undefined,
                         );
-                        if (res.success && res.tag) {
-                          setTags((prev) =>
-                            [...prev, res.tag!].sort((a, b) =>
-                              a.name.localeCompare(b.name),
-                            ),
-                          );
-                          setEditTags((prev) => [...prev, res.tag!.id]);
-                          setNewTagName("");
-                          setIsCreatingTag(false);
-                          toast.success("Tag créé !");
+                        if (res.success && res.note) {
+                          setNotes((prev) => [...prev, res.note!]);
+                          setNewNoteText("");
+                          setNewNoteAssigneeId("");
+                          toast.success("Note ajoutée !");
                         } else {
                           toast.error(res.error ?? "Erreur");
                         }
                       }}
-                      className="rounded bg-teal-600 px-2 py-1 text-xs font-bold text-white hover:bg-teal-700"
                     >
-                      Créer
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setIsCreatingTag(false)}
-                      className="text-stone-400 hover:text-stone-700"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {modalError && (
-              <p className="text-xs text-red-650 font-semibold">{modalError}</p>
-            )}
-
-            {/* Quick automation actions & Status workflow selector inside editing */}
-            <div className="pt-4 border-t border-stone-200 space-y-4">
-              <div className="grid sm:grid-cols-2 gap-4">
-                {/* Status selector */}
-                <div className="space-y-1.5 relative">
-                  <label className="text-xs font-semibold uppercase tracking-wider text-stone-500 block">
-                    Statut du lead
-                  </label>
-                  {(() => {
-                    const currentCfg = getColumnConfig(editStatus);
-                    return (
-                      <div className="relative">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setIsStatusDropdownOpen(!isStatusDropdownOpen)
-                          }
-                          className="flex h-9 w-full items-center justify-between rounded-md border border-stone-205 bg-white px-3 py-1.5 text-xs font-semibold text-stone-850 hover:bg-stone-50 transition focus:outline-none"
-                        >
-                          <span className="flex items-center gap-2">
-                            <span
-                              className={`h-2 w-2 rounded-full ${currentCfg.dot}`}
-                            />
-                            <span
-                              className={`px-2 py-0.5 rounded border text-[10px] font-bold ${currentCfg.color}`}
-                            >
-                              {currentCfg.label}
-                            </span>
-                          </span>
-                          <span className="text-[10px] text-stone-400 font-bold">
-                            {isStatusDropdownOpen ? "▲" : "▼"}
-                          </span>
-                        </button>
-
-                        {isStatusDropdownOpen && (
-                          <>
-                            <div
-                              className="fixed inset-0 z-40"
-                              onClick={() => setIsStatusDropdownOpen(false)}
-                            />
-                            <div className="absolute left-0 right-0 z-50 mt-1 max-h-60 overflow-y-auto rounded-md border border-stone-200 bg-white py-1 shadow-lg animate-fadeIn">
-                              {categories.map((c) => {
-                                const style = getCategoryStyle(c.color);
-                                return (
-                                  <button
-                                    key={c.id}
-                                    type="button"
-                                    onClick={() => {
-                                      setEditStatus(c.statusKey);
-                                      setIsStatusDropdownOpen(false);
-                                    }}
-                                    className="flex w-full items-center gap-2 px-3 py-2 text-left hover:bg-stone-50 transition-colors"
-                                  >
-                                    <span
-                                      className={`h-2 w-2 rounded-full ${style.dot}`}
-                                    />
-                                    <span
-                                      className={`px-2 py-0.5 rounded border text-[10px] font-bold ${style.color}`}
-                                    >
-                                      {c.name}
-                                    </span>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    );
-                  })()}
-                </div>
-
-                {/* Automation trigger action buttons */}
-                <div className="flex flex-col justify-end">
-                  <div className="grid grid-cols-2 gap-2">
-                    <Button
-                      type="button"
-                      onClick={() => handleGenerateDraft(selectedLead)}
-                      disabled={isGenerating}
-                      variant="outline"
-                      className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50 h-9"
-                    >
-                      {isGenerating ? (
-                        <>
-                          <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                          IA...
-                        </>
-                      ) : (
-                        <>
-                          <Bot className="mr-1.5 h-3.5 w-3.5" /> Relance IA
-                        </>
-                      )}
+                      Ajouter la note
                     </Button>
-
-                    {driveLink ? (
-                      <Button
-                        type="button"
-                        onClick={() => window.open(driveLink, "_blank")}
-                        variant="outline"
-                        className="text-xs border-emerald-255 bg-emerald-50/20 text-emerald-750 hover:bg-emerald-50 h-9"
-                      >
-                        <FolderPlus className="mr-1.5 h-3.5 w-3.5 text-emerald-600" />
-                        Drive ↗
-                      </Button>
-                    ) : (
-                      <Button
-                        type="button"
-                        onClick={() => handleCreateDriveFolder(selectedLead)}
-                        disabled={isCreatingFolder}
-                        variant="outline"
-                        className="text-xs border-teal-200 text-teal-700 hover:bg-teal-50 h-9"
-                      >
-                        {isCreatingFolder ? (
-                          <>
-                            <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
-                            Dossier...
-                          </>
-                        ) : (
-                          <>
-                            <FolderPlus className="mr-1.5 h-3.5 w-3.5 text-teal-600" />
-                            Drive Client
-                          </>
-                        )}
-                      </Button>
-                    )}
                   </div>
                 </div>
               </div>
 
-              {calendarLink ? (
-                <Button
-                  type="button"
-                  onClick={() => window.open(calendarLink, "_blank")}
-                  variant="outline"
-                  className="w-full text-xs border-amber-250 bg-amber-50/20 text-amber-750 hover:bg-amber-50 h-9"
-                >
-                  <Calendar className="mr-2 h-4 w-4 text-amber-600" />
-                  Voir dans Google Calendar ↗
-                </Button>
-              ) : selectedLead.leadDate ? (
-                <Button
-                  type="button"
-                  onClick={() => handleSyncCalendar(selectedLead)}
-                  disabled={isSyncingCalendar}
-                  variant="outline"
-                  className="w-full text-xs border-amber-200 bg-amber-50/15 text-amber-800 hover:bg-amber-50 h-9"
-                >
-                  {isSyncingCalendar ? (
-                    <>
-                      <Loader2 className="mr-2 h-4 w-4 animate-spin text-amber-600" />
-                      Synchronisation...
-                    </>
-                  ) : (
-                    <>
-                      <Calendar className="mr-2 h-4 w-4 text-amber-600" />
-                      Ajouter à Google Calendar
-                    </>
-                  )}
-                </Button>
-              ) : null}
-            </div>
-
-            {/* Generated drafts display */}
-            {drafts &&
-              draftLead?.id === selectedLead.id &&
-              (() => {
-                const noteLines = (selectedLead.notes ?? "").split("\n");
-                const emailLine = noteLines
-                  .find((l) => l.startsWith("Email:"))
-                  ?.replace("Email:", "")
-                  .trim();
-
-                const phoneLine = noteLines
-                  .find((l) => l.startsWith("Tél:"))
-                  ?.replace("Tél:", "")
-                  .replace(/\D/g, "")
-                  .trim();
-
-                const emailSubject = `NAIA-os - Relance concernant votre projet : ${selectedLead.topic}`;
-                const gmailUrl = `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(
-                  emailLine || "",
-                )}&su=${encodeURIComponent(emailSubject)}&body=${encodeURIComponent(
-                  drafts.email,
-                )}`;
-
-                const waUrl = phoneLine
-                  ? `https://wa.me/${phoneLine}?text=${encodeURIComponent(
-                      drafts.whatsapp,
-                    )}`
-                  : `https://wa.me/?text=${encodeURIComponent(drafts.whatsapp)}`;
-
-                return (
-                  <div className="space-y-4 pt-4 border-t border-stone-250 animate-fadeIn">
-                    <div className="rounded-xl border border-teal-200 bg-teal-50/15 overflow-hidden">
-                      <div className="flex items-center justify-between px-4 py-2.5 bg-teal-50 border-b border-teal-200">
-                        <span className="text-xs font-semibold text-teal-800 flex items-center gap-1.5">
-                          <Mail className="h-3.5 w-3.5" /> Email de relance
-                        </span>
-                        <a
-                          href={gmailUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded bg-teal-700 hover:bg-teal-850 px-2.5 py-1 text-[10px] font-bold text-white transition"
-                        >
-                          Ouvrir dans Gmail ↗
-                        </a>
-                      </div>
-                      <div className="px-4 py-3">
-                        <p className="text-xs text-stone-700 whitespace-pre-wrap leading-relaxed">
-                          {drafts.email}
-                        </p>
-                      </div>
-                    </div>
-
-                    <div className="rounded-xl border border-teal-200 bg-teal-50/15 overflow-hidden">
-                      <div className="flex items-center justify-between px-4 py-2.5 bg-teal-50 border-b border-teal-200">
-                        <span className="text-xs font-semibold text-teal-800 flex items-center gap-1.5">
-                          <Phone className="h-3.5 w-3.5" /> WhatsApp Message
-                        </span>
-                        <a
-                          href={waUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="inline-flex items-center gap-1 rounded bg-emerald-600 hover:bg-emerald-700 px-2.5 py-1 text-[10px] font-bold text-white transition"
-                        >
-                          Ouvrir dans WhatsApp ↗
-                        </a>
-                      </div>
-                      <div className="px-4 py-3">
-                        <p className="text-xs text-stone-700 whitespace-pre-wrap leading-relaxed">
-                          {drafts.whatsapp}
-                        </p>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-            {driveLink && (
-              <div className="p-4 rounded-xl border border-emerald-200 bg-emerald-50/50 flex flex-col gap-1.5 animate-fadeIn">
-                <h4 className="text-xs font-bold text-emerald-800 uppercase tracking-wider flex items-center gap-1.5">
-                  <CheckCircle className="h-4 w-4 text-emerald-600" />
-                  Dossier Drive Client Prêt
-                </h4>
-                <p className="text-xs text-stone-600">
-                  Le dossier de fichiers commerciaux a été créé avec succès pour
-                  ce client.
-                </p>
-                <a
-                  href={driveLink}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="text-xs text-teal-700 font-bold hover:underline inline-flex items-center gap-1 mt-1"
-                >
-                  Ouvrir le dossier Drive ↗
-                </a>
+              {/* History tracking details */}
+              <div className="pt-2.5 pb-1 border-t border-stone-150 flex items-center justify-between text-[11px] text-stone-500 italic">
+                <span>
+                  Dernière mise à jour par :{" "}
+                  <strong>{selectedLead.lastUpdatedByName || "Inconnu"}</strong>
+                </span>
+                <span>
+                  Le :{" "}
+                  {selectedLead.lastUpdatedAt
+                    ? new Date(selectedLead.lastUpdatedAt).toLocaleString(
+                        "fr-FR",
+                        { dateStyle: "short", timeStyle: "short" },
+                      )
+                    : "Non renseigné"}
+                </span>
               </div>
-            )}
-
-            {/* Notes Management Section */}
-            <div className="pt-4 border-t border-stone-200 space-y-4">
-              <h4 className="text-xs font-bold text-stone-500 uppercase tracking-wider flex items-center gap-1.5">
-                <FileText className="h-4 w-4 text-stone-400" />
-                Notes de suivi commercial
-              </h4>
-
-              {/* Notes List */}
-              <div className="space-y-3 max-h-60 overflow-y-auto pr-1">
-                {isNotesLoading ? (
-                  <div className="flex justify-center py-4">
-                    <Loader2 className="h-5 w-5 animate-spin text-teal-650" />
-                  </div>
-                ) : notes.length === 0 ? (
-                  <p className="text-xs text-stone-500 italic py-2 text-center">
-                    Aucune note de suivi enregistrée pour le moment.
-                  </p>
-                ) : (
-                  notes.map((n) => (
-                    <div
-                      key={n.id}
-                      className="rounded-lg border border-stone-150 bg-stone-50/40 p-2.5 space-y-1.5 hover:border-stone-250 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-[11px]">
-                        <div className="flex items-center gap-2">
-                          <span className="font-bold text-stone-750 flex items-center gap-1">
-                            <span className="h-4 w-4 rounded-full bg-stone-200 flex items-center justify-center text-[9px]">
-                              {(n.createdByName || "M").charAt(0).toUpperCase()}
-                            </span>
-                            {n.createdByName || "Membre"}
-                          </span>
-                          {n.assignedToName && (
-                            <span className="inline-flex items-center gap-1 rounded bg-teal-50 px-1 py-0.5 text-[9px] font-bold text-teal-700 border border-teal-200/50">
-                              Assigné à : {n.assignedToName}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex items-center gap-2 text-stone-450 font-medium">
-                          <span className="flex flex-col items-end text-[9px] text-stone-500 leading-tight">
-                            <span>
-                              {new Date(n.createdAt).toLocaleString("fr-FR", {
-                                dateStyle: "short",
-                                timeStyle: "short",
-                              })}
-                            </span>
-                            {n.updatedAt &&
-                              new Date(n.updatedAt).getTime() -
-                                new Date(n.createdAt).getTime() >
-                                1000 && (
-                                <span className="text-amber-600 font-semibold text-[8px]">
-                                  Modifié le :{" "}
-                                  {new Date(n.updatedAt).toLocaleString(
-                                    "fr-FR",
-                                    {
-                                      dateStyle: "short",
-                                      timeStyle: "short",
-                                    },
-                                  )}
-                                </span>
-                              )}
-                          </span>
-                          <div className="flex gap-1.5">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingNoteId(n.id);
-                                setEditingNoteText(n.content);
-                                setEditingNoteAssigneeId(
-                                  n.assignedToProfileId ?? "",
-                                );
-                              }}
-                              className="text-teal-650 hover:underline font-bold"
-                            >
-                              Modifier
-                            </button>
-                            <span>•</span>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const confirm = window.confirm(
-                                  "Supprimer cette note ?",
-                                );
-                                if (!confirm) return;
-                                const res = await deleteLeadNoteAction(n.id);
-                                if (res.success) {
-                                  setNotes((prev) =>
-                                    prev.filter((x) => x.id !== n.id),
-                                  );
-                                  toast.success("Note supprimée.");
-                                } else {
-                                  toast.error(res.error ?? "Erreur");
-                                }
-                              }}
-                              className="text-red-650 hover:underline font-bold"
-                            >
-                              Supprimer
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-
-                      {editingNoteId === n.id ? (
-                        <div className="space-y-2 mt-1">
-                          <textarea
-                            className="w-full rounded border border-stone-300 bg-white p-2 text-xs text-stone-900 focus:border-teal-750 focus:outline-none"
-                            rows={2}
-                            value={editingNoteText}
-                            onChange={(e) => setEditingNoteText(e.target.value)}
-                          />
-                          <div className="flex items-center gap-2">
-                            <label className="text-[10px] text-stone-500 font-medium">
-                              Assigner à :
-                            </label>
-                            <select
-                              className="rounded border border-stone-300 bg-white p-1 text-[11px] text-stone-850 focus:border-teal-750 focus:outline-none"
-                              value={editingNoteAssigneeId}
-                              onChange={(e) =>
-                                setEditingNoteAssigneeId(e.target.value)
-                              }
-                            >
-                              <option value="">Non assigné</option>
-                              {teamMembers.map((m) => (
-                                <option key={m.id} value={m.id}>
-                                  {m.fullName}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div className="flex justify-end gap-1.5">
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="h-7 text-[10px] px-2 text-stone-500 hover:bg-stone-100"
-                              onClick={() => setEditingNoteId(null)}
-                            >
-                              Annuler
-                            </Button>
-                            <Button
-                              type="button"
-                              className="h-7 text-[10px] px-2.5 bg-teal-600 hover:bg-teal-700 text-white"
-                              onClick={async () => {
-                                if (!editingNoteText.trim()) return;
-                                const res = await updateLeadNoteAction(
-                                  n.id,
-                                  editingNoteText,
-                                  editingNoteAssigneeId || undefined,
-                                );
-                                if (res.success && res.note) {
-                                  setNotes((prev) =>
-                                    prev.map((x) =>
-                                      x.id === n.id ? res.note! : x,
-                                    ),
-                                  );
-                                  setEditingNoteId(null);
-                                  toast.success("Note modifiée.");
-                                } else {
-                                  toast.error(res.error ?? "Erreur");
-                                }
-                              }}
-                            >
-                              Enregistrer
-                            </Button>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="text-xs text-stone-800 whitespace-pre-wrap leading-relaxed">
-                          {n.content}
-                        </p>
-                      )}
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Add Note form */}
-              <div className="space-y-2">
-                <textarea
-                  className="w-full rounded-lg border border-stone-300 bg-white p-2.5 text-xs text-stone-900 placeholder:text-stone-400 focus:border-teal-750 focus:outline-none focus:ring-1 focus:ring-teal-750"
-                  rows={2}
-                  placeholder="Saisir une nouvelle note commerciale (partagée avec l'équipe)..."
-                  value={newNoteText}
-                  onChange={(e) => setNewNoteText(e.target.value)}
-                />
-                <div className="flex items-center justify-between gap-4">
-                  <div className="flex items-center gap-1.5">
-                    <label className="text-[11px] text-stone-500 font-medium">
-                      Assigner à :
-                    </label>
-                    <select
-                      className="rounded border border-stone-300 bg-white px-1.5 py-1 text-[11px] text-stone-850 focus:border-teal-750 focus:outline-none"
-                      value={newNoteAssigneeId}
-                      onChange={(e) => setNewNoteAssigneeId(e.target.value)}
-                    >
-                      <option value="">Non assigné</option>
-                      {teamMembers.map((m) => (
-                        <option key={m.id} value={m.id}>
-                          {m.fullName}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <Button
-                    type="button"
-                    disabled={!newNoteText.trim()}
-                    className="h-8 text-xs bg-teal-600 hover:bg-teal-700 text-white flex items-center gap-1.5"
-                    onClick={async () => {
-                      if (!newNoteText.trim()) return;
-                      const res = await createLeadNoteAction(
-                        selectedLead.id,
-                        newNoteText,
-                        newNoteAssigneeId || undefined,
-                      );
-                      if (res.success && res.note) {
-                        setNotes((prev) => [...prev, res.note!]);
-                        setNewNoteText("");
-                        setNewNoteAssigneeId("");
-                        toast.success("Note ajoutée !");
-                      } else {
-                        toast.error(res.error ?? "Erreur");
-                      }
-                    }}
-                  >
-                    Ajouter la note
-                  </Button>
-                </div>
-              </div>
-            </div>
-
-            {/* History tracking details */}
-            <div className="pt-2.5 pb-1 border-t border-stone-150 flex items-center justify-between text-[11px] text-stone-500 italic">
-              <span>
-                Dernière mise à jour par :{" "}
-                <strong>{selectedLead.lastUpdatedByName || "Inconnu"}</strong>
-              </span>
-              <span>
-                Le :{" "}
-                {selectedLead.lastUpdatedAt
-                  ? new Date(selectedLead.lastUpdatedAt).toLocaleString(
-                      "fr-FR",
-                      { dateStyle: "short", timeStyle: "short" },
-                    )
-                  : "Non renseigné"}
-              </span>
-            </div>
+            </details>
 
             {/* Bottom Actions aligned with Creation modal */}
             <div className="flex justify-between items-center border-t border-stone-100 pt-4">
-              <Button
-                type="button"
-                variant="ghost"
-                className="gap-2 text-red-650 hover:bg-red-50 hover:text-red-700 h-9 px-3"
-                onClick={() => handleDelete(selectedLead.id)}
-              >
-                <Trash2 className="h-4 w-4" />
-                Supprimer ce lead
-              </Button>
+              <details className="relative text-xs text-stone-500">
+                <summary className="cursor-pointer rounded-md px-2 py-1.5 hover:bg-stone-100">
+                  Plus
+                </summary>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="mt-1 gap-2 text-red-650 hover:bg-red-50 hover:text-red-700 h-8 px-2"
+                  onClick={() => handleDelete(selectedLead.id)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Archiver le lead
+                </Button>
+              </details>
 
               <div className="flex justify-end gap-3">
                 <Button
@@ -4590,18 +4523,18 @@ function LeadCard({
   nextStatus,
   onSelect,
   onMove,
-  onDelete,
   onGenerateDraft,
   onDriveClick,
+  onToggleDone,
 }: {
   canReorder: boolean;
   lead: CrmLeadSummary;
   nextStatus: CrmLeadStatus | null;
   onSelect: () => void;
   onMove: (lead: CrmLeadSummary, status: CrmLeadStatus) => void;
-  onDelete: (id: string) => void;
   onGenerateDraft: (lead: CrmLeadSummary) => void;
   onDriveClick: (lead: CrmLeadSummary) => void;
+  onToggleDone: (lead: CrmLeadSummary) => void;
 }) {
   const {
     attributes,
@@ -4617,77 +4550,17 @@ function LeadCard({
     id: lead.id,
   });
 
-  // Parse notes to extract company / contact lines
-  const noteLines = (lead.notes ?? "").split("\n");
-  const companyLine = noteLines
-    .find((l) => l.startsWith("Entreprise:"))
-    ?.replace("Entreprise:", "")
-    .trim();
-  const contactLine = noteLines
-    .find((l) => l.startsWith("Contact:"))
-    ?.replace("Contact:", "")
-    .trim();
-  const companyName =
-    lead.companyName?.trim() ||
-    companyLine ||
-    inferCompanyNameFromTopic(lead.topic) ||
-    "Sans entreprise";
-  const contactName =
-    lead.contactName?.trim() || contactLine || "Contact à qualifier";
-  const showProject = React.useMemo(() => {
-    const t = lead.topic.trim();
-    if (!t) return false;
-    const lowerCompany = companyName.toLowerCase();
-    return t.toLowerCase() !== lowerCompany;
-  }, [lead.topic, companyName]);
-
-  const displayTopic = React.useMemo(() => {
-    let t = lead.topic.trim();
-    if (!t) return "";
-    const lowerCompany = companyName.toLowerCase();
-    if (t.toLowerCase().startsWith(lowerCompany)) {
-      t = t
-        .slice(companyName.length)
-        .replace(/^[\s\-\·\–\—\:]+/, "")
-        .trim();
-    }
-    if (t) {
-      return t.charAt(0).toUpperCase() + t.slice(1);
-    }
-    return "";
-  }, [lead.topic, companyName]);
-
-  const isOverdue = React.useMemo(() => {
-    if (!lead.leadDate) return false;
-    if (lead.status === "won" || lead.status === "dead-end") return false;
-    try {
-      return new Date(lead.leadDate) < new Date();
-    } catch {
-      return false;
-    }
-  }, [lead.leadDate, lead.status]);
-
-  // Determine status color indicator
-  const statusColorMap: Record<CrmLeadStatus, string> = {
-    "lead-to-contact": "bg-blue-500",
-    contacted: "bg-stone-400",
-    "to-follow-up": "bg-amber-500",
-    "meeting-booked": "bg-indigo-500",
-    "proposal-sent": "bg-emerald-500",
-    won: "bg-teal-500",
-    "dead-end": "bg-red-400",
-  };
-  const statusDotBg = statusColorMap[lead.status] || "bg-stone-300";
-
-  const statusLabels: Record<CrmLeadStatus, string> = {
-    "lead-to-contact": "CONTACT",
-    contacted: "CONTACTÉ",
-    "to-follow-up": "RELANCE",
-    "meeting-booked": "MEETING",
-    "proposal-sent": "PROPALE",
-    won: "GAGNÉ",
-    "dead-end": "DEAD END",
-  };
+  const { companyName, contactName } = getCrmPipelineLeadIdentity(lead);
+  const dateState = getCrmPipelineDateState(lead);
+  const ownerName = lead.assignedToName?.trim() ?? "";
+  const ownerLabel = /\bali\b/i.test(ownerName)
+    ? "ALI"
+    : /\bnabil\b/i.test(ownerName)
+      ? "Nabil"
+      : ownerName.split(/\s+/)[0] || "";
+  const visibleTags = (lead.tags ?? []).filter(
+    (tag) => !/^(ali|nabil)$/i.test(tag.name.trim()),
+  );
 
   const tagBarColors: Record<string, string> = {
     blue: "bg-blue-500",
@@ -4705,60 +4578,26 @@ function LeadCard({
     rose: "bg-rose-500",
   };
 
-  // Compute a stable avatar index from company name (palette has 8 entries)
-  const avatarIdx =
-    companyName.split("").reduce((acc, c) => acc + c.charCodeAt(0), 0) % 8;
-
-  // 2-letter initials from contact name (e.g. "Hicham El Alami" → "HE")
-  const avatarInitials = React.useMemo(() => {
-    const words = contactName.split(" ").filter(Boolean);
-    if (words.length >= 2) {
-      return (words[0][0] + words[1][0]).toUpperCase();
-    }
-    return contactName.charAt(0).toUpperCase();
-  }, [contactName]);
-
-  // Source display — plain text, no badge
-  const sourceDisplay = lead.source?.trim()?.toUpperCase();
-
-  // Compact date: "18 juil." — manual format avoids fr-FR locale dot-separator bugs
   const cardDateDisplay = React.useMemo(() => {
     if (!lead.leadDate) return "";
-    try {
-      const d = new Date(lead.leadDate);
-      if (isNaN(d.getTime())) return "";
-      const months = [
-        "janv.",
-        "févr.",
-        "mars",
-        "avr.",
-        "mai",
-        "juin",
-        "juil.",
-        "août",
-        "sept.",
-        "oct.",
-        "nov.",
-        "déc.",
-      ];
-      return `${d.getDate()} ${months[d.getMonth()]}`;
-    } catch {
-      return "";
-    }
+    const date = new Date(lead.leadDate);
+    if (Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat("fr-FR", {
+      day: "numeric",
+      month: "short",
+      timeZone: "Africa/Casablanca",
+    }).format(date);
   }, [lead.leadDate]);
-
-  // Dark avatar colors matching the reference (dark circle, light initials)
-  const darkAvatarPalette = [
-    { bg: "#1e3a5f", text: "#ffffff" }, // dark navy
-    { bg: "#2d4a3e", text: "#ffffff" }, // dark green
-    { bg: "#4a2d5f", text: "#ffffff" }, // dark purple
-    { bg: "#5f3a2d", text: "#ffffff" }, // dark brown
-    { bg: "#2d3a5f", text: "#ffffff" }, // dark indigo
-    { bg: "#5f4a2d", text: "#ffffff" }, // dark amber
-    { bg: "#2d5f4a", text: "#ffffff" }, // dark teal
-    { bg: "#5f2d3a", text: "#ffffff" }, // dark rose
-  ];
-  const darkAvatarColor = darkAvatarPalette[avatarIdx];
+  const datePresentation = {
+    done: { label: "Fait", className: "bg-emerald-50 text-emerald-700" },
+    today: { label: "Aujourd’hui", className: "bg-rose-50 text-rose-700" },
+    overdue: { label: "En retard", className: "bg-red-50 text-red-700" },
+    "this-week": {
+      label: "Cette semaine",
+      className: "bg-amber-50 text-amber-800",
+    },
+    later: { label: "À venir", className: "bg-emerald-50 text-emerald-700" },
+  }[dateState];
 
   return (
     <article
@@ -4782,7 +4621,7 @@ function LeadCard({
           type="button"
           aria-label={`Réorganiser ${companyName}`}
           title="Réorganiser"
-          className="absolute left-1.5 top-1.5 z-10 flex h-6 w-6 touch-none items-center justify-center rounded-md text-stone-400 opacity-50 transition hover:bg-stone-100 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-teal-600 dark:hover:bg-stone-800"
+          className="absolute left-1 top-1 z-10 flex h-11 w-11 touch-none items-center justify-center rounded-md text-stone-400 opacity-60 transition hover:bg-stone-100 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-teal-600 sm:left-1.5 sm:top-1.5 sm:h-6 sm:w-6 sm:opacity-50 dark:hover:bg-stone-800"
           onClick={(event) => event.stopPropagation()}
           {...attributes}
           {...listeners}
@@ -4793,7 +4632,7 @@ function LeadCard({
 
       {/* Hover action buttons */}
       <div
-        className="absolute right-2 top-2 z-10 hidden items-center gap-0.5 rounded-lg p-0.5 group-hover:flex"
+        className="absolute right-2 top-2 z-10 flex items-center gap-0.5 rounded-lg p-0.5 opacity-100 transition-opacity sm:pointer-events-none sm:opacity-0 sm:group-hover:pointer-events-auto sm:group-hover:opacity-100 sm:group-focus-within:pointer-events-auto sm:group-focus-within:opacity-100"
         style={{
           background: "var(--maison-card)",
           border: "1px solid var(--maison-border)",
@@ -4804,11 +4643,12 @@ function LeadCard({
           <button
             type="button"
             title="Avancer"
+            aria-label={`Avancer ${companyName}`}
             onClick={(e) => {
               e.stopPropagation();
               onMove(lead, nextStatus);
             }}
-            className="flex h-5 w-5 items-center justify-center rounded text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40 transition-colors"
+            className="flex h-9 w-9 items-center justify-center rounded text-emerald-600 transition-colors hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
           >
             <MoveRight className="h-3 w-3" />
           </button>
@@ -4816,11 +4656,12 @@ function LeadCard({
         <button
           type="button"
           title={lead.driveFolderUrl ? "Ouvrir Drive" : "Créer dossier Drive"}
+          aria-label={`${lead.driveFolderUrl ? "Ouvrir" : "Créer"} le dossier Drive de ${companyName}`}
           onClick={(e) => {
             e.stopPropagation();
             onDriveClick(lead);
           }}
-          className={`flex h-5 w-5 items-center justify-center rounded transition-colors ${
+          className={`flex h-9 w-9 items-center justify-center rounded transition-colors ${
             lead.driveFolderUrl
               ? "text-emerald-600 hover:bg-emerald-50 dark:hover:bg-emerald-950/40"
               : "text-stone-400 hover:bg-stone-100 dark:hover:bg-stone-700"
@@ -4831,34 +4672,26 @@ function LeadCard({
         <button
           type="button"
           title="Relance IA"
+          aria-label={`Préparer une relance IA pour ${companyName}`}
           onClick={(e) => {
             e.stopPropagation();
             onGenerateDraft(lead);
           }}
-          className="flex h-5 w-5 items-center justify-center rounded text-blue-500 hover:bg-blue-50 dark:hover:bg-blue-950/40 transition-colors"
+          className="flex h-9 w-9 items-center justify-center rounded text-blue-500 transition-colors hover:bg-blue-50 dark:hover:bg-blue-950/40"
         >
           <Bot className="h-3 w-3" />
-        </button>
-        <button
-          type="button"
-          title="Supprimer"
-          onClick={(e) => {
-            e.stopPropagation();
-            onDelete(lead.id);
-          }}
-          className="flex h-5 w-5 items-center justify-center rounded text-red-500 hover:bg-red-50 dark:hover:bg-red-950/40 transition-colors"
-        >
-          <Trash2 className="h-3 w-3" />
         </button>
       </div>
 
       {/* Clickable card body */}
       <button type="button" className="w-full text-left" onClick={onSelect}>
-        <div className={`p-2.5 pb-1.5 ${canReorder ? "pl-8" : "pl-2.5"}`}>
+        <div
+          className={`p-2.5 pb-1.5 pt-12 sm:pt-2.5 ${canReorder ? "pl-8" : "pl-2.5"}`}
+        >
           {/* Tag bars */}
-          {lead.tags && lead.tags.length > 0 && (
+          {visibleTags.length > 0 && (
             <div className="mb-2 flex gap-1">
-              {lead.tags.slice(0, 3).map((tag) => (
+              {visibleTags.slice(0, 3).map((tag) => (
                 <span
                   key={tag.id}
                   aria-label={tag.name}
@@ -4868,7 +4701,7 @@ function LeadCard({
             </div>
           )}
 
-          {/* Company name + Dark avatar (2-letter initials) */}
+          {/* Company first, owner assignment second. */}
           <div className="flex items-start justify-between gap-1.5">
             <p
               className="min-w-0 flex-1 truncate text-[12px] font-semibold leading-snug"
@@ -4876,26 +4709,19 @@ function LeadCard({
             >
               {companyName}
             </p>
-            <span
-              className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[9px] font-bold leading-none"
-              style={{
-                background: darkAvatarColor.bg,
-                color: darkAvatarColor.text,
-              }}
-            >
-              {avatarInitials}
-            </span>
+            {ownerLabel ? (
+              <span className="shrink-0 rounded-full bg-stone-900 px-2 py-1 text-[9px] font-bold leading-none text-white">
+                {ownerLabel}
+              </span>
+            ) : null}
           </div>
 
-          {/* Topic / subtitle — 1 line truncated */}
-          {showProject && (
-            <p
-              className="mt-0.5 min-w-0 truncate text-[10px]"
-              style={{ color: "var(--maison-text-secondary)" }}
-            >
-              {displayTopic}
-            </p>
-          )}
+          <p
+            className="mt-0.5 min-w-0 truncate text-[10px]"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            {contactName}
+          </p>
 
           {/* Next action — 1 line max for compact uniform height */}
           {lead.nextAction && (
@@ -4909,51 +4735,44 @@ function LeadCard({
           )}
         </div>
 
-        {/* Footer — date + source, no separator */}
-        <div className="flex flex-wrap items-center justify-between gap-1 px-2.5 pb-2.5 pt-1">
-          {/* Date: compact "18 juil." with calendar icon; red if overdue */}
+        <div className="flex min-h-7 items-center px-2.5 pb-2.5 pt-1 pr-16">
           {cardDateDisplay ? (
             <span
-              className="inline-flex min-w-0 max-w-full items-center gap-1 text-[9px]"
-              style={{
-                color: isOverdue ? "#dc2626" : "var(--maison-text-muted)",
-              }}
+              className={`inline-flex min-w-0 max-w-full items-center gap-1 rounded-full px-2 py-1 text-[9px] font-semibold ${datePresentation.className}`}
             >
               <Calendar className="h-2.5 w-2.5 shrink-0" />
               <span className="truncate">{cardDateDisplay}</span>
-              {isOverdue && (
-                <span className="shrink-0 font-semibold text-red-600">
-                  · retard
-                </span>
-              )}
+              <span className="shrink-0">· {datePresentation.label}</span>
             </span>
-          ) : (
-            <span />
-          )}
-
-          {/* Source: plain uppercase text, no box */}
-          {sourceDisplay ? (
-            <span
-              className="min-w-0 truncate text-[9px] font-semibold uppercase tracking-wide"
-              style={{ color: "var(--maison-text-muted)" }}
-            >
-              {sourceDisplay}
-            </span>
-          ) : (
-            <div className="flex min-w-0 shrink-0 items-center gap-1">
-              <span
-                className={`h-1 w-1 shrink-0 rounded-full ${statusDotBg}`}
-              />
-              <span
-                className="min-w-0 truncate text-[9px] font-semibold uppercase tracking-wide"
-                style={{ color: "var(--maison-text-muted)" }}
-              >
-                {statusLabels[lead.status] || lead.status}
-              </span>
-            </div>
-          )}
+          ) : null}
         </div>
       </button>
+      {lead.nextAction?.trim() || lead.leadDate ? (
+        <button
+          type="button"
+          title={
+            lead.nextActionState === "done"
+              ? "Rouvrir cette action"
+              : "Marquer cette action comme faite"
+          }
+          aria-label={
+            lead.nextActionState === "done"
+              ? `Rouvrir l’action de ${companyName}`
+              : `Marquer l’action de ${companyName} comme faite`
+          }
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleDone(lead);
+          }}
+          className={`absolute bottom-2 right-2 z-10 inline-flex h-6 items-center gap-1 rounded-full border px-2 text-[9px] font-semibold transition ${
+            lead.nextActionState === "done"
+              ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+              : "border-stone-200 bg-white text-stone-600 hover:border-emerald-300 hover:text-emerald-700"
+          }`}
+        >
+          <Check className="h-3 w-3" /> Fait
+        </button>
+      ) : null}
     </article>
   );
 }

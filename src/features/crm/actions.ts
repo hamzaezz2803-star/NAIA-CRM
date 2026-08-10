@@ -65,6 +65,9 @@ type DbLead = {
   status: CrmLeadStatus;
   notes: string | null;
   next_action: string | null;
+  next_action_state: "pending" | "done";
+  next_action_completed_at: string | null;
+  next_action_completed_by_profile_id: string | null;
   next_action_date: string | null;
   lead_date: string | null;
   pipeline_position: number;
@@ -218,70 +221,6 @@ function parseContactInfoFromNotes(notes?: string | null) {
   return { company, contact };
 }
 
-async function syncLeadTask(
-  supabase: any,
-  orgId: string,
-  leadId: string,
-  userId: string | null,
-) {
-  const { data: leadData } = await supabase
-    .from("crm_leads")
-    .select("topic, next_action, lead_date, assigned_to_profile_id")
-    .eq("id", leadId)
-    .eq("organization_id", orgId)
-    .single();
-
-  if (leadData) {
-    if (leadData.next_action && leadData.next_action.trim()) {
-      // Check if a task exists for this lead
-      const { data: existingTask } = await supabase
-        .from("crm_tasks")
-        .select("id")
-        .eq("lead_id", leadId)
-        .eq("organization_id", orgId)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingTask) {
-        // Update task title, due date, assignee
-        await supabase
-          .from("crm_tasks")
-          .update({
-            title: leadData.next_action.trim(),
-            description: `Tâche de suivi pour le lead: ${leadData.topic}`,
-            due_date: leadData.lead_date
-              ? new Date(leadData.lead_date).toISOString()
-              : null,
-            assigned_to_profile_id: leadData.assigned_to_profile_id,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", existingTask.id);
-      } else {
-        // Insert new task
-        await supabase.from("crm_tasks").insert({
-          organization_id: orgId,
-          title: leadData.next_action.trim(),
-          description: `Tâche de suivi pour le lead: ${leadData.topic}`,
-          status: "todo",
-          due_date: leadData.lead_date
-            ? new Date(leadData.lead_date).toISOString()
-            : null,
-          lead_id: leadId,
-          assigned_to_profile_id: leadData.assigned_to_profile_id,
-          created_by_profile_id: userId,
-        });
-      }
-    } else {
-      // Delete any active task linked to this lead to keep it clean
-      await supabase
-        .from("crm_tasks")
-        .delete()
-        .eq("lead_id", leadId)
-        .eq("status", "todo");
-    }
-  }
-}
-
 // ────────────────────────────────────────────────────────────
 // LEADS
 // ────────────────────────────────────────────────────────────
@@ -321,6 +260,7 @@ export type LeadTodoCard = {
   topic: string;
   status: string;
   nextAction?: string;
+  nextActionState?: "pending" | "done";
   leadDate?: string;
   companyName?: string;
   contactName?: string;
@@ -368,6 +308,7 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
     topic: row.topic,
     status: row.status,
     nextAction: row.next_action ?? undefined,
+    nextActionState: row.next_action_state ?? "pending",
     leadDate: row.lead_date ?? row.next_action_date ?? undefined,
     companyName: row.company?.name ?? undefined,
     contactName: row.contact?.name ?? undefined,
@@ -546,9 +487,6 @@ export async function createLeadAction(
     };
   }
 
-  // Sync Todo task
-  await syncLeadTask(supabase, orgId, row.id, actorProfileId);
-
   // Auto-create the client folder in the cofounders shared drive if not
   // skipped. Folders are named after the client company: without a resolved
   // company there is nothing to create (a topic-named folder is never a
@@ -626,6 +564,10 @@ export async function createLeadAction(
         status: row.status,
         notes: row.notes ?? undefined,
         nextAction: row.next_action ?? undefined,
+        nextActionState: row.next_action_state ?? "pending",
+        nextActionCompletedAt: row.next_action_completed_at ?? undefined,
+        nextActionCompletedByProfileId:
+          row.next_action_completed_by_profile_id ?? undefined,
         pipelinePosition: row.pipeline_position ?? undefined,
         leadDate: row.lead_date ?? row.next_action_date ?? undefined,
         contactJobTitle: row.contact_job_title ?? undefined,
@@ -659,6 +601,10 @@ export async function createLeadAction(
       status: popRow.status,
       notes: popRow.notes ?? undefined,
       nextAction: popRow.next_action ?? undefined,
+      nextActionState: popRow.next_action_state ?? "pending",
+      nextActionCompletedAt: popRow.next_action_completed_at ?? undefined,
+      nextActionCompletedByProfileId:
+        popRow.next_action_completed_by_profile_id ?? undefined,
       pipelinePosition: popRow.pipeline_position ?? undefined,
       leadDate: popRow.lead_date ?? popRow.next_action_date ?? undefined,
       contactJobTitle: popRow.contact_job_title ?? undefined,
@@ -857,7 +803,11 @@ export async function updateLeadAction(
     leadDate: string;
     source: string;
     companyId: string;
+    companyName: string;
     contactId: string;
+    contactName: string;
+    contactEmail: string;
+    contactPhone: string;
     contactJobTitle: string;
     contactLinkedinUrl: string;
     assignedToProfileId: string | null;
@@ -920,17 +870,21 @@ export async function updateLeadAction(
     : null;
 
   const { data: atomicUpdate, error } = await supabase.rpc(
-    "update_crm_lead_atomic",
+    "update_crm_lead_uat_atomic",
     {
       requested_actor_profile_id: user.id,
-      requested_auto_company_name:
+      requested_company_name:
         updates.companyId === undefined
-          ? (parsedContactInfo.company ?? null)
+          ? updates.companyName?.trim() || parsedContactInfo.company || null
           : null,
-      requested_auto_contact_name:
+      requested_contact_email:
+        updates.contactEmail === undefined ? null : updates.contactEmail.trim(),
+      requested_contact_name:
         updates.contactId === undefined
-          ? (parsedContactInfo.contact ?? null)
+          ? updates.contactName?.trim() || parsedContactInfo.contact || null
           : null,
+      requested_contact_phone:
+        updates.contactPhone === undefined ? null : updates.contactPhone.trim(),
       requested_lead_id: leadId,
       requested_organization_id: orgId,
       requested_updates: requestedUpdates,
@@ -949,9 +903,6 @@ export async function updateLeadAction(
   }
 
   await syncLeadToGoogleCalendar(supabase, orgId, leadId);
-
-  // Sync Todo task
-  await syncLeadTask(supabase, orgId, leadId, user?.id ?? null);
 
   // Query back populated lead
   const { data: updatedData } = await supabase
@@ -993,6 +944,10 @@ export async function updateLeadAction(
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
+      nextActionState: row.next_action_state ?? "pending",
+      nextActionCompletedAt: row.next_action_completed_at ?? undefined,
+      nextActionCompletedByProfileId:
+        row.next_action_completed_by_profile_id ?? undefined,
       pipelinePosition: row.pipeline_position ?? undefined,
       leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       contactJobTitle: row.contact_job_title ?? undefined,
@@ -1024,6 +979,62 @@ export async function updateLeadAction(
   }
 
   return { success: true, lead: updatedLead };
+}
+
+export async function setLeadNextActionStateAction(
+  leadId: string,
+  state: "pending" | "done",
+  expected?: { leadDate?: string; nextAction?: string },
+): Promise<{
+  completedAt?: string;
+  completedByProfileId?: string;
+  error?: string;
+  state?: "pending" | "done";
+  success: boolean;
+}> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { success: false, error: "Not configured" };
+
+  const orgId = await getOrgId();
+  if (!orgId) return { success: false, error: "Not authenticated" };
+
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user?.id) return { success: false, error: "Not authenticated" };
+
+  const { data, error } = await supabase.rpc("set_crm_lead_next_action_state", {
+    expected_due_date: expected?.leadDate || null,
+    expected_next_action: expected?.nextAction || null,
+    requested_actor_profile_id: user.id,
+    requested_lead_id: leadId,
+    requested_organization_id: orgId,
+    requested_state: state,
+  });
+
+  if (error) return { success: false, error: error.message };
+  const result = data as {
+    next_action_completed_at?: string | null;
+    next_action_completed_by_profile_id?: string | null;
+    next_action_state?: "pending" | "done";
+  } | null;
+
+  if (!result?.next_action_state) {
+    return { success: false, error: "Action introuvable" };
+  }
+
+  revalidatePath("/crm");
+  revalidatePath("/dashboard/leads");
+  revalidatePath("/dashboard/follow-ups");
+  revalidatePath("/dashboard/todo");
+
+  return {
+    completedAt: result.next_action_completed_at ?? undefined,
+    completedByProfileId:
+      result.next_action_completed_by_profile_id ?? undefined,
+    state: result.next_action_state,
+    success: true,
+  };
 }
 
 export async function deleteLeadAction(
@@ -1431,6 +1442,10 @@ export async function fetchCompanyDetailAction(companyId: string): Promise<{
     status: l.status,
     notes: l.notes ?? undefined,
     nextAction: l.next_action ?? undefined,
+    nextActionState: l.next_action_state ?? "pending",
+    nextActionCompletedAt: l.next_action_completed_at ?? undefined,
+    nextActionCompletedByProfileId:
+      l.next_action_completed_by_profile_id ?? undefined,
     pipelinePosition: l.pipeline_position ?? undefined,
     leadDate: l.lead_date ?? l.next_action_date ?? undefined,
     contactJobTitle: l.contact_job_title ?? undefined,
@@ -3327,6 +3342,10 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
+      nextActionState: row.next_action_state ?? "pending",
+      nextActionCompletedAt: row.next_action_completed_at ?? undefined,
+      nextActionCompletedByProfileId:
+        row.next_action_completed_by_profile_id ?? undefined,
       pipelinePosition: row.pipeline_position ?? undefined,
       leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       createdAt: row.created_at,
@@ -4068,61 +4087,6 @@ export async function fetchTasksAction(): Promise<
   const orgId = await getOrgId();
   if (!orgId) return [];
 
-  // Optimized on-demand backfill for existing CRM leads with next actions
-  try {
-    const { data: existingTasks } = await supabase
-      .from("crm_tasks")
-      .select("lead_id")
-      .eq("organization_id", orgId)
-      .is("archived_at", null)
-      .not("lead_id", "is", null);
-
-    const existingLeadIds = new Set(
-      (existingTasks || []).map((t) => t.lead_id),
-    );
-
-    const { data: leadsData } = await supabase
-      .from("crm_leads")
-      .select(
-        "id, topic, next_action, lead_date, assigned_to_profile_id, status",
-      )
-      .eq("organization_id", orgId)
-      .is("archived_at", null)
-      .not("next_action", "is", null);
-
-    if (leadsData && leadsData.length > 0) {
-      const inserts = [];
-      for (const lead of leadsData) {
-        if (
-          lead.next_action &&
-          lead.next_action.trim() &&
-          !existingLeadIds.has(lead.id)
-        ) {
-          const taskStatus =
-            lead.status === "won" || lead.status === "dead-end"
-              ? "done"
-              : "todo";
-          inserts.push({
-            organization_id: orgId,
-            title: lead.next_action.trim(),
-            description: `Tâche de suivi pour le lead: ${lead.topic}`,
-            status: taskStatus,
-            due_date: lead.lead_date
-              ? new Date(lead.lead_date).toISOString()
-              : null,
-            lead_id: lead.id,
-            assigned_to_profile_id: lead.assigned_to_profile_id,
-          });
-        }
-      }
-      if (inserts.length > 0) {
-        await supabase.from("crm_tasks").insert(inserts);
-      }
-    }
-  } catch (err) {
-    console.error("Backfill tasks error:", err);
-  }
-
   const { data, error } = await supabase
     .from("crm_tasks")
     .select(
@@ -4150,6 +4114,7 @@ export async function fetchTasksAction(): Promise<
     title: row.title,
     description: row.description ?? undefined,
     status: row.status,
+    taskKind: row.task_kind ?? "manual",
     dueDate: row.due_date ?? undefined,
     leadId: row.lead_id ?? undefined,
     leadTopic: row.lead?.topic ?? undefined,
@@ -4200,6 +4165,7 @@ export async function createTaskAction(input: {
       title: input.title.trim(),
       description: input.description?.trim() || null,
       status: input.status || "todo",
+      task_kind: "manual",
       due_date: input.dueDate ? new Date(input.dueDate).toISOString() : null,
       lead_id: input.leadId || null,
       assigned_to_profile_id: input.assignedToProfileId || null,
@@ -4249,6 +4215,7 @@ export async function createTaskAction(input: {
       title: row.title,
       description: row.description ?? undefined,
       status: row.status,
+      taskKind: row.task_kind ?? "manual",
       dueDate: row.due_date ?? undefined,
       leadId: row.lead_id ?? undefined,
       leadTopic: row.lead?.topic ?? undefined,
@@ -4360,6 +4327,7 @@ export async function updateTaskAction(
       title: row.title,
       description: row.description ?? undefined,
       status: row.status,
+      taskKind: row.task_kind ?? "manual",
       dueDate: row.due_date ?? undefined,
       leadId: row.lead_id ?? undefined,
       leadTopic: row.lead?.topic ?? undefined,

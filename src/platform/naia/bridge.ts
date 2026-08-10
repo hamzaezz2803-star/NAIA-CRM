@@ -634,8 +634,10 @@ async function fetchBridgeGmailCrmLeads(
     } | null;
     created_at: string;
     id: string;
+    lead_date: string | null;
     next_action: string | null;
     next_action_date: string | null;
+    next_action_state: "pending" | "done";
     organization_id: string;
     status: CrmLeadStatus;
     topic: string;
@@ -651,7 +653,7 @@ async function fetchBridgeGmailCrmLeads(
     let query = supabase
       .from("crm_leads")
       .select(
-        `id,organization_id,access_scope,topic,status,next_action,next_action_date,created_at,updated_at,
+        `id,organization_id,access_scope,topic,status,next_action,lead_date,next_action_date,next_action_state,created_at,updated_at,
         company:company_id(organization_id,name,access_scope,archived_at),
         contact:contact_id(organization_id,email,access_scope,archived_at)`,
       )
@@ -707,8 +709,13 @@ async function fetchBridgeGmailCrmLeads(
       contactEmail: contact?.email ?? undefined,
       createdAt: row.created_at,
       id: row.id,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       nextAction: row.next_action ?? undefined,
-      nextActionDate: row.next_action_date ?? undefined,
+      nextActionDate:
+        row.next_action_state === "done"
+          ? undefined
+          : (row.lead_date ?? row.next_action_date ?? undefined),
+      nextActionState: row.next_action_state ?? "pending",
       organizationId: row.organization_id,
       status: row.status,
       topic: row.topic,
@@ -744,7 +751,7 @@ async function fetchBridgeLeads(
   let query = supabase
     .from("crm_leads")
     .select(
-      `id,organization_id,access_scope,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
+      `id,organization_id,access_scope,topic,source,status,notes,next_action,lead_date,next_action_date,next_action_state,next_action_completed_at,next_action_completed_by_profile_id,created_at,updated_at,
       company:company_id(id,organization_id,name,access_scope,archived_at),
       contact:contact_id(id,organization_id,name,email,phone,access_scope,archived_at)`,
     )
@@ -791,6 +798,9 @@ async function fetchBridgeLeads(
     lead_date: string | null;
     next_action: string | null;
     next_action_date: string | null;
+    next_action_state: "pending" | "done";
+    next_action_completed_at: string | null;
+    next_action_completed_by_profile_id: string | null;
     notes: string | null;
     organization_id: string;
     source: string | null;
@@ -827,6 +837,10 @@ async function fetchBridgeLeads(
       id: row.id,
       leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       nextAction: row.next_action ?? undefined,
+      nextActionState: row.next_action_state ?? "pending",
+      nextActionCompletedAt: row.next_action_completed_at ?? undefined,
+      nextActionCompletedByProfileId:
+        row.next_action_completed_by_profile_id ?? undefined,
       notes: row.notes ?? undefined,
       organizationId: row.organization_id,
       source: row.source ?? undefined,

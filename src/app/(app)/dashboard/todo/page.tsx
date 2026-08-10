@@ -470,6 +470,7 @@ export default function TodoPage() {
   const now = new Date();
   now.setHours(0, 0, 0, 0);
   const overdue = leads.filter((l) => {
+    if (l.nextActionState === "done") return false;
     if (!l.leadDate) return false;
     const d = new Date(l.leadDate);
     d.setHours(0, 0, 0, 0);

@@ -12,6 +12,8 @@ export const crmLeadStatuses = [
 
 export type CrmLeadStatus = string;
 
+export type CrmNextActionState = "pending" | "done";
+
 export type CrmCategory = {
   id: string;
   organizationId: string;
@@ -77,6 +79,9 @@ export type CrmLeadSummary = {
   status: CrmLeadStatus;
   notes?: string;
   nextAction?: string;
+  nextActionState?: CrmNextActionState;
+  nextActionCompletedAt?: string;
+  nextActionCompletedByProfileId?: string;
   pipelinePosition?: number;
   leadDate?: string;
   contactJobTitle?: string;
@@ -145,6 +150,7 @@ export type CrmTask = {
   title: string;
   description?: string;
   status: CrmTaskStatus;
+  taskKind?: "manual" | "lead-next-action" | "meeting-recommendation";
   dueDate?: string;
   leadId?: string;
   leadTopic?: string;
