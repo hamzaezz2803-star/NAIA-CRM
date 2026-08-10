@@ -95,6 +95,7 @@ describe("fetchCrmPipelineSnapshot", () => {
             crm_lead_tags: [],
             id: "lead-1",
             organization_id: "org-1",
+            pipeline_position: 1024,
             status: "lead-to-contact",
             topic: "Meeting TGCC",
             updated_at: "2026-08-09T20:00:00.000Z",
@@ -103,7 +104,7 @@ describe("fetchCrmPipelineSnapshot", () => {
         error: null,
       },
       organization_memberships: {
-        data: { organization_id: "org-1" },
+        data: { organization_id: "org-1", role: "owner" },
         error: null,
       },
     });
@@ -114,8 +115,9 @@ describe("fetchCrmPipelineSnapshot", () => {
     });
 
     expect(snapshot).toMatchObject({
+      canReorder: true,
       categories: [{ id: "category-1", statusKey: "lead-to-contact" }],
-      leads: [{ companyName: "TGCC", id: "lead-1" }],
+      leads: [{ companyName: "TGCC", id: "lead-1", pipelinePosition: 1024 }],
       loadedAt: "2026-08-09T22:00:00.000Z",
       source: "database",
     });

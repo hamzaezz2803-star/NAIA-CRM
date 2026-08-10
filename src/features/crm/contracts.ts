@@ -77,6 +77,7 @@ export type CrmLeadSummary = {
   status: CrmLeadStatus;
   notes?: string;
   nextAction?: string;
+  pipelinePosition?: number;
   leadDate?: string;
   contactJobTitle?: string;
   contactLinkedinUrl?: string;

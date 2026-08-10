@@ -1,6 +1,25 @@
 "use client";
 
 import React, { useState, useEffect, useTransition, useRef } from "react";
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  MouseSensor,
+  TouchSensor,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Button } from "@/components/ui/button";
 import {
   Plus,
@@ -30,6 +49,7 @@ import {
   Check,
   Edit3,
   FileText,
+  GripVertical,
 } from "lucide-react";
 import {
   createLeadAction,
@@ -55,8 +75,14 @@ import {
 import {
   fetchCrmPipelineAuxiliaryAction,
   fetchCrmPipelineSnapshotAction,
+  reorderCrmPipelineLeadsAction,
 } from "@/features/crm/pipeline-actions";
 import type { CrmPipelineSnapshot } from "@/features/crm/pipeline-data";
+import {
+  nextCrmPipelineTopPosition,
+  reorderCrmPipelineColumn,
+  sortCrmPipelineColumn,
+} from "@/features/crm/pipeline-order";
 import type {
   CrmLeadSummary,
   CrmLeadStatus,
@@ -325,6 +351,8 @@ export function CrmPipelineClient({
   // List view filters state
   const [filterStatus, setFilterStatus] = useState<string>("all");
   const [filterCompany, setFilterCompany] = useState<string>("all");
+  const [isReorderingPipeline, setIsReorderingPipeline] = useState(false);
+  const canReorderPipeline = initialData.canReorder;
 
   const uniqueCompanies = Array.from(
     new Set(
@@ -360,6 +388,21 @@ export function CrmPipelineClient({
 
   const hourlyScrollContainerRef = React.useRef<HTMLDivElement>(null);
   const kanbanContainerRef = useRef<HTMLDivElement>(null);
+  const pipelineDragOrderRef = useRef<{
+    ids: string[];
+    status: CrmLeadStatus;
+  } | null>(null);
+  const pipelineSensors = useSensors(
+    useSensor(MouseSensor, {
+      activationConstraint: { distance: 7 },
+    }),
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 220, tolerance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
 
   // Helper functions for modern calendar views
   function getDaysOfWeek(date: Date): Date[] {
@@ -1212,7 +1255,19 @@ export function CrmPipelineClient({
       const res = await updateLeadStatusAction(lead.id, newStatus);
       if (res.success) {
         setLeads((prev) =>
-          prev.map((l) => (l.id === lead.id ? { ...l, status: newStatus } : l)),
+          prev.map((l) =>
+            l.id === lead.id
+              ? {
+                  ...l,
+                  pipelinePosition: nextCrmPipelineTopPosition(
+                    prev,
+                    newStatus,
+                    lead.id,
+                  ),
+                  status: newStatus,
+                }
+              : l,
+          ),
         );
         toast.success("Statut du lead mis à jour !", { id: moveToastId });
       } else {
@@ -1221,6 +1276,73 @@ export function CrmPipelineClient({
         });
       }
     });
+  }
+
+  function handleLeadDragStart({ active }: DragStartEvent) {
+    const lead = leads.find((candidate) => candidate.id === String(active.id));
+    if (!lead) return;
+
+    pipelineDragOrderRef.current = {
+      ids: sortCrmPipelineColumn(leads, lead.status).map(({ id }) => id),
+      status: lead.status,
+    };
+  }
+
+  async function handleLeadDragEnd({ active, over }: DragEndEvent) {
+    const capturedOrder = pipelineDragOrderRef.current;
+    pipelineDragOrderRef.current = null;
+    if (!over || isReorderingPipeline) return;
+
+    const activeId = String(active.id);
+    const activeLead = leads.find((candidate) => candidate.id === activeId);
+    const targetStatus = over.data.current?.status;
+    if (!activeLead || typeof targetStatus !== "string") return;
+
+    if (targetStatus !== activeLead.status) {
+      handleMoveStatus(activeLead, targetStatus);
+      return;
+    }
+
+    const reordered = reorderCrmPipelineColumn({
+      activeId,
+      leads,
+      overId: String(over.id),
+      overType: over.data.current?.type,
+      status: activeLead.status,
+    });
+    if (!reordered) return;
+
+    const previousLeads = leads;
+    setLeads(reordered.leads);
+    setIsReorderingPipeline(true);
+
+    try {
+      const result = await reorderCrmPipelineLeadsAction({
+        expectedOrderedIds:
+          capturedOrder?.status === activeLead.status
+            ? capturedOrder.ids
+            : reordered.expectedOrderedIds,
+        orderedIds: reordered.orderedIds,
+        status: activeLead.status,
+      });
+
+      if (!result.success) {
+        setLeads(previousLeads);
+        const snapshot = await fetchCrmPipelineSnapshotAction();
+        setLeads(snapshot.leads);
+        toast.error(result.error ?? "Impossible de réorganiser les cartes.");
+      } else {
+        toast.success("Ordre du pipeline enregistré.");
+      }
+    } catch (error) {
+      console.error("CRM pipeline reorder failed:", error);
+      setLeads(previousLeads);
+      const snapshot = await fetchCrmPipelineSnapshotAction().catch(() => null);
+      if (snapshot) setLeads(snapshot.leads);
+      toast.error("Impossible de réorganiser les cartes.");
+    } finally {
+      setIsReorderingPipeline(false);
+    }
   }
 
   // ── Delete lead ─────────────────────────────────────────
@@ -1667,153 +1789,181 @@ export function CrmPipelineClient({
       ) : viewMode === "kanban" ? (
         <div>
           <div ref={kanbanContainerRef} className="overflow-x-auto pb-4">
-            <div className="grid min-w-max grid-flow-col auto-cols-[minmax(220px,80vw)] items-start gap-2 md:auto-cols-[minmax(260px,280px)] md:gap-3">
-              {categories.map((col, index) => {
-                const colLeads = leads.filter(
-                  (l) => l.status === col.statusKey,
-                );
-                const style = getCategoryStyle(col.color);
-                return (
-                  <div
-                    key={col.id}
-                    className="group/col flex min-w-0 flex-col gap-2 rounded-xl p-2 transition-colors"
-                    style={{
-                      background: "var(--maison-page)",
-                      border: "1px solid var(--maison-border-subtle)",
-                    }}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      const leadId = e.dataTransfer.getData("text/plain");
-                      if (leadId) {
-                        const leadToMove = leads.find((l) => l.id === leadId);
-                        if (leadToMove && leadToMove.status !== col.statusKey) {
-                          handleMoveStatus(leadToMove, col.statusKey);
-                        }
-                      }
-                    }}
-                  >
-                    {/* Column header */}
-                    <div className="flex items-center gap-1.5 px-1 py-0.5">
-                      <span
-                        className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
-                      />
-                      <span
-                        className="flex-1 truncate text-[11px] font-bold uppercase tracking-wider"
-                        style={{ color: "var(--maison-text-secondary)" }}
-                      >
-                        {col.name}
-                      </span>
-                      <span
-                        className="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
-                        style={{
-                          background: "var(--maison-card)",
-                          color: "var(--maison-text-muted)",
-                          border: "1px solid var(--maison-border)",
-                        }}
-                      >
-                        {colLeads.length}
-                      </span>
-
-                      {/* Column order & settings actions */}
-                      <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/col:opacity-100">
-                        {index > 0 && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleMoveCategoryOrder(col.id, "left")
-                            }
-                            title="Déplacer à gauche"
-                            className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
-                          >
-                            <ChevronLeft className="h-3 w-3" />
-                          </button>
-                        )}
-                        {index < categories.length - 1 && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              handleMoveCategoryOrder(col.id, "right")
-                            }
-                            title="Déplacer à droite"
-                            className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
-                          >
-                            <ChevronRight className="h-3 w-3" />
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => openCategoryModal(col)}
-                          title="Modifier"
-                          className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
+            <DndContext
+              id="crm-pipeline-sortable"
+              accessibility={{
+                announcements: {
+                  onDragCancel: () => "Déplacement annulé.",
+                  onDragEnd: ({ active }) =>
+                    `Position choisie pour ${
+                      leads.find((lead) => lead.id === String(active.id))
+                        ?.companyName ?? "la carte"
+                    }. Enregistrement en cours.`,
+                  onDragOver: ({ over }) => {
+                    const status = over?.data.current?.status;
+                    const column = categories.find(
+                      (category) => category.statusKey === status,
+                    );
+                    return over
+                      ? `Nouvelle position dans ${column?.name ?? "le pipeline"}.`
+                      : "Hors du pipeline.";
+                  },
+                  onDragStart: ({ active }) =>
+                    `Carte ${
+                      leads.find((lead) => lead.id === String(active.id))
+                        ?.companyName ?? "sans entreprise"
+                    } saisie.`,
+                },
+                screenReaderInstructions: {
+                  draggable:
+                    "Appuyez sur Espace ou Entrée pour saisir la carte, utilisez les flèches pour la déplacer, puis Espace ou Entrée pour la déposer. Échap annule.",
+                },
+              }}
+              collisionDetection={closestCenter}
+              sensors={pipelineSensors}
+              onDragStart={handleLeadDragStart}
+              onDragCancel={() => {
+                pipelineDragOrderRef.current = null;
+              }}
+              onDragEnd={handleLeadDragEnd}
+            >
+              <div className="grid min-w-max grid-flow-col auto-cols-[minmax(220px,80vw)] items-start gap-2 md:auto-cols-[minmax(260px,280px)] md:gap-3">
+                {categories.map((col, index) => {
+                  const colLeads = sortCrmPipelineColumn(leads, col.statusKey);
+                  const style = getCategoryStyle(col.color);
+                  return (
+                    <DroppablePipelineColumn
+                      key={col.id}
+                      status={col.statusKey}
+                    >
+                      {/* Column header */}
+                      <div className="flex items-center gap-1.5 px-1 py-0.5">
+                        <span
+                          className={`h-2 w-2 flex-none rounded-full ${style.dot}`}
+                        />
+                        <span
+                          className="flex-1 truncate text-[11px] font-bold uppercase tracking-wider"
+                          style={{ color: "var(--maison-text-secondary)" }}
                         >
-                          <Edit3 className="h-3 w-3" />
-                        </button>
-                      </div>
-                    </div>
-
-                    {/* Lead cards */}
-                    <div className="flex max-h-[calc(100dvh-14rem)] min-h-[calc(100dvh-14rem)] flex-col gap-2 overflow-y-auto pr-0.5">
-                      {colLeads.length === 0 && (
-                        <div
-                          className="rounded-lg border border-dashed p-4 text-center text-xs"
+                          {col.name}
+                        </span>
+                        <span
+                          className="rounded-full px-1.5 py-0.5 text-[10px] font-bold"
                           style={{
-                            borderColor: "var(--maison-border)",
+                            background: "var(--maison-card)",
                             color: "var(--maison-text-muted)",
-                            background: "transparent",
+                            border: "1px solid var(--maison-border)",
                           }}
                         >
-                          Vide
-                        </div>
-                      )}
-                      {colLeads.map((lead) => (
-                        <LeadCard
-                          key={lead.id}
-                          lead={lead}
-                          nextStatus={getNextStatus(lead.status)}
-                          onSelect={() => openEditModal(lead)}
-                          onMove={handleMoveStatus}
-                          onDelete={handleDelete}
-                          onGenerateDraft={handleGenerateDraft}
-                          onDriveClick={handleCreateDriveFolder}
-                        />
-                      ))}
-                    </div>
+                          {colLeads.length}
+                        </span>
 
-                    {/* Add button */}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        resetForm();
-                        setFormStatus(col.statusKey);
-                        setIsAddOpen(true);
-                      }}
-                      className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed py-1.5 text-[11px] font-medium transition"
-                      style={{
-                        borderColor: "var(--maison-border)",
-                        color: "var(--maison-text-muted)",
-                      }}
-                      onMouseEnter={(e) => {
-                        (
-                          e.currentTarget as HTMLButtonElement
-                        ).style.background = "var(--maison-card)";
-                        (e.currentTarget as HTMLButtonElement).style.color =
-                          "var(--maison-text-secondary)";
-                      }}
-                      onMouseLeave={(e) => {
-                        (
-                          e.currentTarget as HTMLButtonElement
-                        ).style.background = "transparent";
-                        (e.currentTarget as HTMLButtonElement).style.color =
-                          "var(--maison-text-muted)";
-                      }}
-                    >
-                      <Plus className="h-3 w-3" />+ Ajouter
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
+                        {/* Column order & settings actions */}
+                        <div className="ml-0.5 flex items-center gap-0.5 opacity-0 transition-opacity group-hover/col:opacity-100">
+                          {index > 0 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleMoveCategoryOrder(col.id, "left")
+                              }
+                              title="Déplacer à gauche"
+                              className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
+                            >
+                              <ChevronLeft className="h-3 w-3" />
+                            </button>
+                          )}
+                          {index < categories.length - 1 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                handleMoveCategoryOrder(col.id, "right")
+                              }
+                              title="Déplacer à droite"
+                              className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
+                            >
+                              <ChevronRight className="h-3 w-3" />
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => openCategoryModal(col)}
+                            title="Modifier"
+                            className="p-0.5 rounded hover:bg-stone-200/60 text-stone-500 dark:hover:bg-stone-800"
+                          >
+                            <Edit3 className="h-3 w-3" />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Lead cards */}
+                      <SortableContext
+                        items={colLeads.map(({ id }) => id)}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <div className="flex max-h-[calc(100dvh-14rem)] min-h-[calc(100dvh-14rem)] flex-col gap-2 overflow-y-auto pr-0.5">
+                          {colLeads.length === 0 && (
+                            <div
+                              className="rounded-lg border border-dashed p-4 text-center text-xs"
+                              style={{
+                                borderColor: "var(--maison-border)",
+                                color: "var(--maison-text-muted)",
+                                background: "transparent",
+                              }}
+                            >
+                              Vide
+                            </div>
+                          )}
+                          {colLeads.map((lead) => (
+                            <LeadCard
+                              key={lead.id}
+                              lead={lead}
+                              nextStatus={getNextStatus(lead.status)}
+                              onSelect={() => openEditModal(lead)}
+                              onMove={handleMoveStatus}
+                              onDelete={handleDelete}
+                              onGenerateDraft={handleGenerateDraft}
+                              onDriveClick={handleCreateDriveFolder}
+                              canReorder={canReorderPipeline}
+                            />
+                          ))}
+                        </div>
+                      </SortableContext>
+
+                      {/* Add button */}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetForm();
+                          setFormStatus(col.statusKey);
+                          setIsAddOpen(true);
+                        }}
+                        className="flex w-full items-center justify-center gap-1 rounded-lg border border-dashed py-1.5 text-[11px] font-medium transition"
+                        style={{
+                          borderColor: "var(--maison-border)",
+                          color: "var(--maison-text-muted)",
+                        }}
+                        onMouseEnter={(e) => {
+                          (
+                            e.currentTarget as HTMLButtonElement
+                          ).style.background = "var(--maison-card)";
+                          (e.currentTarget as HTMLButtonElement).style.color =
+                            "var(--maison-text-secondary)";
+                        }}
+                        onMouseLeave={(e) => {
+                          (
+                            e.currentTarget as HTMLButtonElement
+                          ).style.background = "transparent";
+                          (e.currentTarget as HTMLButtonElement).style.color =
+                            "var(--maison-text-muted)";
+                        }}
+                      >
+                        <Plus className="h-3 w-3" />+ Ajouter
+                      </button>
+                    </DroppablePipelineColumn>
+                  );
+                })}
+              </div>
+            </DndContext>
           </div>
         </div>
       ) : viewMode === "list" ? (
@@ -4406,7 +4556,36 @@ function Modal({
   );
 }
 
+function DroppablePipelineColumn({
+  children,
+  status,
+}: {
+  children: React.ReactNode;
+  status: CrmLeadStatus;
+}) {
+  const { isOver, setNodeRef } = useDroppable({
+    data: { status, type: "column" },
+    id: `crm-column:${status}`,
+  });
+
+  return (
+    <div
+      ref={setNodeRef}
+      className="group/col flex min-w-0 flex-col gap-2 rounded-xl p-2 transition-colors"
+      style={{
+        background: "var(--maison-page)",
+        border: `1px solid ${
+          isOver ? "var(--maison-brass)" : "var(--maison-border-subtle)"
+        }`,
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
 function LeadCard({
+  canReorder,
   lead,
   nextStatus,
   onSelect,
@@ -4415,6 +4594,7 @@ function LeadCard({
   onGenerateDraft,
   onDriveClick,
 }: {
+  canReorder: boolean;
   lead: CrmLeadSummary;
   nextStatus: CrmLeadStatus | null;
   onSelect: () => void;
@@ -4423,6 +4603,20 @@ function LeadCard({
   onGenerateDraft: (lead: CrmLeadSummary) => void;
   onDriveClick: (lead: CrmLeadSummary) => void;
 }) {
+  const {
+    attributes,
+    isDragging,
+    listeners,
+    setActivatorNodeRef,
+    setNodeRef,
+    transform,
+    transition,
+  } = useSortable({
+    data: { status: lead.status, type: "lead" },
+    disabled: !canReorder,
+    id: lead.id,
+  });
+
   // Parse notes to extract company / contact lines
   const noteLines = (lead.notes ?? "").split("\n");
   const companyLine = noteLines
@@ -4568,18 +4762,35 @@ function LeadCard({
 
   return (
     <article
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData("text/plain", lead.id);
-      }}
+      ref={setNodeRef}
       style={{
         background: "var(--maison-card)",
         border: "1px solid var(--maison-border)",
         borderRadius: "8px",
         boxShadow: "0 1px 2px rgba(0,0,0,0.05)",
+        opacity: isDragging ? 0.55 : 1,
+        position: "relative",
+        transform: CSS.Transform.toString(transform),
+        transition,
+        zIndex: isDragging ? 20 : undefined,
       }}
       className="group relative cursor-grab transition-shadow hover:shadow-md active:cursor-grabbing"
     >
+      {canReorder && (
+        <button
+          ref={setActivatorNodeRef}
+          type="button"
+          aria-label={`Réorganiser ${companyName}`}
+          title="Réorganiser"
+          className="absolute left-1.5 top-1.5 z-10 flex h-6 w-6 touch-none items-center justify-center rounded-md text-stone-400 opacity-50 transition hover:bg-stone-100 hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-teal-600 dark:hover:bg-stone-800"
+          onClick={(event) => event.stopPropagation()}
+          {...attributes}
+          {...listeners}
+        >
+          <GripVertical className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      )}
+
       {/* Hover action buttons */}
       <div
         className="absolute right-2 top-2 z-10 hidden items-center gap-0.5 rounded-lg p-0.5 group-hover:flex"
@@ -4643,7 +4854,7 @@ function LeadCard({
 
       {/* Clickable card body */}
       <button type="button" className="w-full text-left" onClick={onSelect}>
-        <div className="p-2.5 pb-1.5">
+        <div className={`p-2.5 pb-1.5 ${canReorder ? "pl-8" : "pl-2.5"}`}>
           {/* Tag bars */}
           {lead.tags && lead.tags.length > 0 && (
             <div className="mb-2 flex gap-1">

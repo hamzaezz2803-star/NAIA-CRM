@@ -155,6 +155,16 @@ The shell already registers CRM in `src/platform/core/modules.ts`. Do not edit t
 
 The app shell links the CRM parent item directly to `/dashboard/leads`. The pipeline page is intentionally compact and full-width: avoid reintroducing large KPI cards or wide page gutters above the Kanban unless Ali asks for a dashboard view.
 
+Cards inside one Kanban column have a durable priority order. Keep
+`pipeline_position` scoped by `(organization_id, status)`, render the column
+through `sortCrmPipelineColumn()`, and persist a drag only through
+`reorderCrmPipelineLeadsAction()` / `reorder_crm_pipeline_leads`. Never send an
+organization id from the browser, loop over individual updates, or change
+`updated_at` for a visual reorder. Concurrent stale drops must fail and reload
+the server snapshot. Pointer, touch and keyboard users share the same drag
+handle; moving a card to another status keeps the existing reviewed status
+action and places it at the top of the destination column.
+
 If CRM later needs dashboard widgets, expose a CRM-owned widget descriptor from `src/features/crm` and coordinate with Ali before adding it to the Dashboard.
 
 ## Events And Workflows
@@ -303,6 +313,11 @@ then combines them with the configured founder's own Calendar and Gmail read
 results. Only Ali or Nabil with the `owner` role can be configured, and the
 output is sent to the exact Slack account resolved by email. No CRM, Gmail, or
 Calendar mutation is part of this workflow.
+
+Both CRM reads explicitly require `archived_at is null`, including when the
+brief runs with a service-role client that bypasses RLS. Archiving a demo lead
+and its generated task therefore removes them from both the pipeline and future
+briefs without deleting Calendar, Drive or meeting records.
 
 Production activation has two prerequisites that are not performed by a Vercel
 Preview or by repository CI: apply

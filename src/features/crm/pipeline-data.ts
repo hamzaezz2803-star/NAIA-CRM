@@ -5,6 +5,10 @@ import "server-only";
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import {
+  hasPermission,
+  type OrganizationRole,
+} from "@/platform/core/permissions";
 
 import type { CrmCategory, CrmLeadSummary, CrmTag } from "./contracts";
 import { getDummyCrmLeads } from "./dummy-data";
@@ -20,6 +24,7 @@ export const CRM_PIPELINE_LEAD_COLUMNS = `
   status,
   notes,
   next_action,
+  pipeline_position,
   next_action_date,
   lead_date,
   contact_job_title,
@@ -39,6 +44,7 @@ export const CRM_PIPELINE_LEAD_COLUMNS = `
 `;
 
 type PipelineContext = {
+  canReorder: boolean;
   organizationId: string;
   userId: string;
 };
@@ -49,6 +55,7 @@ type PipelineDataOptions = {
 };
 
 export type CrmPipelineSnapshot = {
+  canReorder: boolean;
   categories: CrmCategory[];
   leads: CrmLeadSummary[];
   loadedAt: string;
@@ -98,7 +105,7 @@ async function resolvePipelineContext(
 
   const { data: membership, error: membershipError } = await client
     .from("organization_memberships")
-    .select("organization_id")
+    .select("organization_id, role")
     .eq("profile_id", user.id)
     .limit(1)
     .maybeSingle();
@@ -106,6 +113,10 @@ async function resolvePipelineContext(
   if (membershipError || !membership?.organization_id) return null;
 
   return {
+    canReorder: hasPermission(membership.role as OrganizationRole, {
+      action: "update",
+      module: "crm",
+    }),
     organizationId: membership.organization_id,
     userId: user.id,
   };
@@ -136,6 +147,7 @@ export function mapCrmPipelineLead(row: any): CrmLeadSummary {
     status: row.status,
     notes: row.notes ?? undefined,
     nextAction: row.next_action ?? undefined,
+    pipelinePosition: row.pipeline_position ?? undefined,
     leadDate: row.lead_date ?? row.next_action_date ?? undefined,
     contactJobTitle: row.contact_job_title ?? undefined,
     contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
@@ -186,6 +198,7 @@ export async function fetchCrmPipelineSnapshot(
 
   if (!client) {
     return {
+      canReorder: false,
       categories: [],
       leads: fallbackLeads(),
       loadedAt: now().toISOString(),
@@ -196,6 +209,7 @@ export async function fetchCrmPipelineSnapshot(
   const context = await resolvePipelineContext(client);
   if (!context) {
     return {
+      canReorder: false,
       categories: [],
       leads: fallbackLeads(),
       loadedAt: now().toISOString(),
@@ -231,6 +245,7 @@ export async function fetchCrmPipelineSnapshot(
   }
 
   return {
+    canReorder: context.canReorder,
     categories: (categoriesResult.data ?? []).map(mapCategory),
     leads: leadsResult.error
       ? fallbackLeads()

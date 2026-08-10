@@ -20,4 +20,16 @@ describe("CRM pipeline responsive layout contract", () => {
       "md:grid-cols-[repeat(var(--kanban-columns),minmax(0,1fr))]",
     );
   });
+
+  it("uses accessible sortable cards instead of native HTML drag events", () => {
+    expect(pipelineSource).toContain("<DndContext");
+    expect(pipelineSource).toContain('id="crm-pipeline-sortable"');
+    expect(pipelineSource).toContain("<SortableContext");
+    expect(pipelineSource).toContain("useSortable({");
+    expect(pipelineSource).toContain("sortableKeyboardCoordinates");
+    expect(pipelineSource).toContain("reorderCrmPipelineLeadsAction");
+    expect(pipelineSource).toContain("disabled: !canReorder");
+    expect(pipelineSource).not.toContain("e.dataTransfer");
+    expect(pipelineSource).not.toContain("<article\n      draggable");
+  });
 });

@@ -67,6 +67,7 @@ type DbLead = {
   next_action: string | null;
   next_action_date: string | null;
   lead_date: string | null;
+  pipeline_position: number;
   contact_job_title: string | null;
   contact_linkedin_url: string | null;
   assigned_to_profile_id: string | null;
@@ -625,6 +626,7 @@ export async function createLeadAction(
         status: row.status,
         notes: row.notes ?? undefined,
         nextAction: row.next_action ?? undefined,
+        pipelinePosition: row.pipeline_position ?? undefined,
         leadDate: row.lead_date ?? row.next_action_date ?? undefined,
         contactJobTitle: row.contact_job_title ?? undefined,
         contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
@@ -657,6 +659,7 @@ export async function createLeadAction(
       status: popRow.status,
       notes: popRow.notes ?? undefined,
       nextAction: popRow.next_action ?? undefined,
+      pipelinePosition: popRow.pipeline_position ?? undefined,
       leadDate: popRow.lead_date ?? popRow.next_action_date ?? undefined,
       contactJobTitle: popRow.contact_job_title ?? undefined,
       contactLinkedinUrl: popRow.contact_linkedin_url ?? undefined,
@@ -734,6 +737,7 @@ function createDummyLead(input: {
     id: `demo-lead-${Date.now().toString(36)}-${suffix}`,
     leadDate: input.leadDate,
     nextAction: input.nextAction,
+    pipelinePosition: 0,
     notes: input.notes,
     organizationId: dummyCrmOrganizationId,
     source: input.source ?? "NAIA",
@@ -989,6 +993,7 @@ export async function updateLeadAction(
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
+      pipelinePosition: row.pipeline_position ?? undefined,
       leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       contactJobTitle: row.contact_job_title ?? undefined,
       contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
@@ -1426,6 +1431,7 @@ export async function fetchCompanyDetailAction(companyId: string): Promise<{
     status: l.status,
     notes: l.notes ?? undefined,
     nextAction: l.next_action ?? undefined,
+    pipelinePosition: l.pipeline_position ?? undefined,
     leadDate: l.lead_date ?? l.next_action_date ?? undefined,
     contactJobTitle: l.contact_job_title ?? undefined,
     contactLinkedinUrl: l.contact_linkedin_url ?? undefined,
@@ -3321,6 +3327,7 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
       status: row.status,
       notes: row.notes ?? undefined,
       nextAction: row.next_action ?? undefined,
+      pipelinePosition: row.pipeline_position ?? undefined,
       leadDate: row.lead_date ?? row.next_action_date ?? undefined,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -4067,6 +4074,7 @@ export async function fetchTasksAction(): Promise<
       .from("crm_tasks")
       .select("lead_id")
       .eq("organization_id", orgId)
+      .is("archived_at", null)
       .not("lead_id", "is", null);
 
     const existingLeadIds = new Set(
@@ -4079,6 +4087,7 @@ export async function fetchTasksAction(): Promise<
         "id, topic, next_action, lead_date, assigned_to_profile_id, status",
       )
       .eq("organization_id", orgId)
+      .is("archived_at", null)
       .not("next_action", "is", null);
 
     if (leadsData && leadsData.length > 0) {
@@ -4127,6 +4136,7 @@ export async function fetchTasksAction(): Promise<
     `,
     )
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("created_at", { ascending: false });
 
   if (error || !data) {

@@ -92,6 +92,7 @@ function createSupabaseMock({
     const query = {
       eq: vi.fn(() => query),
       in: vi.fn(() => query),
+      is: vi.fn(() => query),
       limit: vi.fn().mockResolvedValue(result),
       order: vi.fn(() => query),
       select: vi.fn(() => query),

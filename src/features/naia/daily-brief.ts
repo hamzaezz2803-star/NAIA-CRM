@@ -374,6 +374,7 @@ export async function loadDailyBriefData({
     .from("crm_tasks")
     .select("id,title,status,due_date")
     .eq("organization_id", user.organizationId)
+    .is("archived_at", null)
     .in("status", ["todo", "in-progress"])
     .order("due_date", { ascending: true, nullsFirst: false })
     .limit(100);
@@ -383,6 +384,7 @@ export async function loadDailyBriefData({
       "id,topic,status,next_action,next_action_date,lead_date,company:company_id(name),contact:contact_id(email)",
     )
     .eq("organization_id", user.organizationId)
+    .is("archived_at", null)
     .in("status", [...GMAIL_TRIAGE_CRM_STATUSES])
     .order("next_action_date", { ascending: true, nullsFirst: false })
     .limit(1000);

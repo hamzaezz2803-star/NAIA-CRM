@@ -25,6 +25,8 @@ The CRM module has a stable route at `/crm` and a developer handoff page at `/cr
 
 The shell CRM entry opens the working pipeline directly at `/dashboard/leads`. That route intentionally uses a denser full-width shell layout so the Kanban can show all CRM columns at once on desktop instead of centering a narrow dashboard canvas.
 
+CRM lead priority is persisted per organization and status in `crm_leads.pipeline_position`. The Kanban uses an accessible pointer, touch and keyboard sortable interaction; a same-column drop is committed through the tenant-scoped, `SECURITY INVOKER` `reorder_crm_pipeline_leads` RPC. The RPC compares the order captured at drag start, locks that column and applies the full permutation atomically without changing the lead's business `updated_at`. A real status change resets the card to the top of its destination column.
+
 NAIA has a stable route at `/naia`. It is the voice-first orchestrator for the platform modules and routes user intent to specialized agents such as CRM, finance, delivery, HR, integrations, and developer workflow. The NAIA home uses the imported Jarvis wake/sphere visual in `src/features/naia/vendor/jarvis` with a local notice; review AGPL obligations before public redistribution.
 
 NAIA agent pages currently live under `/naia/leads`, `/naia/cash-flow`, `/naia/crm`, `/naia/projects`, and `/naia/hr`. The home cockpit keeps the sphere/orbit experience and routes voice/text commands to these modules.
