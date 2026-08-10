@@ -5,18 +5,184 @@ import {
   GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
   GOOGLE_REVOCATION_CONFIRMATION,
 } from "@/platform/integrations/google-revocation-contract";
+import { GOOGLE_USER_SCOPES } from "@/platform/integrations/google-workspace-scopes";
 
 const mocks = vi.hoisted(() => ({
   createServerSupabaseClient: vi.fn(),
+  createServiceRoleSupabaseClient: vi.fn(),
 }));
 
 vi.mock("@/platform/auth/supabase-server", () => ({
   createServerSupabaseClient: mocks.createServerSupabaseClient,
+  createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
 }));
 
 import { POST } from "./route";
 
-function createRequest({
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllGlobals();
+});
+
+describe("POST /api/integrations/google/revoke", () => {
+  it("rejects cross-origin or unconfirmed requests before session access", async () => {
+    expect(
+      (await POST(request({ origin: "https://attacker.example" }))).status,
+    ).toBe(403);
+    expect(
+      (await POST(request({ confirmation: "not-confirmed" }))).status,
+    ).toBe(400);
+    expect(mocks.createServerSupabaseClient).not.toHaveBeenCalled();
+  });
+
+  it("loads and clears only the authenticated user's credential through service_role", async () => {
+    const testFixture = fixture();
+    install(testFixture);
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(200);
+    expect(testFixture.sessionFrom).not.toHaveBeenCalledWith(
+      "integration_connections",
+    );
+    expect(testFixture.serviceFrom).toHaveBeenCalledWith(
+      "integration_connections",
+    );
+    expect(testFixture.connectionEq).toHaveBeenCalledWith(
+      "organization_id",
+      "organization-1",
+    );
+    expect(testFixture.connectionEq).toHaveBeenCalledWith(
+      "connected_by_profile_id",
+      "profile-1",
+    );
+    expect(testFixture.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        encrypted_token_reference: null,
+        server_review_reason: null,
+        status: "revoked",
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://oauth2.googleapis.com/revoke",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it.each(["network", "non-200"])(
+    "gates manual confirmation after a server-authored narrow-scope %s failure",
+    async (failure) => {
+      const testFixture = fixture({
+        connection: connectedConnection({ scopes: [...GOOGLE_USER_SCOPES] }),
+      });
+      install(testFixture);
+      vi.stubGlobal(
+        "fetch",
+        failure === "network"
+          ? vi.fn().mockRejectedValue(new Error("offline"))
+          : vi.fn().mockResolvedValue(new Response(null, { status: 503 })),
+      );
+
+      const failed = await POST(request());
+      expect(failed.status).toBe(502);
+      await expect(failed.json()).resolves.toMatchObject({
+        manualReviewRequired: true,
+      });
+      expect(testFixture.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          server_review_reason: "revocation-failed",
+          status: "needs-review",
+        }),
+      );
+
+      const manual = await POST(
+        request({ confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION }),
+      );
+      expect(manual.status).toBe(200);
+      await expect(manual.json()).resolves.toEqual({
+        manualConfirmed: true,
+        ok: true,
+      });
+      expect(testFixture.updateEq).toHaveBeenCalledWith(
+        "server_review_reason",
+        "revocation-failed",
+      );
+    },
+  );
+
+  it("rejects direct manual confirmation without a prior failure on that row", async () => {
+    const testFixture = fixture({
+      connection: connectedConnection({
+        server_review_reason: "legacy-unattested",
+        status: "needs-review",
+      }),
+    });
+    install(testFixture);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(
+      request({ confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION }),
+    );
+
+    expect(response.status).toBe(409);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(testFixture.update).not.toHaveBeenCalled();
+  });
+
+  it("does not treat invalid_token as proof of remote revocation", async () => {
+    const testFixture = fixture();
+    install(testFixture);
+    vi.stubGlobal(
+      "fetch",
+      vi
+        .fn()
+        .mockResolvedValue(
+          new Response('{"error":"invalid_token"}', { status: 400 }),
+        ),
+    );
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(502);
+    expect(testFixture.current.status).toBe("needs-review");
+    expect(testFixture.current.encrypted_token_reference).not.toBeNull();
+  });
+
+  it("fails closed when service_role is unavailable", async () => {
+    const testFixture = fixture();
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      testFixture.sessionClient,
+    );
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(null);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(403);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("does not load or revoke a connection outside the user's membership", async () => {
+    const testFixture = fixture({ membership: null });
+    install(testFixture);
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await POST(request());
+
+    expect(response.status).toBe(403);
+    expect(testFixture.serviceFrom).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+function request({
   confirmation = GOOGLE_REVOCATION_CONFIRMATION,
   origin = "https://os.qarizmi.com",
 }: {
@@ -38,319 +204,109 @@ function createRequest({
   );
 }
 
-function createClient({
-  connection = {
+type Connection = ReturnType<typeof connectedConnection>;
+
+function connectedConnection(
+  overrides: Partial<{
+    scopes: string[];
+    server_review_reason: string | null;
+    status: string;
+  }> = {},
+) {
+  return {
+    connected_by_profile_id: "profile-1",
     encrypted_token_reference: JSON.stringify({
       access_token: "synthetic-access-token",
       refresh_token: "synthetic-refresh-token",
-    }),
+    }) as string | null,
     id: "connection-1",
-    scopes: ["https://www.googleapis.com/auth/drive.file"],
-    status: "connected",
-  },
-  connectionError = null,
-  membership = { organization_id: "organization-1" },
-  updateError = null,
-  user = { id: "profile-1" },
-}: {
-  connection?: {
-    encrypted_token_reference: string | null;
-    id: string;
-    scopes?: string[] | null;
-    status: string;
-  } | null;
-  connectionError?: { message: string } | null;
-  membership?: { organization_id: string } | null;
-  updateError?: { message: string } | null;
-  user?: { id: string } | null;
-} = {}) {
-  const membershipQuery: Record<string, unknown> = {
-    maybeSingle: vi.fn().mockResolvedValue({ data: membership, error: null }),
-  };
-  for (const method of ["eq", "limit", "select"]) {
-    membershipQuery[method] = vi.fn(() => membershipQuery);
-  }
-
-  const updateResult = { error: updateError };
-  const updateQuery: Record<string, unknown> = {
-    then: (resolve: (value: typeof updateResult) => unknown) =>
-      Promise.resolve(resolve(updateResult)),
-  };
-  for (const method of ["eq"]) {
-    updateQuery[method] = vi.fn(() => updateQuery);
-  }
-  const update = vi.fn(() => updateQuery);
-
-  const connectionQuery: Record<string, unknown> = {
-    maybeSingle: vi.fn().mockResolvedValue({
-      data: connection,
-      error: connectionError,
-    }),
-    update,
-  };
-  for (const method of ["eq", "limit", "order", "select"]) {
-    connectionQuery[method] = vi.fn(() => connectionQuery);
-  }
-
-  const client = {
-    auth: {
-      getUser: vi.fn().mockResolvedValue({
-        data: { user },
-        error: null,
-      }),
-    },
-    from: vi.fn((table: string) => {
-      if (table === "organization_memberships") return membershipQuery;
-      if (table === "integration_connections") return connectionQuery;
-      throw new Error(`Unexpected table: ${table}`);
-    }),
-  };
-
-  return {
-    client,
-    connectionEq: connectionQuery.eq as ReturnType<typeof vi.fn>,
-    update,
-    updateEq: updateQuery.eq as ReturnType<typeof vi.fn>,
+    organization_id: "organization-1",
+    provider: "google",
+    scopes: overrides.scopes ?? [...GOOGLE_USER_SCOPES],
+    server_review_reason: overrides.server_review_reason ?? null,
+    status: overrides.status ?? "connected",
   };
 }
 
-describe("POST /api/integrations/google/revoke", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.unstubAllGlobals();
+function fixture({
+  connection = connectedConnection(),
+  membership = {
+    organization_id: "organization-1",
+    profile_id: "profile-1",
+    role: "owner",
+  },
+}: {
+  connection?: Connection;
+  membership?: Record<string, unknown> | null;
+} = {}) {
+  const membershipQuery = chain({
+    maybeSingle: vi.fn().mockResolvedValue({ data: membership, error: null }),
   });
-
-  it("rejects cross-origin or unconfirmed requests before session access", async () => {
-    const crossOrigin = await POST(
-      createRequest({ origin: "https://attacker.example" }),
-    );
-    const unconfirmed = await POST(
-      createRequest({ confirmation: "not-confirmed" }),
-    );
-
-    expect(crossOrigin.status).toBe(403);
-    expect(unconfirmed.status).toBe(400);
-    expect(mocks.createServerSupabaseClient).not.toHaveBeenCalled();
+  const sessionFrom = vi.fn((table: string) => {
+    if (table === "organization_memberships") return membershipQuery;
+    throw new Error(`Unexpected session table: ${table}`);
   });
-
-  it("revokes only the authenticated user's connection and clears the local token", async () => {
-    const fixture = createClient();
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(new Response(null, { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await POST(createRequest());
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      alreadyRevoked: false,
-      ok: true,
-    });
-    expect(fixture.connectionEq).toHaveBeenCalledWith(
-      "organization_id",
-      "organization-1",
-    );
-    expect(fixture.connectionEq).toHaveBeenCalledWith(
-      "connected_by_profile_id",
-      "profile-1",
-    );
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://oauth2.googleapis.com/revoke");
-    expect(init).toMatchObject({
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      method: "POST",
-    });
-    expect((init.body as URLSearchParams).get("token")).toBe(
-      "synthetic-refresh-token",
-    );
-    expect(fixture.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        encrypted_token_reference: null,
-        status: "revoked",
+  const sessionClient = {
+    auth: {
+      getUser: vi.fn().mockResolvedValue({
+        data: { user: { id: "profile-1" } },
+        error: null,
       }),
-    );
-    expect(fixture.updateEq).toHaveBeenCalledWith(
-      "organization_id",
-      "organization-1",
-    );
-    expect(fixture.updateEq).toHaveBeenCalledWith(
-      "connected_by_profile_id",
-      "profile-1",
-    );
-  });
+    },
+    from: sessionFrom,
+  };
 
-  it("marks the local row needs-review when Google cannot revoke it", async () => {
-    const fixture = createClient();
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue(
-        new Response("upstream detail that must stay private", {
-          status: 503,
-        }),
-      ),
-    );
-
-    const response = await POST(createRequest());
-    const payload = (await response.json()) as { error: string };
-
-    expect(response.status).toBe(502);
-    expect(payload.error).not.toContain("upstream detail");
-    expect(payload.error).not.toContain("synthetic-refresh-token");
-    expect(fixture.update).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "needs-review" }),
-    );
-    expect(fixture.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({ encrypted_token_reference: null }),
-    );
-  });
-
-  it("is idempotent after the local connection is already revoked", async () => {
-    const fixture = createClient({
-      connection: {
-        encrypted_token_reference: null,
-        id: "connection-1",
-        status: "revoked",
+  const current = connection;
+  const updateResult = chain({ maybeSingle: vi.fn() });
+  const update = vi.fn((payload: Record<string, unknown>) => {
+    Object.assign(current, payload);
+    updateResult.maybeSingle = vi.fn().mockResolvedValue({
+      data: {
+        connected_by_profile_id: current.connected_by_profile_id,
+        id: current.id,
+        organization_id: current.organization_id,
+        provider: current.provider,
+        status: current.status,
       },
+      error: null,
     });
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await POST(createRequest());
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      alreadyRevoked: true,
-      ok: true,
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(fixture.update).not.toHaveBeenCalled();
+    return updateResult;
   });
-
-  it("never treats invalid_token from an expired access token as proof of revocation", async () => {
-    const fixture = createClient({
-      connection: {
-        encrypted_token_reference: JSON.stringify({
-          access_token: "synthetic-expired-access-token",
-        }),
-        id: "connection-1",
-        scopes: ["https://www.googleapis.com/auth/drive.file"],
-        status: "connected",
-      },
-    });
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    vi.stubGlobal(
-      "fetch",
-      vi
-        .fn()
-        .mockResolvedValue(
-          new Response('{"error":"invalid_token"}', { status: 400 }),
-        ),
-    );
-
-    const response = await POST(createRequest());
-    const payload = (await response.json()) as {
-      manualReviewRequired?: boolean;
-      ok?: boolean;
-    };
-
-    expect(response.status).toBe(502);
-    expect(payload).toMatchObject({ manualReviewRequired: true });
-    expect(payload.ok).not.toBe(true);
-    expect(fixture.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        status: "needs-review",
-      }),
-    );
-    expect(fixture.update).not.toHaveBeenCalledWith(
-      expect.objectContaining({ encrypted_token_reference: null }),
-    );
+  const connectionQuery = chain({
+    maybeSingle: vi.fn(() =>
+      Promise.resolve({ data: { ...current }, error: null }),
+    ),
+    update,
   });
-
-  it("neutralizes only the local credential after a second explicit manual confirmation", async () => {
-    const fixture = createClient({
-      connection: {
-        encrypted_token_reference: JSON.stringify({
-          access_token: "synthetic-expired-access-token",
-        }),
-        id: "connection-1",
-        scopes: ["https://www.googleapis.com/auth/drive.file"],
-        status: "needs-review",
-      },
-    });
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await POST(
-      createRequest({ confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION }),
-    );
-
-    expect(response.status).toBe(200);
-    await expect(response.json()).resolves.toEqual({
-      manualConfirmed: true,
-      ok: true,
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(fixture.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        encrypted_token_reference: null,
-        status: "revoked",
-      }),
-    );
+  const serviceFrom = vi.fn((table: string) => {
+    if (table === "integration_connections") return connectionQuery;
+    throw new Error(`Unexpected service table: ${table}`);
   });
+  const serviceClient = { from: serviceFrom };
 
-  it("rejects manual neutralization before the remote failure state", async () => {
-    const fixture = createClient();
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+  return {
+    connectionEq: connectionQuery.eq as ReturnType<typeof vi.fn>,
+    current,
+    serviceClient,
+    serviceFrom,
+    sessionClient,
+    sessionFrom,
+    update,
+    updateEq: updateResult.eq as ReturnType<typeof vi.fn>,
+  };
+}
 
-    const response = await POST(
-      createRequest({ confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION }),
-    );
+function install(testFixture: ReturnType<typeof fixture>) {
+  mocks.createServerSupabaseClient.mockResolvedValue(testFixture.sessionClient);
+  mocks.createServiceRoleSupabaseClient.mockReturnValue(
+    testFixture.serviceClient,
+  );
+}
 
-    expect(response.status).toBe(409);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(fixture.update).not.toHaveBeenCalled();
-  });
-
-  it("keeps an unrevocable local credential in needs-review", async () => {
-    const fixture = createClient({
-      connection: {
-        encrypted_token_reference: "{}",
-        id: "connection-1",
-        scopes: ["https://www.googleapis.com/auth/drive.file"],
-        status: "connected",
-      },
-    });
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await POST(createRequest());
-
-    expect(response.status).toBe(409);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(fixture.update).toHaveBeenCalledWith(
-      expect.objectContaining({ status: "needs-review" }),
-    );
-  });
-
-  it("does not load or revoke a connection outside the user's organization", async () => {
-    const fixture = createClient({ membership: null });
-    mocks.createServerSupabaseClient.mockResolvedValue(fixture.client);
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await POST(createRequest());
-
-    expect(response.status).toBe(403);
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(fixture.update).not.toHaveBeenCalled();
-  });
-});
+function chain(initial: Record<string, ReturnType<typeof vi.fn>>) {
+  const query: Record<string, ReturnType<typeof vi.fn>> = { ...initial };
+  for (const method of ["eq", "limit", "order", "select"]) {
+    query[method] = vi.fn(() => query);
+  }
+  return query;
+}

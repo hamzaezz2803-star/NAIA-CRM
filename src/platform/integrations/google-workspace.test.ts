@@ -1,12 +1,30 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  GOOGLE_MEETING_NOTE_SCOPE,
+  GOOGLE_USER_SCOPES,
+} from "./google-workspace-scopes";
+
+const mocks = vi.hoisted(() => ({
+  createServerSupabaseClient: vi.fn(),
+  createServiceRoleSupabaseClient: vi.fn(),
+}));
+
+vi.mock("@/platform/auth/supabase-server", () => ({
+  createServerSupabaseClient: mocks.createServerSupabaseClient,
+  createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
+}));
+
+import {
+  createGoogleCalendarReminder,
   googleCalendarIdempotencyId,
   inferGoogleWorkspaceReadCapabilities,
   listGeminiMeetingNoteMessages,
 } from "./google-workspace";
 
 afterEach(() => {
+  vi.clearAllMocks();
+  vi.unstubAllEnvs();
   vi.unstubAllGlobals();
 });
 
@@ -38,6 +56,37 @@ describe("Google Calendar idempotency", () => {
     expect(first).toBe(second);
     expect(first).toMatch(/^[0-9a-v]{5,1024}$/);
   });
+
+  it("revalidates the exact connection before creating a reminder", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const connection = {
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "redacted-test-token",
+        expiry_date: Date.now() + 3_600_000,
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-1",
+      organization_id: "organization-1",
+      scopes: [...GOOGLE_USER_SCOPES],
+      status: "connected",
+    };
+    const { context } = installGoogleContextWithUpdate(connection, {
+      revalidatedConnection: null,
+    });
+
+    await expect(
+      createGoogleCalendarReminder(
+        {
+          scheduledAt: "2026-08-11T09:30:00Z",
+          title: "Daily brief",
+        },
+        context,
+      ),
+    ).rejects.toThrow(/authorization changed before use/iu);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("Gemini meeting-note mailbox isolation", () => {
@@ -58,25 +107,13 @@ describe("Gemini meeting-note mailbox isolation", () => {
       id: "connection-legacy",
       organization_id: "organization-1",
       scopes: ["https://www.googleapis.com/auth/gmail.readonly", scope],
+      status: "connected",
     };
-    const query: Record<string, unknown> = {
-      maybeSingle: vi.fn().mockResolvedValue({ data: connection, error: null }),
-    };
-    for (const method of ["eq", "limit", "order", "select"]) {
-      query[method] = vi.fn(() => query);
-    }
-    const supabase = { from: vi.fn(() => query) };
+    const context = installGoogleContext(connection);
 
-    await expect(
-      listGeminiMeetingNoteMessages(
-        {},
-        {
-          organizationId: "organization-1",
-          profileId: "profile-1",
-          supabase: supabase as never,
-        },
-      ),
-    ).rejects.toThrow(/must be reconnected.*too broad/iu);
+    await expect(listGeminiMeetingNoteMessages({}, context)).rejects.toThrow(
+      /must be reconnected.*scope attestation/iu,
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
@@ -187,26 +224,14 @@ describe("Gemini meeting-note mailbox isolation", () => {
       external_account_label: "ali@qarizmi.com",
       id: "connection-1",
       organization_id: "organization-1",
-      scopes: [
-        "https://www.googleapis.com/auth/gmail.readonly",
-        "https://www.googleapis.com/auth/drive.meet.readonly",
-      ],
+      scopes: [...GOOGLE_USER_SCOPES, GOOGLE_MEETING_NOTE_SCOPE],
+      status: "connected",
     };
-    const query: Record<string, unknown> = {
-      maybeSingle: vi.fn().mockResolvedValue({ data: connection, error: null }),
-    };
-    for (const method of ["eq", "limit", "order", "select"]) {
-      query[method] = vi.fn(() => query);
-    }
-    const supabase = { from: vi.fn(() => query) };
+    const context = installGoogleContext(connection);
 
     const batch = await listGeminiMeetingNoteMessages(
       { maxResults: 10, newerThanDays: 30 },
-      {
-        organizationId: "organization-1",
-        profileId: "profile-1",
-        supabase: supabase as never,
-      },
+      context,
     );
 
     expect(batch).toEqual({
@@ -278,15 +303,10 @@ describe("Gemini meeting-note mailbox isolation", () => {
       external_account_label: "ali@qarizmi.com",
       id: "connection-1",
       organization_id: "organization-1",
-      scopes: ["https://www.googleapis.com/auth/gmail.readonly"],
+      scopes: [...GOOGLE_USER_SCOPES],
+      status: "connected",
     };
-    const query: Record<string, unknown> = {
-      maybeSingle: vi.fn().mockResolvedValue({ data: connection, error: null }),
-    };
-    for (const method of ["eq", "limit", "order", "select"]) {
-      query[method] = vi.fn(() => query);
-    }
-    const supabase = { from: vi.fn(() => query) };
+    const context = installGoogleContext(connection);
 
     const batch = await listGeminiMeetingNoteMessages(
       {
@@ -294,11 +314,7 @@ describe("Gemini meeting-note mailbox isolation", () => {
         newerThanDays: 180,
         pageToken: "starting-opaque-cursor",
       },
-      {
-        organizationId: "organization-1",
-        profileId: "profile-1",
-        supabase: supabase as never,
-      },
+      context,
     );
 
     expect(listUrls).toHaveLength(1);
@@ -309,4 +325,129 @@ describe("Gemini meeting-note mailbox isolation", () => {
     expect(batch.scanned).toBe(1);
     expect(batch.messages).toHaveLength(1);
   });
+
+  it("quarantines a broad refreshed token before any Gmail request", async () => {
+    vi.stubEnv("GOOGLE_CLIENT_ID", "client-id");
+    vi.stubEnv("GOOGLE_CLIENT_SECRET", "client-secret");
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        Response.json({ access_token: "refreshed-token", expires_in: 3600 }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          aud: "client-id",
+          scope: [
+            ...GOOGLE_USER_SCOPES,
+            "https://www.googleapis.com/auth/gmail.send",
+          ].join(" "),
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const connection = {
+      connected_by_profile_id: "profile-1",
+      encrypted_token_reference: JSON.stringify({
+        access_token: "expired-token",
+        expiry_date: Date.now() - 1,
+        refresh_token: "refresh-token",
+      }),
+      external_account_label: "ali@qarizmi.com",
+      id: "connection-1",
+      organization_id: "organization-1",
+      scopes: [...GOOGLE_USER_SCOPES],
+      status: "connected",
+    };
+    const { context, update } = installGoogleContextWithUpdate(connection);
+
+    await expect(listGeminiMeetingNoteMessages({}, context)).rejects.toThrow(
+      /scope changed.*reconnection/iu,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input).startsWith("https://gmail.googleapis.com/"),
+      ),
+    ).toBe(false);
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        server_review_reason: "scope-attestation-failed",
+        status: "needs-review",
+      }),
+    );
+  });
 });
+
+function installGoogleContext(connection: Record<string, unknown>) {
+  return installGoogleContextWithUpdate(connection).context;
+}
+
+function installGoogleContextWithUpdate(
+  connection: Record<string, unknown>,
+  options: { revalidatedConnection?: Record<string, unknown> | null } = {},
+) {
+  const membershipQuery = chain({
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: {
+        organization_id: "organization-1",
+        profile_id: "profile-1",
+        role: "owner",
+      },
+      error: null,
+    }),
+  });
+  const sessionClient = {
+    from: vi.fn((table: string) => {
+      if (table === "organization_memberships") return membershipQuery;
+      throw new Error(`Unexpected session table: ${table}`);
+    }),
+  };
+
+  const updateResult = chain({
+    maybeSingle: vi.fn().mockResolvedValue({
+      data: {
+        connected_by_profile_id: "profile-1",
+        id: connection.id,
+        organization_id: "organization-1",
+        provider: "google",
+        status: "needs-review",
+      },
+      error: null,
+    }),
+  });
+  const update = vi.fn(() => updateResult);
+  const revalidatedConnection = Object.hasOwn(options, "revalidatedConnection")
+    ? options.revalidatedConnection
+    : { ...connection, provider: "google" };
+  const connectionQuery = chain({
+    maybeSingle: vi
+      .fn()
+      .mockResolvedValueOnce({ data: connection, error: null })
+      .mockResolvedValue({ data: revalidatedConnection, error: null }),
+    update,
+  });
+  const serviceClient = {
+    from: vi.fn((table: string) => {
+      if (table === "integration_connections") return connectionQuery;
+      throw new Error(`Unexpected service table: ${table}`);
+    }),
+  };
+  mocks.createServiceRoleSupabaseClient.mockReturnValue(serviceClient);
+
+  return {
+    context: {
+      organizationId: "organization-1",
+      profileId: "profile-1",
+      supabase: sessionClient as never,
+    },
+    update,
+  };
+}
+
+function chain(initial: Record<string, ReturnType<typeof vi.fn>>) {
+  const query: Record<string, ReturnType<typeof vi.fn>> = { ...initial };
+  for (const method of ["eq", "limit", "order", "select"]) {
+    query[method] = vi.fn(() => query);
+  }
+  return query;
+}

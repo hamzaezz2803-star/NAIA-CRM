@@ -1,14 +1,20 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
-import type { SupabaseClient } from "@supabase/supabase-js";
-
-import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
-
 import {
+  resolveGoogleCredentialActor,
+  type GoogleCredentialActor,
+  type GoogleWorkspaceContext,
+} from "./google-credential-boundary";
+import { attestGoogleAccessToken } from "./google-token-attestation";
+import {
+  attestGoogleScopes,
   canReadGoogleMeetingDocuments,
-  hasForbiddenGoogleDriveScope,
+  GOOGLE_MEETING_NOTE_SCOPE,
+  googleScopeSetsEqual,
 } from "./google-workspace-scopes";
+
+export type { GoogleWorkspaceContext } from "./google-credential-boundary";
 
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 
@@ -17,12 +23,6 @@ const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 // short-circuits the cookie-session resolution while keeping the same
 // per-user connection lookup: actions always run on the acting user's own
 // Google account.
-export type GoogleWorkspaceContext = {
-  organizationId: string;
-  profileId: string;
-  supabase: SupabaseClient;
-};
-
 type GoogleTokenReference = {
   access_token?: string;
   expiry_date?: number;
@@ -36,6 +36,11 @@ type GoogleConnectionRow = {
   id: string;
   organization_id: string;
   scopes: string[] | null;
+  status: string;
+};
+
+type ResolvedGoogleConnection = GoogleConnectionRow & {
+  actor: GoogleCredentialActor;
 };
 
 export type GoogleCalendarEventSummary = {
@@ -128,7 +133,7 @@ export async function inspectGoogleWorkspaceCapabilities(
 
     // Refreshing or resolving the token verifies that the stored connection
     // is actually usable without exposing the token to the assistant.
-    await getGoogleAccessToken(connection, context?.supabase);
+    await getGoogleAccessToken(connection);
 
     return {
       accountLabel: connection.external_account_label ?? undefined,
@@ -166,7 +171,7 @@ export async function createGoogleCalendarReminder(
   context?: GoogleWorkspaceContext,
 ): Promise<GoogleCalendarReminderResult> {
   const connection = await getGoogleWorkspaceConnection(context);
-  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
+  const accessToken = await getGoogleAccessToken(connection);
   const start = normalizeReminderDateTime(scheduledAt);
   const end = addMinutesToCalendarDateTime(
     start,
@@ -175,6 +180,7 @@ export async function createGoogleCalendarReminder(
   const eventId = idempotencyKey
     ? googleCalendarIdempotencyId(idempotencyKey)
     : undefined;
+  await revalidateGoogleProviderUse(connection, context);
   const response = await fetch(
     "https://www.googleapis.com/calendar/v3/calendars/primary/events",
     {
@@ -247,12 +253,20 @@ async function fetchGoogleCalendarReminderById(
   };
 }
 
-export async function getGoogleWorkspaceAccessToken({
-  requiredScopes = [],
-}: {
-  requiredScopes?: string[];
-} = {}) {
-  const connection = await getGoogleWorkspaceConnection();
+export async function getGoogleWorkspaceAccessToken(
+  {
+    expectedConnectionId,
+    requiredScopes = [],
+  }: {
+    expectedConnectionId?: string;
+    requiredScopes?: string[];
+  } = {},
+  context?: GoogleWorkspaceContext,
+) {
+  const connection = await getGoogleWorkspaceConnection(
+    context,
+    expectedConnectionId,
+  );
   const missingScopes = requiredScopes.filter(
     (scope) => !(connection.scopes ?? []).includes(scope),
   );
@@ -263,7 +277,9 @@ export async function getGoogleWorkspaceAccessToken({
     );
   }
 
-  return getGoogleAccessToken(connection);
+  const accessToken = await getGoogleAccessToken(connection);
+  await revalidateGoogleProviderUse(connection, context);
+  return accessToken;
 }
 
 export async function listGoogleCalendarEvents(
@@ -283,7 +299,8 @@ export async function listGoogleCalendarEvents(
   context?: GoogleWorkspaceContext,
 ): Promise<GoogleCalendarEventSummary[]> {
   const connection = await getGoogleWorkspaceConnection(context);
-  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
+  const accessToken = await getGoogleAccessToken(connection);
+  await revalidateGoogleProviderUse(connection, context);
   const timeMin = requestedTimeMin
     ? parseCalendarBoundary(requestedTimeMin)
     : new Date();
@@ -412,7 +429,8 @@ export async function listGmailMessages(
   context?: GoogleWorkspaceContext,
 ): Promise<GmailMessageSummary[]> {
   const connection = await getGoogleWorkspaceConnection(context);
-  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
+  const accessToken = await getGoogleAccessToken(connection);
+  await revalidateGoogleProviderUse(connection, context);
   const listUrl = new URL(
     "https://gmail.googleapis.com/gmail/v1/users/me/messages",
   );
@@ -513,7 +531,8 @@ export async function listGeminiMeetingNoteMessages(
   context?: GoogleWorkspaceContext,
 ): Promise<GmailMeetingNoteBatch> {
   const connection = await getGoogleWorkspaceConnection(context);
-  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
+  const accessToken = await getGoogleAccessToken(connection);
+  await revalidateGoogleProviderUse(connection, context);
   const boundedMaxResults = Math.max(1, Math.min(maxResults, 200));
   const boundedDays = Math.max(1, Math.min(newerThanDays, 365));
   const canReadLinkedDocuments = canReadGoogleMeetingDocuments(
@@ -757,90 +776,26 @@ async function mapWithConcurrency<T, R>(
   return results;
 }
 
-export async function sendGmailDraft({
-  body,
-  subject,
-  to,
-}: {
-  body: string;
-  subject: string;
-  to: string;
-}) {
-  const connection = await getGoogleWorkspaceConnection();
-  const accessToken = await getGoogleAccessToken(connection);
-  const mime = [
-    `To: ${to}`,
-    `Subject: ${subject}`,
-    "Content-Type: text/plain; charset=UTF-8",
-    "",
-    body,
-  ].join("\r\n");
-  const raw = Buffer.from(mime).toString("base64url");
-  const response = await fetch(
-    "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
-    {
-      body: JSON.stringify({ raw }),
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-      },
-      method: "POST",
-    },
-  );
-
-  if (!response.ok) {
-    throw new Error(await providerError("Gmail", response));
-  }
-
-  return (await response.json()) as { id?: string; threadId?: string };
-}
-
 async function getGoogleWorkspaceConnection(
   context?: GoogleWorkspaceContext,
-): Promise<GoogleConnectionRow> {
-  const supabase = context?.supabase ?? (await createServerSupabaseClient());
-  if (!supabase) {
-    throw new Error("Google Workspace requires an authenticated session.");
-  }
-
-  let profileId = context?.profileId;
-  let organizationId = context?.organizationId;
-
-  if (!profileId || !organizationId) {
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-    if (userError || !user) {
-      throw new Error("Google Workspace requires an authenticated session.");
-    }
-
-    const { data: membership } = await supabase
-      .from("organization_memberships")
-      .select("organization_id")
-      .eq("profile_id", user.id)
-      .limit(1)
-      .maybeSingle();
-
-    if (!membership?.organization_id) {
-      throw new Error("Google Workspace requires an organization membership.");
-    }
-
-    profileId = user.id;
-    organizationId = membership.organization_id;
-  }
+  expectedConnectionId?: string,
+): Promise<ResolvedGoogleConnection> {
+  const actor = await resolveGoogleCredentialActor(context);
 
   // Per-user connection: each member's Calendar/Gmail actions run on their
-  // own Google account, never on a colleague's.
-  const { data, error } = await supabase
+  // own Google account, never on a colleague's. Token material is selected
+  // only with service_role after the exact actor membership was verified.
+  let query = actor.credentialClient
     .from("integration_connections")
     .select(
-      "id,organization_id,external_account_label,scopes,encrypted_token_reference,connected_by_profile_id",
+      "id,organization_id,external_account_label,scopes,encrypted_token_reference,connected_by_profile_id,status",
     )
-    .eq("organization_id", organizationId)
+    .eq("organization_id", actor.organizationId)
     .eq("provider", "google")
-    .eq("connected_by_profile_id", profileId)
-    .eq("status", "connected")
+    .eq("connected_by_profile_id", actor.profileId)
+    .eq("status", "connected");
+  if (expectedConnectionId) query = query.eq("id", expectedConnectionId);
+  const { data, error } = await query
     .order("connected_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -850,19 +805,71 @@ async function getGoogleWorkspaceConnection(
   }
 
   const connection = data as GoogleConnectionRow;
-  if (hasForbiddenGoogleDriveScope(connection.scopes)) {
+  if (
+    connection.organization_id !== actor.organizationId ||
+    connection.connected_by_profile_id !== actor.profileId ||
+    (expectedConnectionId && connection.id !== expectedConnectionId) ||
+    connection.status !== "connected"
+  ) {
+    throw new Error("Google Workspace connection identity is invalid.");
+  }
+
+  const intent = connection.scopes?.includes(GOOGLE_MEETING_NOTE_SCOPE)
+    ? "meeting-notes"
+    : "user";
+  const scopeAttestation = attestGoogleScopes(connection.scopes, intent);
+  if (!scopeAttestation.ok) {
+    const quarantined = await markGoogleConnectionNeedsReview(
+      actor,
+      connection,
+    );
+    if (!quarantined) {
+      throw new Error("Google Workspace connection could not be quarantined.");
+    }
     throw new Error(
-      "Google Workspace must be reconnected because its legacy Drive permission is too broad.",
+      "Google Workspace must be reconnected because its scope attestation is invalid.",
     );
   }
 
-  return connection;
+  return { ...connection, actor };
 }
 
-async function getGoogleAccessToken(
-  connection: GoogleConnectionRow,
-  supabaseOverride?: SupabaseClient,
+async function revalidateGoogleProviderUse(
+  connection: ResolvedGoogleConnection,
+  context?: GoogleWorkspaceContext,
 ) {
+  const actor = await resolveGoogleCredentialActor(context);
+  if (
+    actor.organizationId !== connection.actor.organizationId ||
+    actor.profileId !== connection.actor.profileId
+  ) {
+    throw new Error("Google Workspace actor authorization changed.");
+  }
+  const { data, error } = await actor.credentialClient
+    .from("integration_connections")
+    .select("id,organization_id,provider,connected_by_profile_id,status,scopes")
+    .eq("id", connection.id)
+    .eq("organization_id", actor.organizationId)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", actor.profileId)
+    .eq("status", "connected")
+    .maybeSingle();
+  if (
+    error ||
+    !data ||
+    data.id !== connection.id ||
+    data.organization_id !== actor.organizationId ||
+    data.provider !== "google" ||
+    data.connected_by_profile_id !== actor.profileId ||
+    data.status !== "connected" ||
+    !googleScopeSetsEqual(data.scopes, connection.scopes)
+  ) {
+    throw new Error("Google Workspace authorization changed before use.");
+  }
+}
+
+async function getGoogleAccessToken(connection: ResolvedGoogleConnection) {
+  const actor = connection.actor;
   const tokenReference = parseTokenReference(
     connection.encrypted_token_reference,
   );
@@ -912,22 +919,92 @@ async function getGoogleAccessToken(
     throw new Error("Google OAuth refresh did not return an access token.");
   }
 
+  // A refresh token can outlive a consent change. Never persist or use the
+  // refreshed access token until Google re-attests the exact stored scope set.
+  const intent = connection.scopes?.includes(GOOGLE_MEETING_NOTE_SCOPE)
+    ? "meeting-notes"
+    : "user";
+  const attestation = await attestGoogleAccessToken({
+    accessToken: refreshed.access_token,
+    expectedScopes: connection.scopes ?? [],
+    intent,
+  });
+  if (!attestation.ok) {
+    const quarantined = await markGoogleConnectionNeedsReview(
+      actor,
+      connection,
+    );
+    if (!quarantined) {
+      throw new Error("Google Workspace connection could not be quarantined.");
+    }
+    throw new Error(
+      "Google Workspace token scope changed and requires reconnection.",
+    );
+  }
+
   const updatedReference: GoogleTokenReference = {
     access_token: refreshed.access_token,
     expiry_date: Date.now() + (refreshed.expires_in ?? 3600) * 1000,
     refresh_token: refreshed.refresh_token ?? tokenReference.refresh_token,
   };
 
-  const supabase = supabaseOverride ?? (await createServerSupabaseClient());
-  await supabase
-    ?.from("integration_connections")
+  const { data: updated, error: updateError } = await actor.credentialClient
+    .from("integration_connections")
     .update({
       encrypted_token_reference: JSON.stringify(updatedReference),
+      scopes: attestation.scopes,
+      server_review_reason: null,
       updated_at: new Date().toISOString(),
     })
-    .eq("id", connection.id);
+    .eq("id", connection.id)
+    .eq("organization_id", actor.organizationId)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", actor.profileId)
+    .eq("status", "connected")
+    .select("id,organization_id,provider,connected_by_profile_id,status")
+    .maybeSingle();
+
+  if (
+    updateError ||
+    !updated ||
+    updated.id !== connection.id ||
+    updated.organization_id !== actor.organizationId ||
+    updated.provider !== "google" ||
+    updated.connected_by_profile_id !== actor.profileId ||
+    updated.status !== "connected"
+  ) {
+    throw new Error("Google Workspace refreshed credential was not saved.");
+  }
 
   return refreshed.access_token;
+}
+
+async function markGoogleConnectionNeedsReview(
+  actor: GoogleCredentialActor,
+  connection: GoogleConnectionRow,
+) {
+  const { data, error } = await actor.credentialClient
+    .from("integration_connections")
+    .update({
+      server_review_reason: "scope-attestation-failed",
+      status: "needs-review",
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", connection.id)
+    .eq("organization_id", actor.organizationId)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", actor.profileId)
+    .select("id,organization_id,provider,connected_by_profile_id,status")
+    .maybeSingle();
+
+  return (
+    !error &&
+    data?.id === connection.id &&
+    data.organization_id === actor.organizationId &&
+    data.provider === "google" &&
+    data.connected_by_profile_id === actor.profileId &&
+    data.status === "needs-review"
+  );
 }
 
 function parseTokenReference(value: string | null): GoogleTokenReference {
@@ -941,6 +1018,8 @@ function parseTokenReference(value: string | null): GoogleTokenReference {
 }
 
 async function providerError(provider: string, response: Response) {
-  const text = await response.text();
-  return `${provider} request failed (${response.status}): ${text.slice(0, 500)}`;
+  // Provider bodies can echo request details. Never propagate them into app
+  // logs or user-visible errors from credential-bearing requests.
+  await response.body?.cancel().catch(() => undefined);
+  return `${provider} request failed (${response.status}).`;
 }

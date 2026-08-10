@@ -6,6 +6,7 @@
     "dev": "next dev",
     "build": "next build",
     "crm:trello-import": "tsx scripts/crm-trello-import.ts",
+    "google:oauth-reattest": "tsx scripts/google-oauth-reattest.ts",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",

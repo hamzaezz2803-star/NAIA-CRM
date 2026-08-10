@@ -4,16 +4,16 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse, type NextRequest } from "next/server";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
+import { resolveGoogleCredentialActorFromSession } from "@/platform/integrations/google-credential-boundary";
 import {
   GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
   GOOGLE_REVOCATION_CONFIRMATION,
 } from "@/platform/integrations/google-revocation-contract";
-import { hasForbiddenGoogleDriveScope } from "@/platform/integrations/google-workspace-scopes";
 
 type GoogleConnection = {
   encrypted_token_reference: string | null;
   id: string;
-  scopes: string[] | null;
+  server_review_reason: string | null;
   status: string;
 };
 
@@ -57,31 +57,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Non authentifié." }, { status: 401 });
   }
 
-  const { data: membership, error: membershipError } = await supabase
-    .from("organization_memberships")
-    .select("organization_id")
-    .eq("profile_id", user.id)
-    .limit(1)
-    .maybeSingle();
-  if (membershipError) {
-    return NextResponse.json(
-      { error: "Impossible de vérifier l’organisation." },
-      { status: 500 },
-    );
-  }
-  if (!membership?.organization_id) {
+  let actor;
+  try {
+    actor = await resolveGoogleCredentialActorFromSession({
+      expectedProfileId: user.id,
+      supabase,
+    });
+  } catch {
     return NextResponse.json(
       { error: "Aucune organisation associée à ce compte." },
       { status: 403 },
     );
   }
 
-  const { data, error: connectionError } = await supabase
+  const { data, error: connectionError } = await actor.credentialClient
     .from("integration_connections")
-    .select("id,status,scopes,encrypted_token_reference")
-    .eq("organization_id", membership.organization_id)
+    .select(
+      "id,status,encrypted_token_reference,server_review_reason,organization_id,provider,connected_by_profile_id",
+    )
+    .eq("organization_id", actor.organizationId)
     .eq("provider", "google")
-    .eq("connected_by_profile_id", user.id)
+    .eq("connected_by_profile_id", actor.profileId)
     .order("connected_at", { ascending: false })
     .limit(1)
     .maybeSingle();
@@ -91,7 +87,13 @@ export async function POST(request: NextRequest) {
       { status: 500 },
     );
   }
-  if (!data || data.status === "revoked") {
+  if (
+    !data ||
+    data.organization_id !== actor.organizationId ||
+    data.provider !== "google" ||
+    data.connected_by_profile_id !== actor.profileId ||
+    data.status === "revoked"
+  ) {
     return NextResponse.json({ alreadyRevoked: true, ok: true });
   }
 
@@ -99,7 +101,7 @@ export async function POST(request: NextRequest) {
   if (confirmation === GOOGLE_MANUAL_REVOCATION_CONFIRMATION) {
     if (
       connection.status !== "needs-review" ||
-      !hasForbiddenGoogleDriveScope(connection.scopes)
+      connection.server_review_reason !== "revocation-failed"
     ) {
       return NextResponse.json(
         {
@@ -111,14 +113,16 @@ export async function POST(request: NextRequest) {
     }
 
     const manualResult = await markConnection(
-      supabase,
+      actor.credentialClient,
       connection.id,
-      membership.organization_id,
-      user.id,
+      actor.organizationId,
+      actor.profileId,
       "revoked",
       true,
+      null,
+      "revocation-failed",
     );
-    if (manualResult.error) {
+    if (!manualResult) {
       return NextResponse.json(
         { error: "NAIA n’a pas pu finaliser la révocation manuelle." },
         { status: 500 },
@@ -132,13 +136,21 @@ export async function POST(request: NextRequest) {
   );
   const token = tokenReference.refresh_token ?? tokenReference.access_token;
   if (!token) {
-    await markConnection(
-      supabase,
+    const marked = await markConnection(
+      actor.credentialClient,
       connection.id,
-      membership.organization_id,
-      user.id,
+      actor.organizationId,
+      actor.profileId,
       "needs-review",
+      false,
+      "revocation-failed",
     );
+    if (!marked) {
+      return NextResponse.json(
+        { error: "NAIA n’a pas pu sécuriser l’état de révocation." },
+        { status: 500 },
+      );
+    }
     return NextResponse.json(
       {
         error:
@@ -157,13 +169,21 @@ export async function POST(request: NextRequest) {
       method: "POST",
     });
   } catch {
-    await markConnection(
-      supabase,
+    const marked = await markConnection(
+      actor.credentialClient,
       connection.id,
-      membership.organization_id,
-      user.id,
+      actor.organizationId,
+      actor.profileId,
       "needs-review",
+      false,
+      "revocation-failed",
     );
+    if (!marked) {
+      return NextResponse.json(
+        { error: "NAIA n’a pas pu sécuriser l’état de révocation." },
+        { status: 500 },
+      );
+    }
     return NextResponse.json(
       {
         error:
@@ -177,13 +197,21 @@ export async function POST(request: NextRequest) {
   // A 400 invalid_token can be an expired access token while the grant still
   // exists. Only Google's documented 200 response proves remote revocation.
   if (revokeResponse.status !== 200) {
-    await markConnection(
-      supabase,
+    const marked = await markConnection(
+      actor.credentialClient,
       connection.id,
-      membership.organization_id,
-      user.id,
+      actor.organizationId,
+      actor.profileId,
       "needs-review",
+      false,
+      "revocation-failed",
     );
+    if (!marked) {
+      return NextResponse.json(
+        { error: "NAIA n’a pas pu sécuriser l’état de révocation." },
+        { status: 500 },
+      );
+    }
     return NextResponse.json(
       {
         error:
@@ -195,14 +223,15 @@ export async function POST(request: NextRequest) {
   }
 
   const revokeResult = await markConnection(
-    supabase,
+    actor.credentialClient,
     connection.id,
-    membership.organization_id,
-    user.id,
+    actor.organizationId,
+    actor.profileId,
     "revoked",
     true,
+    null,
   );
-  if (revokeResult.error) {
+  if (!revokeResult) {
     return NextResponse.json(
       {
         error:
@@ -259,11 +288,14 @@ async function markConnection(
   profileId: string,
   status: "needs-review" | "revoked",
   clearToken = false,
+  reviewReason: "revocation-failed" | null = null,
+  expectedReviewReason?: "revocation-failed",
 ) {
-  return supabase
+  let query = supabase
     .from("integration_connections")
     .update({
       ...(clearToken ? { encrypted_token_reference: null } : {}),
+      server_review_reason: reviewReason,
       status,
       updated_at: new Date().toISOString(),
     })
@@ -271,4 +303,20 @@ async function markConnection(
     .eq("organization_id", organizationId)
     .eq("provider", "google")
     .eq("connected_by_profile_id", profileId);
+  if (expectedReviewReason) {
+    query = query
+      .eq("status", "needs-review")
+      .eq("server_review_reason", expectedReviewReason);
+  }
+  const { data, error } = await query
+    .select("id,organization_id,provider,connected_by_profile_id,status")
+    .maybeSingle();
+  return (
+    !error &&
+    data?.id === connectionId &&
+    data.organization_id === organizationId &&
+    data.provider === "google" &&
+    data.connected_by_profile_id === profileId &&
+    data.status === status
+  );
 }
