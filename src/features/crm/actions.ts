@@ -11,7 +11,11 @@ import {
   ensureClientDriveFolder,
   isDriveServiceConfigured,
 } from "@/platform/integrations/google-drive-service";
-import { hasForbiddenGoogleDriveScope } from "@/platform/integrations/google-workspace-scopes";
+import {
+  attestGoogleScopes,
+  GOOGLE_MEETING_NOTE_SCOPE,
+  hasForbiddenGoogleDriveScope,
+} from "@/platform/integrations/google-workspace-scopes";
 import { createSystemNotification } from "@/platform/notifications/actions";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -1014,96 +1018,159 @@ export async function deleteLeadAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  // Fetch lead to get the event ID first for deletion from Google Calendar
-  const { data: lead } = await supabase
+  const {
+    data: { user: actingUser },
+  } = await supabase.auth.getUser();
+  if (!actingUser?.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("role")
+    .eq("organization_id", orgId)
+    .eq("profile_id", actingUser.id)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !role ||
+    !hasPermission(role, { action: "delete", module: "crm" })
+  ) {
+    return {
+      success: false,
+      error: "Tu n'as pas la permission de supprimer ce lead.",
+    };
+  }
+
+  const { data: lead, error: leadError } = await supabase
     .from("crm_leads")
-    .select("notes, access_scope")
+    .select("id,notes,access_scope,updated_at")
     .eq("id", leadId)
     .eq("organization_id", orgId)
-    .single();
+    .is("archived_at", null)
+    .maybeSingle();
+  if (leadError || !lead) {
+    return {
+      success: false,
+      error: leadError?.message ?? "Lead introuvable",
+    };
+  }
 
-  if (
-    lead &&
-    lead.notes &&
-    allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)
-  ) {
-    const eventIdMatch = lead.notes.match(
-      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
-    );
-    const eventId = eventIdMatch ? eventIdMatch[1].trim() : null;
+  let expectedRevision = lead.updated_at as string;
+  const initialAccessScope = lead.access_scope as CrmAccessScope;
 
-    if (eventId) {
-      const eventOwnerMatch = lead.notes.match(
-        /\[Google Calendar Event Owner:\s*([^\]]+)\]/,
+  if (lead.notes && allowsCrmProviderSideEffects(initialAccessScope)) {
+    const initialEvent = readCalendarEventMetadata(lead.notes);
+
+    if (initialEvent.eventId) {
+      if (
+        initialEvent.eventOwner &&
+        initialEvent.eventOwner !== actingUser.id
+      ) {
+        return {
+          success: false,
+          error:
+            "L'événement Calendar appartient à un autre membre; il doit d'abord supprimer le lead depuis son compte.",
+        };
+      }
+
+      let authorized = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUser.id,
+        expectedRevision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!authorized.ok) {
+        return { error: authorized.error, success: false };
+      }
+      const { data: connection } = await supabase
+        .from("integration_connections")
+        .select("*")
+        .eq("id", authorized.connection.id)
+        .eq("organization_id", orgId)
+        .eq("connected_by_profile_id", actingUser.id)
+        .maybeSingle();
+      const accessToken = connection
+        ? await getOrRefreshGoogleToken(supabase, orgId, connection)
+        : null;
+      if (!accessToken) {
+        return {
+          success: false,
+          error:
+            "Impossible de supprimer l'événement Calendar sans une connexion Google valide.",
+        };
+      }
+
+      authorized = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUser.id,
+        expectedRevision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!authorized.ok) {
+        return { error: authorized.error, success: false };
+      }
+      const currentEvent = readCalendarEventMetadata(authorized.lead.notes);
+      if (
+        currentEvent.eventId !== initialEvent.eventId ||
+        (currentEvent.eventOwner && currentEvent.eventOwner !== actingUser.id)
+      ) {
+        return {
+          success: false,
+          error: "La liaison Calendar a changé. Recharge la fiche.",
+        };
+      }
+
+      const delRes = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(currentEvent.eventId)}?sendUpdates=none`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          method: "DELETE",
+        },
       );
-      const eventOwner = eventOwnerMatch ? eventOwnerMatch[1].trim() : null;
-
-      const {
-        data: { user: actingUser },
-      } = await supabase.auth.getUser();
-
-      // Per-user RLS only exposes the caller's own connection; an event
-      // created by another member stays on their calendar (logged below).
-      const { data: connection } =
-        actingUser && (!eventOwner || eventOwner === actingUser.id)
-          ? await supabase
-              .from("integration_connections")
-              .select("*")
-              .eq("organization_id", orgId)
-              .eq("provider", "google")
-              .eq("connected_by_profile_id", actingUser.id)
-              .limit(1)
-              .maybeSingle()
-          : { data: null };
-
-      if (!connection) {
-        console.warn(
-          "Calendar event not removed during lead deletion (owned by another member or no connection):",
-          eventId,
-        );
+      if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
+        return {
+          success: false,
+          error: parseGoogleError(await delRes.text()),
+        };
       }
 
-      if (connection && connection.status === "connected") {
-        const accessToken = await getOrRefreshGoogleToken(
-          supabase,
-          orgId,
-          connection,
-        );
-        if (accessToken) {
-          try {
-            const delRes = await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
-              {
-                method: "DELETE",
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                },
-              },
-            );
-            if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
-              console.error(
-                "Google Calendar event delete failed during lead deletion:",
-                await delRes.text(),
-              );
-            }
-          } catch (err) {
-            console.error(
-              "Failed to delete Google Calendar event during lead deletion:",
-              err,
-            );
-          }
-        }
+      const postDelete = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUser.id,
+        expectedRevision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!postDelete.ok) {
+        return { error: postDelete.error, success: false };
       }
+      expectedRevision = postDelete.lead.updated_at;
     }
   }
 
-  const { error } = await supabase
+  const { data: deletedLead, error } = await supabase
     .from("crm_leads")
     .delete()
     .eq("id", leadId)
-    .eq("organization_id", orgId);
+    .eq("organization_id", orgId)
+    .eq("access_scope", initialAccessScope)
+    .eq("updated_at", expectedRevision)
+    .is("archived_at", null)
+    .select("id")
+    .maybeSingle();
 
   if (error) return { success: false, error: error.message };
+  if (!deletedLead) {
+    return {
+      success: false,
+      error:
+        "Le lead a changé pendant la suppression; aucune suppression CRM n'a été confirmée.",
+    };
+  }
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
@@ -2383,6 +2450,238 @@ function extractGoogleCalendarEventLink(notes?: string | null) {
   return eventLinkMatch ? eventLinkMatch[1].trim() : undefined;
 }
 
+type CalendarLeadRow = {
+  access_scope: CrmAccessScope;
+  id: string;
+  lead_date: string | null;
+  next_action_date: string | null;
+  notes: string | null;
+  organization_id: string;
+  topic: string;
+  updated_at: string;
+};
+
+type AuthorizedCalendarLead = {
+  actorProfileId: string;
+  connection: {
+    connected_by_profile_id: string | null;
+    id: string;
+    organization_id: string;
+    scopes: string[] | null;
+    status: string;
+  };
+  lead: CalendarLeadRow;
+  ok: true;
+};
+
+type CalendarAuthorizationResult =
+  AuthorizedCalendarLead | { error: string; ok: false };
+
+function readCalendarEventMetadata(notes?: string | null) {
+  const value = notes ?? "";
+  const read = (label: string) =>
+    value
+      .match(new RegExp(`\\[Google Calendar ${label}:\\s*([^\\]]+)\\]`))?.[1]
+      ?.trim() ?? null;
+
+  return {
+    eventId: read("Event ID"),
+    eventLink: read("Event Link"),
+    eventOwner: read("Event Owner"),
+  };
+}
+
+function stripCalendarEventMetadata(notes?: string | null) {
+  return (notes ?? "")
+    .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/g, "")
+    .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/g, "")
+    .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
+    .trim();
+}
+
+async function resolveAuthorizedCalendarLead({
+  actorProfileId: requestedActorProfileId,
+  expectedRevision,
+  leadId,
+  organizationId,
+  supabase,
+}: {
+  actorProfileId?: string | null;
+  expectedRevision?: string;
+  leadId: string;
+  organizationId: string;
+  supabase: SupabaseClient;
+}): Promise<CalendarAuthorizationResult> {
+  const actorProfileId =
+    requestedActorProfileId ??
+    (await supabase.auth.getUser()).data.user?.id ??
+    null;
+  if (!actorProfileId) {
+    return { error: "Not authenticated", ok: false };
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("role")
+    .eq("organization_id", organizationId)
+    .eq("profile_id", actorProfileId)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !role ||
+    !hasPermission(role, { action: "update", module: "crm" })
+  ) {
+    return {
+      error: "Tu n'as plus la permission de synchroniser ce lead.",
+      ok: false,
+    };
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from("crm_leads")
+    .select(
+      "id,organization_id,topic,notes,lead_date,next_action_date,access_scope,updated_at",
+    )
+    .eq("id", leadId)
+    .eq("organization_id", organizationId)
+    .is("archived_at", null)
+    .maybeSingle();
+  if (leadError || !lead) {
+    return {
+      error: leadError?.message ?? "Lead introuvable dans cette organisation.",
+      ok: false,
+    };
+  }
+  if (!allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)) {
+    return {
+      error:
+        "Synchronisation Calendar désactivée pour les leads confidentiels.",
+      ok: false,
+    };
+  }
+  if (expectedRevision && lead.updated_at !== expectedRevision) {
+    return {
+      error:
+        "Le lead a changé pendant la synchronisation. Recharge la fiche et réessaie.",
+      ok: false,
+    };
+  }
+
+  const { data: connection, error: connectionError } = await supabase
+    .from("integration_connections")
+    .select("id,organization_id,connected_by_profile_id,status,scopes")
+    .eq("organization_id", organizationId)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", actorProfileId)
+    .limit(1)
+    .maybeSingle();
+  if (
+    connectionError ||
+    !connection ||
+    connection.organization_id !== organizationId ||
+    connection.connected_by_profile_id !== actorProfileId ||
+    connection.status !== "connected" ||
+    !attestGoogleScopes(
+      connection.scopes,
+      connection.scopes?.includes(GOOGLE_MEETING_NOTE_SCOPE)
+        ? "meeting-notes"
+        : "user",
+    ).ok
+  ) {
+    return {
+      error:
+        "Google Workspace non connecté ou autorisations à revalider. Veuillez reconnecter votre compte Google.",
+      ok: false,
+    };
+  }
+
+  return {
+    actorProfileId,
+    connection,
+    lead: lead as CalendarLeadRow,
+    ok: true,
+  };
+}
+
+async function writeCalendarNotes({
+  expectedRevision,
+  leadId,
+  notes,
+  organizationId,
+  supabase,
+}: {
+  expectedRevision: string;
+  leadId: string;
+  notes: string | null;
+  organizationId: string;
+  supabase: SupabaseClient;
+}): Promise<
+  | { notes: string | null; ok: true; updatedAt: string }
+  | { error: string; ok: false }
+> {
+  const updatedAt = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("crm_leads")
+    .update({ notes, updated_at: updatedAt })
+    .eq("id", leadId)
+    .eq("organization_id", organizationId)
+    .eq("access_scope", "organization")
+    .eq("updated_at", expectedRevision)
+    .is("archived_at", null)
+    .select("id,notes,updated_at")
+    .maybeSingle();
+
+  if (error || !data) {
+    return {
+      error:
+        error?.message ??
+        "Le lead a changé avant la confirmation Calendar; aucune liaison n'a été enregistrée.",
+      ok: false,
+    };
+  }
+
+  return {
+    notes: data.notes ?? null,
+    ok: true,
+    updatedAt: data.updated_at ?? updatedAt,
+  };
+}
+
+function buildCalendarEventPayload(lead: CalendarLeadRow) {
+  const leadDateStr = (lead.lead_date ?? lead.next_action_date) as string;
+  const cleanNotes = stripCalendarEventMetadata(lead.notes);
+  const description = `${cleanNotes ? `${cleanNotes}\n\n` : ""}Lien vers le lead dans l'application : ${getAppBaseUrl()}/dashboard/leads`;
+  const isMidnight =
+    !leadDateStr.includes("T") ||
+    leadDateStr.includes("T00:00:00") ||
+    leadDateStr.endsWith(" 00:00:00");
+
+  if (isMidnight) {
+    const startDate = leadDateStr.split("T")[0];
+    const nextDate = new Date(
+      new Date(startDate).getTime() + 24 * 60 * 60 * 1000,
+    )
+      .toISOString()
+      .split("T")[0];
+    return {
+      description,
+      end: { date: nextDate, timeZone: CALENDAR_TIME_ZONE },
+      start: { date: startDate, timeZone: CALENDAR_TIME_ZONE },
+      summary: lead.topic,
+    };
+  }
+
+  const startDate = new Date(leadDateStr);
+  const endDate = new Date(startDate.getTime() + DEFAULT_MEETING_DURATION_MS);
+  return {
+    description,
+    end: { dateTime: endDate.toISOString(), timeZone: CALENDAR_TIME_ZONE },
+    start: { dateTime: startDate.toISOString(), timeZone: CALENDAR_TIME_ZONE },
+    summary: lead.topic,
+  };
+}
+
 async function syncLeadToGoogleCalendar(
   supabase: SupabaseClient,
   orgId: string,
@@ -2390,65 +2689,27 @@ async function syncLeadToGoogleCalendar(
   actorProfileId?: string | null,
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const { data: lead, error: leadError } = await supabase
-      .from("crm_leads")
-      .select("*")
-      .eq("id", leadId)
-      .eq("organization_id", orgId)
-      .is("archived_at", null)
-      .single();
-
-    if (leadError || !lead) {
-      return { success: false, error: "Lead introuvable" };
-    }
-
-    // Confidential CRM content never leaves the CRM boundary through an
-    // automatic Calendar mutation. This guard runs before looking up or
-    // refreshing a Google credential and covers create, update and delete.
-    if (!allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)) {
-      return {
-        success: false,
-        error:
-          "Synchronisation Calendar désactivée pour les leads confidentiels.",
-      };
-    }
-
-    const notesStr = lead.notes || "";
-    const eventIdMatch = notesStr.match(
-      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
-    );
-    const existingEventId = eventIdMatch ? eventIdMatch[1].trim() : null;
-
-    // Fetch the acting user's own google connection: calendar events are
-    // created on the calendar of whoever triggers the sync. Bridges without a
-    // cookie session (for example Slack) inject the acting profile id.
-    const actingUserId =
-      actorProfileId ?? (await supabase.auth.getUser()).data.user?.id ?? null;
-
-    const { data: connection } = actingUserId
-      ? await supabase
-          .from("integration_connections")
-          .select("*")
-          .eq("organization_id", orgId)
-          .eq("provider", "google")
-          .eq("connected_by_profile_id", actingUserId)
-          .limit(1)
-          .maybeSingle()
-      : { data: null };
-
-    if (!connection || connection.status !== "connected") {
-      return {
-        success: false,
-        error:
-          "Google Workspace non connecté. Veuillez connecter votre compte Google.",
-      };
-    }
-
-    const accessToken = await getOrRefreshGoogleToken(
+    let authorized = await resolveAuthorizedCalendarLead({
+      actorProfileId,
+      leadId,
+      organizationId: orgId,
       supabase,
-      orgId,
-      connection,
-    );
+    });
+    if (!authorized.ok) {
+      return { error: authorized.error, success: false };
+    }
+
+    const { data: connection } = await supabase
+      .from("integration_connections")
+      .select("*")
+      .eq("id", authorized.connection.id)
+      .eq("organization_id", orgId)
+      .eq("connected_by_profile_id", authorized.actorProfileId)
+      .maybeSingle();
+
+    const accessToken = connection
+      ? await getOrRefreshGoogleToken(supabase, orgId, connection)
+      : null;
     if (!accessToken) {
       return {
         success: false,
@@ -2457,15 +2718,28 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
+    authorized = await resolveAuthorizedCalendarLead({
+      actorProfileId: authorized.actorProfileId,
+      expectedRevision: authorized.lead.updated_at,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { error: authorized.error, success: false };
+    }
+
+    let lead = authorized.lead;
+    let revision = lead.updated_at;
+    let notesStr = lead.notes || "";
+    let eventMetadata = readCalendarEventMetadata(notesStr);
+    let existingEventId = eventMetadata.eventId;
+    const actingUserId = authorized.actorProfileId;
+
     // Calendar events are calendar-scoped: only the member who created the
     // event can update or delete it. Legacy events without an owner tag are
     // assumed to belong to the acting user; a 404 falls back to re-creation.
-    const eventOwnerMatch = notesStr.match(
-      /\[Google Calendar Event Owner:\s*([^\]]+)\]/,
-    );
-    const existingEventOwner = eventOwnerMatch
-      ? eventOwnerMatch[1].trim()
-      : null;
+    const existingEventOwner = eventMetadata.eventOwner;
     const actingUserOwnsEvent =
       !existingEventOwner || existingEventOwner === actingUserId;
 
@@ -2482,38 +2756,76 @@ async function syncLeadToGoogleCalendar(
               "L'événement Calendar de ce lead appartient à un autre membre : il doit le resynchroniser (ou le supprimer) depuis son compte.",
           };
         }
-        try {
-          const delRes = await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
-            {
-              method: "DELETE",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-              },
-            },
-          );
+        const preDelete = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: revision,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!preDelete.ok) {
+          return { error: preDelete.error, success: false };
+        }
+        eventMetadata = readCalendarEventMetadata(preDelete.lead.notes);
+        existingEventId = eventMetadata.eventId;
+        if (!existingEventId || eventMetadata.eventOwner !== actingUserId) {
+          return {
+            error: "La liaison Calendar a changé. Recharge la fiche.",
+            success: false,
+          };
+        }
 
-          if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
-            const errText = await delRes.text();
-            console.error("Google Calendar delete failed:", errText);
-          }
+        const delRes = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(existingEventId)}?sendUpdates=none`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            method: "DELETE",
+          },
+        );
+        if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
+          return {
+            error: parseGoogleError(await delRes.text()),
+            success: false,
+          };
+        }
 
-          // Remove the event ID, owner, and link tags from notes
-          const updatedNotes = notesStr
-            .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/, "")
-            .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/, "")
-            .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/, "")
-            .trim();
-
-          await supabase
-            .from("crm_leads")
-            .update({
-              notes: updatedNotes || null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", leadId);
-        } catch (err) {
-          console.error("Failed to delete cleared Calendar event:", err);
+        const postDelete = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: revision,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!postDelete.ok) {
+          return { error: postDelete.error, success: false };
+        }
+        const writeResult = await writeCalendarNotes({
+          expectedRevision: revision,
+          leadId,
+          notes: stripCalendarEventMetadata(postDelete.lead.notes) || null,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!writeResult.ok) {
+          return { error: writeResult.error, success: false };
+        }
+        const finalAuthorization = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: writeResult.updatedAt,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (
+          !finalAuthorization.ok ||
+          readCalendarEventMetadata(finalAuthorization.lead.notes).eventId
+        ) {
+          return {
+            error: finalAuthorization.ok
+              ? "La suppression de la liaison Calendar n'a pas été confirmée."
+              : finalAuthorization.error,
+            success: false,
+          };
         }
         return { success: true };
       }
@@ -2523,64 +2835,8 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
-    // Otherwise, create or update the event
-    const leadDateStr = finalLeadDate as string;
-    const isMidnight =
-      !leadDateStr.includes("T") ||
-      leadDateStr.includes("T00:00:00") ||
-      leadDateStr.endsWith(" 00:00:00");
-    const cleanNotes = notesStr
-      .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]/g, "")
-      .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]/g, "")
-      .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]/g, "")
-      .trim();
-
-    const appLink = `${getAppBaseUrl()}/dashboard/leads`;
-    const description = `${cleanNotes ? cleanNotes + "\n\n" : ""}Lien vers le lead dans l'application : ${appLink}`;
-
-    let eventPayload: {
-      summary: string;
-      description: string;
-      start: { date?: string; dateTime?: string; timeZone?: string };
-      end: { date?: string; dateTime?: string; timeZone?: string };
-    };
-    if (isMidnight) {
-      const startDateStr = leadDateStr.split("T")[0];
-      const startDay = new Date(startDateStr);
-      const nextDay = new Date(startDay.getTime() + 24 * 60 * 60 * 1000);
-      const endDateStr = nextDay.toISOString().split("T")[0];
-      eventPayload = {
-        summary: lead.topic,
-        description,
-        start: {
-          date: startDateStr,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-        end: {
-          date: endDateStr,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-      };
-    } else {
-      const startDate = new Date(leadDateStr);
-      const startIso = startDate.toISOString();
-      const endDate = new Date(
-        startDate.getTime() + DEFAULT_MEETING_DURATION_MS,
-      );
-      const endIso = endDate.toISOString();
-      eventPayload = {
-        summary: lead.topic,
-        description,
-        start: {
-          dateTime: startIso,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-        end: {
-          dateTime: endIso,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-      };
-    }
+    // Otherwise, create or update the event from the latest authorized row.
+    let eventPayload = buildCalendarEventPayload(lead);
 
     if (
       !existingEventId &&
@@ -2612,6 +2868,23 @@ async function syncLeadToGoogleCalendar(
       }
     }
 
+    const preMutation = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: revision,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!preMutation.ok) {
+      return { error: preMutation.error, success: false };
+    }
+    authorized = preMutation;
+    lead = authorized.lead;
+    notesStr = lead.notes ?? "";
+    eventMetadata = readCalendarEventMetadata(notesStr);
+    existingEventId = eventMetadata.eventId;
+    eventPayload = buildCalendarEventPayload(lead);
+
     if (existingEventId && !actingUserOwnsEvent) {
       // No-op instead of creating a duplicate event on this user's calendar:
       // the original stays valid on its owner's calendar and keeps its tags.
@@ -2640,23 +2913,63 @@ async function syncLeadToGoogleCalendar(
 
       if (updateRes.ok) {
         const event = await updateRes.json();
-        const htmlLink = event.htmlLink;
-        if (!notesStr.includes("[Google Calendar Event Link:")) {
-          const cleanLinkNotes = notesStr
-            .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
-            .trim();
+        const postUpdate = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: revision,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!postUpdate.ok) {
+          return { error: postUpdate.error, success: false };
+        }
 
-          const updatedNotes = cleanLinkNotes
-            ? `${cleanLinkNotes}\n[Google Calendar Event Link: ${htmlLink}]`
-            : `[Google Calendar Event Link: ${htmlLink}]`;
+        const htmlLink =
+          typeof event.htmlLink === "string" && event.htmlLink.trim()
+            ? event.htmlLink.trim()
+            : readCalendarEventMetadata(postUpdate.lead.notes).eventLink;
+        if (!htmlLink) {
+          return {
+            error: "Google Calendar n'a pas confirmé le lien de l'événement.",
+            success: false,
+          };
+        }
 
-          await supabase
-            .from("crm_leads")
-            .update({
-              notes: updatedNotes,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", leadId);
+        const cleanNotes = stripCalendarEventMetadata(postUpdate.lead.notes);
+        const eventTags = `[Google Calendar Event ID: ${existingEventId}]\n[Google Calendar Event Owner: ${actingUserId}]\n[Google Calendar Event Link: ${htmlLink}]`;
+        const writeResult = await writeCalendarNotes({
+          expectedRevision: revision,
+          leadId,
+          notes: cleanNotes ? `${cleanNotes}\n${eventTags}` : eventTags,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!writeResult.ok) {
+          return { error: writeResult.error, success: false };
+        }
+
+        const finalAuthorization = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: writeResult.updatedAt,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        const finalMetadata = finalAuthorization.ok
+          ? readCalendarEventMetadata(finalAuthorization.lead.notes)
+          : null;
+        if (
+          !finalAuthorization.ok ||
+          finalMetadata?.eventId !== existingEventId ||
+          finalMetadata.eventOwner !== actingUserId ||
+          finalMetadata.eventLink !== htmlLink
+        ) {
+          return {
+            error: finalAuthorization.ok
+              ? "La liaison Calendar finale n'a pas été confirmée."
+              : finalAuthorization.error,
+            success: false,
+          };
         }
         return { success: true };
       }
@@ -2670,6 +2983,21 @@ async function syncLeadToGoogleCalendar(
       }
       // The event vanished from this calendar: fall through and recreate it.
     }
+
+    const preCreate = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: revision,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!preCreate.ok) {
+      return { error: preCreate.error, success: false };
+    }
+    authorized = preCreate;
+    lead = authorized.lead;
+    notesStr = lead.notes ?? "";
+    eventPayload = buildCalendarEventPayload(lead);
 
     const createRes = await fetch(
       "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none",
@@ -2685,27 +3013,67 @@ async function syncLeadToGoogleCalendar(
 
     if (createRes.ok) {
       const event = await createRes.json();
-      const newEventId = event.id;
-      const htmlLink = event.htmlLink;
+      const newEventId = typeof event.id === "string" ? event.id.trim() : "";
+      const htmlLink =
+        typeof event.htmlLink === "string" ? event.htmlLink.trim() : "";
+      if (!newEventId || !htmlLink) {
+        return {
+          error: "Google Calendar n'a pas confirmé l'événement créé.",
+          success: false,
+        };
+      }
 
-      const cleanIdNotes = notesStr
-        .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/g, "")
-        .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/g, "")
-        .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
-        .trim();
+      const postCreate = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUserId,
+        expectedRevision: revision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!postCreate.ok) {
+        return { error: postCreate.error, success: false };
+      }
 
-      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId ?? "unknown"}]\n[Google Calendar Event Link: ${htmlLink}]`;
+      const cleanIdNotes = stripCalendarEventMetadata(postCreate.lead.notes);
+      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId}]\n[Google Calendar Event Link: ${htmlLink}]`;
       const updatedNotes = cleanIdNotes
         ? `${cleanIdNotes}\n${eventTags}`
         : eventTags;
 
-      await supabase
-        .from("crm_leads")
-        .update({
-          notes: updatedNotes,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadId);
+      const writeResult = await writeCalendarNotes({
+        expectedRevision: revision,
+        leadId,
+        notes: updatedNotes,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!writeResult.ok) {
+        return { error: writeResult.error, success: false };
+      }
+
+      const finalAuthorization = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUserId,
+        expectedRevision: writeResult.updatedAt,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      const finalMetadata = finalAuthorization.ok
+        ? readCalendarEventMetadata(finalAuthorization.lead.notes)
+        : null;
+      if (
+        !finalAuthorization.ok ||
+        finalMetadata?.eventId !== newEventId ||
+        finalMetadata?.eventOwner !== actingUserId ||
+        finalMetadata?.eventLink !== htmlLink
+      ) {
+        return {
+          error: finalAuthorization.ok
+            ? "La liaison Calendar finale n'a pas été confirmée."
+            : finalAuthorization.error,
+          success: false,
+        };
+      }
 
       return { success: true };
     } else {

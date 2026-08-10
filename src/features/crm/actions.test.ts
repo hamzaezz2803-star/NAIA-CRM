@@ -36,6 +36,7 @@ import {
   checkGoogleAuthAction,
   createGoogleDriveFolderAction,
   createLeadAction,
+  deleteLeadAction,
   disconnectGoogleAuthAction,
   fetchCompanyDetailAction,
   syncLeadToGoogleCalendarAction,
@@ -261,7 +262,13 @@ describe("CRM Google connection scope quarantine", () => {
       createFakeSupabase((state) => {
         queries.push({ ...state });
         if (state.table === "organization_memberships") {
-          return { data: { organization_id: "org-1" }, error: null };
+          return {
+            data:
+              state.columns === "role"
+                ? { role: "member" }
+                : { organization_id: "org-1" },
+            error: null,
+          };
         }
         if (state.table === "integration_connections") {
           return {
@@ -310,7 +317,13 @@ describe("CRM Google connection scope quarantine", () => {
     mocks.createServerSupabaseClient.mockResolvedValue(
       createFakeSupabase((state) => {
         if (state.table === "organization_memberships") {
-          return { data: { organization_id: "org-1" }, error: null };
+          return {
+            data:
+              state.columns === "role"
+                ? { role: "member" }
+                : { organization_id: "org-1" },
+            error: null,
+          };
         }
         if (state.table === "crm_leads" && state.op === "select") {
           return {
@@ -322,12 +335,35 @@ describe("CRM Google connection scope quarantine", () => {
               notes: null,
               organization_id: "org-1",
               topic: "Client meeting",
+              updated_at: "2026-08-10T01:00:00.000Z",
             },
             error: null,
           };
         }
         if (state.table === "integration_connections") {
-          return { data: connection, error: null };
+          if (
+            state.columns ===
+            "id,organization_id,connected_by_profile_id,status,scopes"
+          ) {
+            return {
+              data: {
+                connected_by_profile_id: "user-1",
+                id: "google-connection-1",
+                organization_id: "org-1",
+                scopes: [broadDriveScope],
+                status: "connected",
+              },
+              error: null,
+            };
+          }
+          return {
+            data: {
+              ...connection,
+              connected_by_profile_id: "user-1",
+              organization_id: "org-1",
+            },
+            error: null,
+          };
         }
         return { data: null, error: null };
       }),
@@ -335,13 +371,380 @@ describe("CRM Google connection scope quarantine", () => {
 
     await expect(syncLeadToGoogleCalendarAction("lead-1")).resolves.toEqual({
       error:
-        "Session Google expirée ou invalide. Veuillez déconnecter et reconnecter votre compte Google.",
+        "Google Workspace non connecté ou autorisations à revalider. Veuillez reconnecter votre compte Google.",
       success: false,
     });
     expect(credentialRead).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
 
     fetchSpy.mockRestore();
+  });
+});
+
+const calendarScopes = [
+  "https://www.googleapis.com/auth/calendar.events",
+  "https://www.googleapis.com/auth/calendar.freebusy",
+  "https://www.googleapis.com/auth/gmail.readonly",
+];
+
+type CalendarTestLead = {
+  access_scope: "cofounders" | "organization";
+  id: string;
+  lead_date: string | null;
+  next_action_date: string | null;
+  notes: string | null;
+  organization_id: string;
+  topic: string;
+  updated_at: string;
+};
+
+function calendarTestLead(
+  overrides: Partial<CalendarTestLead> = {},
+): CalendarTestLead {
+  return {
+    access_scope: "organization",
+    id: "lead-1",
+    lead_date: "2026-08-11T09:00:00.000Z",
+    next_action_date: null,
+    notes: null,
+    organization_id: "org-1",
+    topic: "Client meeting",
+    updated_at: "2026-08-10T01:00:00.000Z",
+    ...overrides,
+  };
+}
+
+function createCalendarBoundaryResponder({
+  deleteMatches = true,
+  dropLinkAfterWrite = false,
+  leads = [calendarTestLead()],
+  roles = ["member"],
+  updateMatches = true,
+}: {
+  deleteMatches?: boolean;
+  dropLinkAfterWrite?: boolean;
+  leads?: CalendarTestLead[];
+  roles?: Array<"admin" | "member" | "owner" | "viewer">;
+  updateMatches?: boolean;
+} = {}): { queries: QueryState[]; respond: QueryResponder } {
+  const queries: QueryState[] = [];
+  let currentLead = { ...leads[0] };
+  let leadReadCount = 0;
+  let roleReadCount = 0;
+  let shouldDropLink = false;
+
+  return {
+    queries,
+    respond: (state) => {
+      queries.push({ ...state, filters: [...(state.filters ?? [])] });
+      if (state.table === "organization_memberships") {
+        if (state.columns === "organization_id") {
+          return { data: { organization_id: "org-1" }, error: null };
+        }
+        const role = roles[Math.min(roleReadCount, roles.length - 1)];
+        roleReadCount += 1;
+        return { data: { role }, error: null };
+      }
+      if (state.table === "integration_connections") {
+        return {
+          data: {
+            connected_by_profile_id: "user-1",
+            encrypted_token_reference: JSON.stringify({
+              access_token: "valid-access-token",
+              expiry_date: Date.now() + 60 * 60 * 1000,
+              refresh_token: "refresh-token",
+            }),
+            id: "google-connection-1",
+            organization_id: "org-1",
+            scopes: calendarScopes,
+            status: "connected",
+          },
+          error: null,
+        };
+      }
+      if (state.table === "crm_leads" && state.op === "update") {
+        if (!updateMatches) return { data: null, error: null };
+        const payload = state.payload as {
+          notes: string | null;
+          updated_at: string;
+        };
+        currentLead = {
+          ...currentLead,
+          notes: payload.notes,
+          updated_at: payload.updated_at,
+        };
+        shouldDropLink = dropLinkAfterWrite;
+        return {
+          data: {
+            id: currentLead.id,
+            notes: currentLead.notes,
+            updated_at: currentLead.updated_at,
+          },
+          error: null,
+        };
+      }
+      if (state.table === "crm_leads" && state.op === "delete") {
+        return {
+          data: deleteMatches ? { id: currentLead.id } : null,
+          error: null,
+        };
+      }
+      if (state.table === "crm_leads" && state.op === "select") {
+        const nextLead = leads[leadReadCount];
+        if (nextLead) {
+          currentLead = { ...nextLead };
+          leadReadCount += 1;
+        }
+        if (shouldDropLink) {
+          shouldDropLink = false;
+          return { data: { ...currentLead, notes: null }, error: null };
+        }
+        return { data: { ...currentLead }, error: null };
+      }
+      return { data: null, error: null };
+    },
+  };
+}
+
+describe("CRM Calendar external authorization boundary", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.afterCallbacks.length = 0;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("stops before Calendar when the actor loses CRM update permission during token resolution", async () => {
+    const boundary = createCalendarBoundaryResponder({
+      roles: ["member", "viewer"],
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result).toEqual({
+      error: "Tu n'as plus la permission de synchroniser ce lead.",
+      success: false,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("stops before Calendar when the lead becomes confidential during token resolution", async () => {
+    const boundary = createCalendarBoundaryResponder({
+      leads: [
+        calendarTestLead(),
+        calendarTestLead({ access_scope: "cofounders" }),
+      ],
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result).toEqual({
+      error:
+        "Synchronisation Calendar désactivée pour les leads confidentiels.",
+      success: false,
+    });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not mutate Calendar when the lead revision changes during freebusy", async () => {
+    const boundary = createCalendarBoundaryResponder({
+      leads: [
+        calendarTestLead(),
+        calendarTestLead(),
+        calendarTestLead({ updated_at: "2026-08-10T01:00:01.000Z" }),
+      ],
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ calendars: { primary: { busy: [] } } }), {
+        status: 200,
+      }),
+    );
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result.success).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0]?.[0])).toContain("freeBusy");
+    expect(
+      fetchSpy.mock.calls.some(
+        ([, init]) =>
+          ["DELETE", "PATCH", "POST"].includes(init?.method ?? "GET") &&
+          !String(fetchSpy.mock.calls[0]?.[0]).includes("freeBusy"),
+      ),
+    ).toBe(false);
+  });
+
+  it("does not claim a link when the conditional CRM write matches zero rows", async () => {
+    const boundary = createCalendarBoundaryResponder({ updateMatches: false });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("freeBusy")) {
+        return new Response(
+          JSON.stringify({ calendars: { primary: { busy: [] } } }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          htmlLink: "https://calendar.google.com/event-1",
+          id: "event-1",
+        }),
+        { status: 200 },
+      );
+    });
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("aucune liaison n'a été enregistrée");
+    expect(
+      boundary.queries.find((query) => query.op === "update")?.filters,
+    ).toEqual(
+      expect.arrayContaining([
+        ["organization_id", "org-1"],
+        ["access_scope", "organization"],
+        ["updated_at", "2026-08-10T01:00:00.000Z"],
+        ["archived_at", null],
+      ]),
+    );
+  });
+
+  it("fails closed when the final re-read no longer confirms the stored link", async () => {
+    const boundary = createCalendarBoundaryResponder({
+      dropLinkAfterWrite: true,
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      if (String(input).includes("freeBusy")) {
+        return new Response(
+          JSON.stringify({ calendars: { primary: { busy: [] } } }),
+          { status: 200 },
+        );
+      }
+      return new Response(
+        JSON.stringify({
+          htmlLink: "https://calendar.google.com/event-1",
+          id: "event-1",
+        }),
+        { status: 200 },
+      );
+    });
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result).toEqual({
+      error: "La liaison Calendar finale n'a pas été confirmée.",
+      success: false,
+    });
+  });
+
+  it("creates and confirms an actor-owned Calendar event on the happy path", async () => {
+    const boundary = createCalendarBoundaryResponder();
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input) => {
+        if (String(input).includes("freeBusy")) {
+          return new Response(
+            JSON.stringify({ calendars: { primary: { busy: [] } } }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            htmlLink: "https://calendar.google.com/event-1",
+            id: "event-1",
+          }),
+          { status: 200 },
+        );
+      });
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result.success).toBe(true);
+    expect(result.calendarLink).toBe("https://calendar.google.com/event-1");
+    const createCall = fetchSpy.mock.calls.find(
+      ([, init]) =>
+        String(init?.method).includes("POST") &&
+        !String(init?.body).includes('"items"'),
+    );
+    expect(String(createCall?.[0])).toContain("sendUpdates=none");
+    expect(String(createCall?.[1]?.body)).toContain("Client meeting");
+  });
+
+  it("revalidates confidentiality immediately before deleteLeadAction touches Calendar", async () => {
+    const notes =
+      "[Google Calendar Event ID: event-1]\n[Google Calendar Event Owner: user-1]\n[Google Calendar Event Link: https://calendar.google.com/event-1]";
+    const boundary = createCalendarBoundaryResponder({
+      leads: [
+        calendarTestLead({ notes }),
+        calendarTestLead({ notes }),
+        calendarTestLead({ access_scope: "cofounders", notes }),
+      ],
+      roles: ["owner"],
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+
+    const result = await deleteLeadAction("lead-1");
+
+    expect(result.success).toBe(false);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(boundary.queries.some((query) => query.op === "delete")).toBe(false);
+  });
+
+  it("deletes the owned Calendar event and exact CRM revision on the happy path", async () => {
+    const notes =
+      "[Google Calendar Event ID: event-1]\n[Google Calendar Event Owner: user-1]\n[Google Calendar Event Link: https://calendar.google.com/event-1]";
+    const boundary = createCalendarBoundaryResponder({
+      leads: [calendarTestLead({ notes })],
+      roles: ["owner"],
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue(new Response(null, { status: 204 }));
+
+    await expect(deleteLeadAction("lead-1")).resolves.toEqual({
+      success: true,
+    });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.stringContaining("event-1?sendUpdates=none"),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(
+      boundary.queries.find((query) => query.op === "delete")?.filters,
+    ).toEqual(
+      expect.arrayContaining([
+        ["organization_id", "org-1"],
+        ["access_scope", "organization"],
+        ["updated_at", "2026-08-10T01:00:00.000Z"],
+        ["archived_at", null],
+      ]),
+    );
   });
 });
 
