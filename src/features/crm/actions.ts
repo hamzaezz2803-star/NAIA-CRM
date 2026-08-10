@@ -3110,6 +3110,38 @@ async function syncLeadToGoogleCalendar(
       organizationId: orgId,
     });
     const eventUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${deterministicEventId}`;
+    const reconcileExistingDeterministicEvent = async (): Promise<
+      | { error: string; ok: false }
+      | { event: Record<string, unknown>; ok: true }
+    > => {
+      const reconciliationAuthorization = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUserId,
+        expectedRevision: revision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!reconciliationAuthorization.ok) {
+        return { error: reconciliationAuthorization.error, ok: false };
+      }
+      const patchRes = await fetch(`${eventUrl}?sendUpdates=none`, {
+        body: JSON.stringify(
+          buildCalendarEventPayload(reconciliationAuthorization.lead),
+        ),
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        method: "PATCH",
+      });
+      if (!patchRes.ok) {
+        return { error: parseGoogleError(await patchRes.text()), ok: false };
+      }
+      return {
+        event: (await patchRes.json()) as Record<string, unknown>,
+        ok: true,
+      };
+    };
     const existingDeterministicEvent = await fetch(eventUrl, {
       headers: { Authorization: `Bearer ${accessToken}` },
       method: "GET",
@@ -3117,10 +3149,11 @@ async function syncLeadToGoogleCalendar(
 
     let event: Record<string, unknown>;
     if (existingDeterministicEvent.ok) {
-      event = (await existingDeterministicEvent.json()) as Record<
-        string,
-        unknown
-      >;
+      const reconciliation = await reconcileExistingDeterministicEvent();
+      if (!reconciliation.ok) {
+        return { error: reconciliation.error, success: false };
+      }
+      event = reconciliation.event;
     } else if (
       existingDeterministicEvent.status === 404 ||
       existingDeterministicEvent.status === 410
@@ -3147,13 +3180,30 @@ async function syncLeadToGoogleCalendar(
           method: "POST",
         },
       );
-      if (!createRes.ok) {
+      if (createRes.status === 409) {
+        const concurrentEvent = await fetch(eventUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          method: "GET",
+        });
+        if (!concurrentEvent.ok) {
+          return {
+            error: parseGoogleError(await concurrentEvent.text()),
+            success: false,
+          };
+        }
+        const reconciliation = await reconcileExistingDeterministicEvent();
+        if (!reconciliation.ok) {
+          return { error: reconciliation.error, success: false };
+        }
+        event = reconciliation.event;
+      } else if (!createRes.ok) {
         return {
           error: parseGoogleError(await createRes.text()),
           success: false,
         };
+      } else {
+        event = (await createRes.json()) as Record<string, unknown>;
       }
-      event = (await createRes.json()) as Record<string, unknown>;
     } else {
       return {
         error: parseGoogleError(await existingDeterministicEvent.text()),

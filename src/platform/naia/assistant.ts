@@ -172,11 +172,6 @@ export async function planNaiaAssistant({
     return { mode: "local-orchestrated", result: localResult };
   }
 
-  const realGoogleCalendar =
-    allowPersonalData && shouldReadCalendar(command)
-      ? await buildRealGoogleCalendarContext(googleContext)
-      : null;
-
   const completion = await completeGroqJson({
     jsonSchema: naiaDecisionJsonSchema,
     maxTokens: 800,
@@ -228,9 +223,7 @@ export async function planNaiaAssistant({
             crm: allowPersonalData
               ? "live organization data"
               : "not loaded on shared surfaces",
-            googleCalendar: realGoogleCalendar
-              ? "live connected user data"
-              : "not loaded",
+            googleCalendar: "not loaded; Calendar stays local-only",
             qarizmiKnowledge: resolvedPrivateKnowledge
               ? `private internal deck: ${resolvedPrivateKnowledge.sourceFileName}`
               : "not loaded",
@@ -252,7 +245,7 @@ export async function planNaiaAssistant({
           suggestedAgentId: localResult.agent.id,
           operatingContext: buildNaiaOperatingContext(),
           privateKnowledge: resolvedPrivateKnowledge,
-          realGoogleCalendar: realGoogleCalendar ?? undefined,
+          realGoogleCalendar: undefined,
         }),
         role: "user",
       },
@@ -1021,7 +1014,6 @@ function buildSystemPrompt() {
     'Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}.',
     "Le crmSnapshot contient des données CRM réelles de l'organisation. N'invente jamais un lead, un chiffre ou une action.",
     "operatingContext contient encore des données de travail simulées pour Finance, Projects et HR. Si tu les utilises, commence explicitement par dire qu'il s'agit de données simulées.",
-    "realGoogleCalendar, lorsqu'il est présent, contient les vrais événements Google Calendar de l'utilisateur et prime sur tout exemple.",
     "privateKnowledge, lorsqu'il est présent, provient du dernier deck générique du Drive privé Qarizmi. Utilise uniquement les extraits fournis et n'invente aucun parcours, credential, chiffre ou offre absent de cette source.",
     "Le contexte privé est réservé aux cofondateurs en conversation privée. Ne le répète jamais comme une information publique et ne prétends pas avoir lu d'autres documents.",
     "Pour une question générale, choisis naia et réponds comme un assistant compétent.",
@@ -1088,56 +1080,7 @@ function parseAgentId(value: unknown): NaiaAgentId | null {
     : null;
 }
 
-function shouldReadCalendar(command: string) {
-  return /\b(agenda|calendar|calendrier|dispo|disponibilit|meeting|reunion|réunion|rdv|rendez[- ]vous)\b/i.test(
-    command,
-  );
-}
-
-const REAL_CALENDAR_DAYS_AHEAD = 7;
-const REAL_CALENDAR_MAX_EVENTS = 15;
 const REAL_CALENDAR_TIME_ZONE = "Africa/Casablanca";
-const REAL_CALENDAR_CONTEXT_TIMEOUT_MS = 2500;
-
-async function buildRealGoogleCalendarContext(
-  googleContext?: GoogleWorkspaceContext,
-): Promise<string | null> {
-  try {
-    const events = await withDeadline(
-      listGoogleCalendarEvents(
-        {
-          daysAhead: REAL_CALENDAR_DAYS_AHEAD,
-          maxResults: REAL_CALENDAR_MAX_EVENTS,
-        },
-        googleContext,
-      ),
-      REAL_CALENDAR_CONTEXT_TIMEOUT_MS,
-    );
-
-    if (events.length === 0) {
-      return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours): aucun événement.`;
-    }
-
-    const summary = events
-      .map((event) => `${event.title} — ${formatRealCalendarDate(event.start)}`)
-      .join(" ; ");
-    return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours): ${summary}`;
-  } catch {
-    return null;
-  }
-}
-
-function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-
-  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
-}
 
 function formatRealCalendarDate(start?: string) {
   if (!start) return "date non précisée";

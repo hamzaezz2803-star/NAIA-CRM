@@ -680,10 +680,12 @@ async function calendarCreateFetch(
     return new Response(null, { status: 404 });
   }
   const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string };
+  const eventId =
+    body.id ?? String(input).split("/events/")[1]?.split("?")[0] ?? "";
   return new Response(
     JSON.stringify({
       htmlLink: "https://calendar.google.com/event-1",
-      id: body.id,
+      id: eventId,
     }),
     { status: 200 },
   );
@@ -809,13 +811,14 @@ describe("CRM Calendar external authorization boundary", () => {
   });
 
   it("reconciles the deterministic event after a DB-zero retry without a second insert", async () => {
-    const boundary = createCalendarBoundaryResponder({
-      updateMatches: [false, true],
+    const firstBoundary = createCalendarBoundaryResponder({
+      updateMatches: false,
     });
     mocks.createServerSupabaseClient.mockResolvedValue(
-      createFakeSupabase(boundary.respond),
+      createFakeSupabase(firstBoundary.respond),
     );
     let storedEventId: string | undefined;
+    const patchedStarts: string[] = [];
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockImplementation(async (input, init) => {
@@ -836,6 +839,21 @@ describe("CRM Calendar external authorization boundary", () => {
               )
             : new Response(null, { status: 404 });
         }
+        if (init?.method === "PATCH") {
+          const payload = JSON.parse(String(init.body)) as {
+            start?: { dateTime?: string };
+          };
+          if (payload.start?.dateTime) {
+            patchedStarts.push(payload.start.dateTime);
+          }
+          return new Response(
+            JSON.stringify({
+              htmlLink: "https://calendar.google.com/event-1",
+              id: storedEventId,
+            }),
+            { status: 200 },
+          );
+        }
         const body = JSON.parse(String(init?.body ?? "{}")) as {
           id?: string;
         };
@@ -850,6 +868,18 @@ describe("CRM Calendar external authorization boundary", () => {
       });
 
     const first = await syncLeadToGoogleCalendarAction("lead-1");
+    const retryBoundary = createCalendarBoundaryResponder({
+      leads: [
+        calendarTestLead({
+          lead_date: "2026-08-12T14:30:00.000Z",
+          updated_at: "2026-08-10T01:05:00.000Z",
+        }),
+      ],
+      updateMatches: true,
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(retryBoundary.respond),
+    );
     const second = await syncLeadToGoogleCalendarAction("lead-1");
 
     expect(first.success).toBe(false);
@@ -863,6 +893,58 @@ describe("CRM Calendar external authorization boundary", () => {
     expect(JSON.parse(String(eventInsertCalls[0]?.[1]?.body)).id).toBe(
       storedEventId,
     );
+    expect(patchedStarts).toContain("2026-08-12T14:30:00.000Z");
+  });
+
+  it("recovers a concurrent deterministic insert conflict through GET and PATCH", async () => {
+    const boundary = createCalendarBoundaryResponder();
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    let concurrentEventId: string | undefined;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        if (String(input).includes("freeBusy")) {
+          return new Response(
+            JSON.stringify({ calendars: { primary: { busy: [] } } }),
+            { status: 200 },
+          );
+        }
+        if (init?.method === "GET") {
+          return concurrentEventId
+            ? new Response(
+                JSON.stringify({
+                  htmlLink: "https://calendar.google.com/concurrent",
+                  id: concurrentEventId,
+                }),
+                { status: 200 },
+              )
+            : new Response(null, { status: 404 });
+        }
+        if (init?.method === "POST") {
+          concurrentEventId = (JSON.parse(String(init.body)) as { id: string })
+            .id;
+          return new Response(null, { status: 409 });
+        }
+        return new Response(
+          JSON.stringify({
+            htmlLink: "https://calendar.google.com/concurrent",
+            id: concurrentEventId,
+          }),
+          { status: 200 },
+        );
+      });
+
+    const result = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(result.success).toBe(true);
+    expect(
+      fetchSpy.mock.calls.filter(([, init]) => init?.method === "POST"),
+    ).toHaveLength(2); // freeBusy plus exactly one deterministic insert.
+    expect(
+      fetchSpy.mock.calls.filter(([, init]) => init?.method === "PATCH"),
+    ).toHaveLength(1);
   });
 
   it("fails closed when the final re-read no longer confirms the stored link", async () => {

@@ -710,6 +710,13 @@ describe("NAIA personal context answers", () => {
 
   it("excludes confidential and unscoped CRM rows from every Groq payload", async () => {
     vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    mocks.listGoogleCalendarEvents.mockResolvedValue([
+      {
+        id: "private-calendar-event",
+        start: "2026-08-11T09:00:00+01:00",
+        title: "Entretien Ahmed",
+      },
+    ]);
     const confidentialLead: CrmLeadSummary = {
       accessScope: "cofounders",
       companyName: "Secret Company",
@@ -769,6 +776,9 @@ describe("NAIA personal context answers", () => {
       expect(JSON.stringify(userContext)).not.toContain("Secret Company");
       expect(JSON.stringify(userContext)).not.toContain("Legacy Secret");
       expect(JSON.stringify(userContext)).not.toContain("secret.person");
+      expect(JSON.stringify(userContext)).not.toContain("Entretien Ahmed");
+      expect(userContext.realGoogleCalendar).toBeUndefined();
+      expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
     } finally {
       vi.unstubAllGlobals();
     }
