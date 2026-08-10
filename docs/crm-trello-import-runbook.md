@@ -121,12 +121,15 @@ npm run crm:trello-import -- dry-run
 npm run crm:trello-import -- apply --confirm-apply
 ```
 
-If the Supabase link lives in another checkout, pass only its directory (never
-a database URL or token):
-
-```bash
-npm run crm:trello-import -- dry-run --database-workdir /absolute/repo/path
-```
+The runner is pinned to the reviewed production target. Before reading the
+Trello export or any CRM business row, it requires the current physical
+checkout, rejects a different working directory or any symlink traversal, and
+checks the local Supabase project link against the reviewed project-ref hash.
+Its first provider query then verifies, by hash equality only, that exactly one
+reviewed organization is selected and that both cofounders are members. A
+missing or different project link, organization, or cofounder stops the run
+before staging or apply. The query returns booleans only; neither the project
+ref nor the organization UUID is printed or stored in this runbook.
 
 The runner sends every SQL statement to `supabase db query` through
 `/dev/stdin`. SQL, normalized rows, CRM snapshots, provider stdout, and provider
@@ -134,9 +137,10 @@ stderr remain captured in memory. Terminal output is restricted to reviewed
 hashes, aggregate counts, booleans, and the import run UUID. Do not add shell
 tracing, `tee`, `--debug`, or provider output logging around this command.
 
-`dry-run` is read-only: it verifies the exact export, migration/grant/RLS
-contract, founder context, in-memory CRM reconciliation, and deterministic
-attestation. `apply` repeats those gates, then stages and applies explicitly.
+`dry-run` is read-only: after the production-target attestation succeeds, it
+reads and verifies the exact export, migration/grant/RLS contract, founder
+context, in-memory CRM reconciliation, and deterministic staging attestation.
+`apply` repeats those gates, then stages and applies explicitly.
 It checks founder and non-founder RLS, all mappings, expected tag relations,
 scope/hash consistency, row deltas, conflicts, and an exact idempotent replay.
 If a newly applied run fails a postcondition, the runner invokes the

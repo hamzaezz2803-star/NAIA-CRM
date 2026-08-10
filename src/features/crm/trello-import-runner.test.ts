@@ -13,12 +13,16 @@ import {
   buildSnapshotSql,
   buildStageSql,
   buildStageVerificationSql,
+  buildTargetAttestationSql,
+  createFilesystemDependencies,
   runCrmTrelloImport,
   SupabaseStdinDatabase,
   type DatabasePort,
+  type RunnerFilesystem,
   type RunnerDependencies,
   type SpawnSupabase,
   type TrelloImportSourceContract,
+  type TrelloImportTargetContract,
 } from "./trello-import-runner";
 import {
   createTrelloStagingAttestation,
@@ -59,10 +63,18 @@ const contract: TrelloImportSourceContract = {
   cofoundersOnly: 0,
   counts: { categories: 1, leads: 1, tags: 1, totalItems: 3 },
   expectedLeadTagRelations: 1,
+  organizationIdSha256: createHash("sha256")
+    .update(ORGANIZATION_ID)
+    .digest("hex"),
   rawSha256: createHash("sha256").update(exportBytes).digest("hex"),
   rawSize: exportBytes.length,
   sourceHash: normalized.sourceHash,
   stagingHash: attestation.stagingHash,
+};
+
+const targetReady = {
+  cofoundersPresent: true,
+  organizationMatch: true,
 };
 
 const schemaReady = {
@@ -164,6 +176,7 @@ const validPost = {
 
 function dependencies(database: DatabasePort): RunnerDependencies {
   return {
+    attestTarget: () => targetReady,
     database,
     loadExport: () => ({
       bytes: exportBytes,
@@ -226,6 +239,53 @@ class MockDatabase implements DatabasePort {
         };
     }
   }
+}
+
+const syntheticTargetContract: TrelloImportTargetContract = {
+  organizationIdSha256: contract.organizationIdSha256,
+  projectRefSha256: createHash("sha256")
+    .update("synthetic-project")
+    .digest("hex"),
+};
+
+function fakeTargetFilesystem(args: {
+  missingProjectRef?: boolean;
+  projectRef?: string;
+  symlinkedWorkdir?: boolean;
+}): RunnerFilesystem {
+  const projectRef = args.projectRef ?? "synthetic-project";
+  return {
+    lstat(path) {
+      if (path === "/repo") {
+        return {
+          isDirectory: () => true,
+          isFile: () => false,
+          isSymbolicLink: () => args.symlinkedWorkdir === true,
+          mode: 0o40700,
+          size: 0,
+        };
+      }
+      if (path === "/repo/supabase/.temp/project-ref") {
+        if (args.missingProjectRef) throw new Error("missing");
+        return {
+          isDirectory: () => false,
+          isFile: () => true,
+          isSymbolicLink: () => false,
+          mode: 0o100600,
+          size: Buffer.byteLength(projectRef),
+        };
+      }
+      throw new Error("unexpected path");
+    },
+    readFile: () => Buffer.from(projectRef, "utf8"),
+    realpath: (path) => path,
+  };
+}
+
+function providerMustNotRun() {
+  return vi.fn<SpawnSupabase>(() => {
+    throw new Error("provider must not run");
+  });
 }
 
 describe("CRM Trello import runner", () => {
@@ -314,6 +374,127 @@ describe("CRM Trello import runner", () => {
     );
   });
 
+  it("attests the production target before reading the export or CRM", async () => {
+    const events: string[] = [];
+    const database = new MockDatabase();
+    const wrappedDatabase: DatabasePort = {
+      query(operation, sql) {
+        events.push(`database:${operation}`);
+        return database.query(operation, sql);
+      },
+    };
+
+    await runCrmTrelloImport(
+      {
+        exportPath: "/secure/export.json",
+        mode: "dry-run",
+        sourceContract: contract,
+      },
+      {
+        attestTarget: () => {
+          events.push("target");
+          return targetReady;
+        },
+        database: wrappedDatabase,
+        loadExport: () => {
+          events.push("source");
+          return {
+            bytes: exportBytes,
+            isRegularFile: true,
+            mode: 0o100600,
+            size: exportBytes.length,
+          };
+        },
+      },
+    );
+
+    expect(events.slice(0, 3)).toEqual([
+      "target",
+      "source",
+      "database:schema-gate",
+    ]);
+  });
+
+  it("rejects an incorrect production organization before source or CRM reads", async () => {
+    const database = new MockDatabase();
+    const loadExport = vi.fn(() => {
+      throw new Error("source must not be read");
+    });
+
+    await expect(
+      runCrmTrelloImport(
+        {
+          exportPath: "/secure/export.json",
+          mode: "dry-run",
+          sourceContract: contract,
+        },
+        {
+          attestTarget: () => ({
+            cofoundersPresent: true,
+            organizationMatch: false,
+          }),
+          database,
+          loadExport,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "TARGET_ORGANIZATION_MISMATCH" });
+    expect(loadExport).not.toHaveBeenCalled();
+    expect(database.calls).toEqual([]);
+  });
+
+  it("rejects a target missing a reviewed cofounder before source or CRM reads", async () => {
+    const database = new MockDatabase();
+    const loadExport = vi.fn(() => {
+      throw new Error("source must not be read");
+    });
+
+    await expect(
+      runCrmTrelloImport(
+        {
+          exportPath: "/secure/export.json",
+          mode: "dry-run",
+          sourceContract: contract,
+        },
+        {
+          attestTarget: () => ({
+            cofoundersPresent: false,
+            organizationMatch: true,
+          }),
+          database,
+          loadExport,
+        },
+      ),
+    ).rejects.toMatchObject({ code: "TARGET_COFUNDERS_MISSING" });
+    expect(loadExport).not.toHaveBeenCalled();
+    expect(database.calls).toEqual([]);
+  });
+
+  it("rejects a snapshot whose organization changed after attestation", async () => {
+    const database = new MockDatabase();
+    const changedDatabase: DatabasePort = {
+      query(operation, sql) {
+        if (operation === "snapshot") {
+          return {
+            ...snapshot,
+            organizationId: "10000000-0000-4000-8000-000000000099",
+          };
+        }
+        return database.query(operation, sql);
+      },
+    };
+
+    await expect(
+      runCrmTrelloImport(
+        {
+          exportPath: "/secure/export.json",
+          mode: "dry-run",
+          sourceContract: contract,
+        },
+        dependencies(changedDatabase),
+      ),
+    ).rejects.toMatchObject({ code: "TARGET_ORGANIZATION_CHANGED" });
+  });
+
   it("requires an explicit apply confirmation", async () => {
     await expect(
       runCrmTrelloImport(
@@ -325,6 +506,70 @@ describe("CRM Trello import runner", () => {
         dependencies(new MockDatabase()),
       ),
     ).rejects.toMatchObject({ code: "APPLY_CONFIRMATION_REQUIRED" });
+  });
+});
+
+describe("production target filesystem boundary", () => {
+  it("rejects a different database workdir before invoking Supabase", () => {
+    const spawn = providerMustNotRun();
+    const dependencies = createFilesystemDependencies("/other", {
+      filesystem: fakeTargetFilesystem({}),
+      runtimeWorkdir: "/repo",
+      spawn,
+    });
+
+    expect(() =>
+      dependencies.attestTarget(syntheticTargetContract),
+    ).toThrowError(
+      expect.objectContaining({ code: "TARGET_WORKDIR_MISMATCH" }),
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing project link before invoking Supabase", () => {
+    const spawn = providerMustNotRun();
+    const dependencies = createFilesystemDependencies("/repo", {
+      filesystem: fakeTargetFilesystem({ missingProjectRef: true }),
+      runtimeWorkdir: "/repo",
+      spawn,
+    });
+
+    expect(() =>
+      dependencies.attestTarget(syntheticTargetContract),
+    ).toThrowError(
+      expect.objectContaining({ code: "TARGET_PROJECT_LINK_MISSING" }),
+    );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects a symlinked workdir before invoking Supabase", () => {
+    const spawn = providerMustNotRun();
+    const dependencies = createFilesystemDependencies("/repo", {
+      filesystem: fakeTargetFilesystem({ symlinkedWorkdir: true }),
+      runtimeWorkdir: "/repo",
+      spawn,
+    });
+
+    expect(() =>
+      dependencies.attestTarget(syntheticTargetContract),
+    ).toThrowError(expect.objectContaining({ code: "TARGET_WORKDIR_UNSAFE" }));
+    expect(spawn).not.toHaveBeenCalled();
+  });
+
+  it("rejects an incorrect linked project before invoking Supabase", () => {
+    const spawn = providerMustNotRun();
+    const dependencies = createFilesystemDependencies("/repo", {
+      filesystem: fakeTargetFilesystem({ projectRef: "wrong-project" }),
+      runtimeWorkdir: "/repo",
+      spawn,
+    });
+
+    expect(() =>
+      dependencies.attestTarget(syntheticTargetContract),
+    ).toThrowError(
+      expect.objectContaining({ code: "TARGET_PROJECT_MISMATCH" }),
+    );
+    expect(spawn).not.toHaveBeenCalled();
   });
 });
 
@@ -393,8 +638,20 @@ describe("generated SQL safety", () => {
     expect(sql).not.toMatch(/\bdelete\s+from\b/i);
   });
 
+  it("attests the reviewed organization without exposing its identifier", () => {
+    const sql = buildTargetAttestationSql(contract.organizationIdSha256);
+
+    expect(sql).toContain("extensions.digest");
+    expect(sql).toContain("'organizationMatch'");
+    expect(sql).toContain("'cofoundersPresent'");
+    expect(sql).not.toContain(ORGANIZATION_ID);
+    expect(sql).not.toContain(contract.organizationIdSha256);
+    expect(sql).not.toMatch(/\b(?:delete|insert|update)\b/i);
+  });
+
   it("builds every control query without embedding raw Trello text in argv", () => {
     const sql = [
+      buildTargetAttestationSql(contract.organizationIdSha256),
       buildSchemaGateSql(),
       buildSnapshotSql(),
       buildStageVerificationSql(RUN_ID),

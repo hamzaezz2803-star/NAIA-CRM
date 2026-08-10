@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync } from "node:fs";
 import { spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { join, resolve } from "node:path";
 
 import { z } from "zod";
 
@@ -27,6 +28,7 @@ export type TrelloImportSourceContract = {
     totalItems: number;
   };
   expectedLeadTagRelations: number;
+  organizationIdSha256: string;
   rawSha256: string;
   rawSize: number;
   sourceHash: string;
@@ -43,6 +45,8 @@ export const COMMERCIAL_TRELLO_SOURCE_CONTRACT: TrelloImportSourceContract = {
     totalItems: 238,
   },
   expectedLeadTagRelations: 139,
+  organizationIdSha256:
+    "3a4a564659d65572eb77be0e02c3b6d61ecd659761802e0b521486bddb9ba461",
   rawSha256: "d8096a4afc5c0fde191bd7ba1b3528fe7001dd18332abe0d8a423abf1663bdde",
   rawSize: 1_590_067,
   sourceHash:
@@ -50,6 +54,14 @@ export const COMMERCIAL_TRELLO_SOURCE_CONTRACT: TrelloImportSourceContract = {
   stagingHash:
     "7475418f8629ca717973038a354911cbc3e306706eec2d5dfb179cdeda702254",
 };
+
+export type TrelloImportTargetContract = {
+  organizationIdSha256: string;
+  projectRefSha256: string;
+};
+
+const PRODUCTION_SUPABASE_PROJECT_REF_SHA256 =
+  "afde75cbef68512550adedf94df1452f069248f98ed15874d0628c5994b12232";
 
 type DatabaseOperation =
   | "apply"
@@ -62,7 +74,8 @@ type DatabaseOperation =
   | "schema-gate"
   | "snapshot"
   | "stage"
-  | "stage-verify";
+  | "stage-verify"
+  | "target-attestation";
 
 export type DatabasePort = {
   query(operation: DatabaseOperation, sql: string): unknown;
@@ -76,6 +89,7 @@ type ExportFile = {
 };
 
 export type RunnerDependencies = {
+  attestTarget(contract: TrelloImportTargetContract): unknown;
   database: DatabasePort;
   loadExport(path: string): ExportFile;
 };
@@ -141,6 +155,13 @@ const schemaGateSchema = z.object({
   ledgerRls: z.boolean(),
   migrationsApplied: z.boolean(),
 });
+
+const targetAttestationSchema = z
+  .object({
+    cofoundersPresent: z.boolean(),
+    organizationMatch: z.boolean(),
+  })
+  .strict();
 
 const snapshotSchema = z.object({
   actorProfileId: uuidSchema.nullable(),
@@ -270,6 +291,24 @@ function safeParse<T>(schema: z.ZodType<T>, value: unknown, code: string): T {
 
 function sha256(bytes: Buffer) {
   return createHash("sha256").update(bytes).digest("hex");
+}
+
+function verifyTargetAttestation(value: unknown) {
+  const target = safeParse(
+    targetAttestationSchema,
+    value,
+    "TARGET_ATTESTATION_INVALID",
+  );
+  assertGate(
+    target.organizationMatch,
+    "TARGET_ORGANIZATION_MISMATCH",
+    "L'organisation Supabase ne correspond pas à la cible revue.",
+  );
+  assertGate(
+    target.cofoundersPresent,
+    "TARGET_COFUNDERS_MISSING",
+    "La cible Supabase n'a pas les deux cofondateurs attendus.",
+  );
 }
 
 function base64Text(value: string) {
@@ -434,6 +473,50 @@ function verifyReconciliation(
     "La réconciliation a modifié l'attestation revue.",
   );
   return reconciled;
+}
+
+export function buildTargetAttestationSql(
+  expectedOrganizationIdSha256: string,
+) {
+  assertGate(
+    sha256Schema.safeParse(expectedOrganizationIdSha256).success,
+    "TARGET_CONTRACT_INVALID",
+    "Le contrat de cible Supabase est invalide.",
+  );
+  return `/* naia:target-attestation */
+with ali_contexts as (
+  select distinct membership.organization_id
+  from public.organization_memberships membership
+  join auth.users user_record on user_record.id = membership.profile_id
+  where lower(user_record.email) = 'ali@qarizmi.com'
+), selected as (
+  select organization_id from ali_contexts
+), cofounders as (
+  select distinct lower(user_record.email) as email
+  from selected context
+  join public.organization_memberships membership
+    on membership.organization_id = context.organization_id
+  join auth.users user_record on user_record.id = membership.profile_id
+  where lower(user_record.email) in ('ali@qarizmi.com', 'nabil@qarizmi.com')
+)
+select jsonb_build_object(
+  'organizationMatch', (
+    (select count(*) from ali_contexts) = 1
+    and coalesce((
+      select bool_and(
+        encode(
+          extensions.digest(
+            convert_to(context.organization_id::text, 'UTF8'),
+            'sha256'
+          ),
+          'hex'
+        ) = ${sqlDecodedText(expectedOrganizationIdSha256)}
+      )
+      from selected context
+    ), false)
+  ),
+  'cofoundersPresent', (select count(*) = 2 from cofounders)
+) as payload;`;
 }
 
 export function buildSchemaGateSql() {
@@ -1116,6 +1199,12 @@ export async function runCrmTrelloImport(
     "Le mode apply exige --confirm-apply.",
   );
 
+  const targetContract = {
+    organizationIdSha256: contract.organizationIdSha256,
+    projectRefSha256: PRODUCTION_SUPABASE_PROJECT_REF_SHA256,
+  } satisfies TrelloImportTargetContract;
+  verifyTargetAttestation(dependencies.attestTarget(targetContract));
+
   const file = dependencies.loadExport(options.exportPath);
   verifyLocalSource(file, contract);
   const normalized = normalizeTrelloExport(file.bytes.toString("utf8"));
@@ -1126,6 +1215,13 @@ export async function runCrmTrelloImport(
   );
   const snapshot = snapshotForReconciliation(
     dependencies.database.query("snapshot", buildSnapshotSql()),
+  );
+  assertGate(
+    snapshot.organizationId !== null &&
+      sha256(Buffer.from(snapshot.organizationId, "utf8")) ===
+        targetContract.organizationIdSha256,
+    "TARGET_ORGANIZATION_CHANGED",
+    "Le contexte CRM ne correspond plus à l'organisation revue.",
   );
   const reconciled = verifyReconciliation(normalized, snapshot, contract);
 
@@ -1390,6 +1486,132 @@ export type SpawnSupabase = (
   },
 ) => SpawnSyncReturns<string>;
 
+type RunnerFilesystemStat = {
+  isDirectory(): boolean;
+  isFile(): boolean;
+  isSymbolicLink(): boolean;
+  mode: number;
+  size: number;
+};
+
+export type RunnerFilesystem = {
+  lstat(path: string): RunnerFilesystemStat;
+  readFile(path: string): Buffer;
+  realpath(path: string): string;
+};
+
+export type FilesystemDependencyOptions = {
+  filesystem?: RunnerFilesystem;
+  runtimeWorkdir?: string;
+  spawn?: SpawnSupabase;
+};
+
+const nodeRunnerFilesystem: RunnerFilesystem = {
+  lstat: (path) => lstatSync(path),
+  readFile: (path) => readFileSync(path),
+  realpath: (path) => realpathSync(path),
+};
+
+function targetStat(args: {
+  code: string;
+  filesystem: RunnerFilesystem;
+  path: string;
+  safeMessage: string;
+}) {
+  try {
+    return args.filesystem.lstat(args.path);
+  } catch {
+    throw new SafeImportError(args.code, args.safeMessage);
+  }
+}
+
+function verifyFilesystemTarget(args: {
+  contract: TrelloImportTargetContract;
+  filesystem: RunnerFilesystem;
+  runtimeWorkdir: string;
+  workdir: string;
+}) {
+  assertGate(
+    sha256Schema.safeParse(args.contract.projectRefSha256).success &&
+      sha256Schema.safeParse(args.contract.organizationIdSha256).success,
+    "TARGET_CONTRACT_INVALID",
+    "Le contrat de cible Supabase est invalide.",
+  );
+  const workdir = resolve(args.workdir);
+  const runtimeWorkdir = resolve(args.runtimeWorkdir);
+  assertGate(
+    workdir === runtimeWorkdir,
+    "TARGET_WORKDIR_MISMATCH",
+    "Le dossier Supabase doit être le dossier courant revu.",
+  );
+
+  const workdirStat = targetStat({
+    code: "TARGET_WORKDIR_MISSING",
+    filesystem: args.filesystem,
+    path: workdir,
+    safeMessage: "Le dossier Supabase revu est introuvable.",
+  });
+  assertGate(
+    workdirStat.isDirectory() && !workdirStat.isSymbolicLink(),
+    "TARGET_WORKDIR_UNSAFE",
+    "Le dossier Supabase revu n'est pas un dossier réel sûr.",
+  );
+  let realWorkdir: string;
+  try {
+    realWorkdir = args.filesystem.realpath(workdir);
+  } catch {
+    throw new SafeImportError(
+      "TARGET_WORKDIR_UNSAFE",
+      "Le dossier Supabase revu n'est pas résoluble sûrement.",
+    );
+  }
+  assertGate(
+    realWorkdir === workdir,
+    "TARGET_WORKDIR_UNSAFE",
+    "Le dossier Supabase revu ne peut pas passer par un lien symbolique.",
+  );
+
+  const projectRefPath = join(workdir, "supabase", ".temp", "project-ref");
+  const projectRefStat = targetStat({
+    code: "TARGET_PROJECT_LINK_MISSING",
+    filesystem: args.filesystem,
+    path: projectRefPath,
+    safeMessage: "La liaison Supabase revue est introuvable.",
+  });
+  assertGate(
+    projectRefStat.isFile() &&
+      !projectRefStat.isSymbolicLink() &&
+      projectRefStat.size > 0 &&
+      projectRefStat.size <= 256,
+    "TARGET_PROJECT_LINK_UNSAFE",
+    "La liaison Supabase revue n'est pas un fichier sûr.",
+  );
+  let realProjectRefPath: string;
+  let projectRefBytes: Buffer;
+  try {
+    realProjectRefPath = args.filesystem.realpath(projectRefPath);
+    projectRefBytes = args.filesystem.readFile(projectRefPath);
+  } catch {
+    throw new SafeImportError(
+      "TARGET_PROJECT_LINK_UNSAFE",
+      "La liaison Supabase revue n'est pas lisible sûrement.",
+    );
+  }
+  assertGate(
+    realProjectRefPath === projectRefPath,
+    "TARGET_PROJECT_LINK_UNSAFE",
+    "La liaison Supabase revue ne peut pas passer par un lien symbolique.",
+  );
+  const projectRef = projectRefBytes.toString("utf8").trim();
+  assertGate(
+    projectRef.length > 0 &&
+      sha256(Buffer.from(projectRef, "utf8")) ===
+        args.contract.projectRefSha256,
+    "TARGET_PROJECT_MISMATCH",
+    "La liaison Supabase ne correspond pas à la cible revue.",
+  );
+}
+
 export class SupabaseStdinDatabase implements DatabasePort {
   constructor(
     private readonly workdir: string,
@@ -1434,13 +1656,29 @@ export class SupabaseStdinDatabase implements DatabasePort {
 
 export function createFilesystemDependencies(
   workdir: string,
+  options: FilesystemDependencyOptions = {},
 ): RunnerDependencies {
+  const filesystem = options.filesystem ?? nodeRunnerFilesystem;
+  const resolvedWorkdir = resolve(workdir);
+  const database = new SupabaseStdinDatabase(resolvedWorkdir, options.spawn);
   return {
-    database: new SupabaseStdinDatabase(workdir),
+    attestTarget(contract) {
+      verifyFilesystemTarget({
+        contract,
+        filesystem,
+        runtimeWorkdir: options.runtimeWorkdir ?? process.cwd(),
+        workdir,
+      });
+      return database.query(
+        "target-attestation",
+        buildTargetAttestationSql(contract.organizationIdSha256),
+      );
+    },
+    database,
     loadExport(path) {
-      const stat = lstatSync(path);
+      const stat = filesystem.lstat(path);
       return {
-        bytes: readFileSync(path),
+        bytes: filesystem.readFile(path),
         isRegularFile: stat.isFile() && !stat.isSymbolicLink(),
         mode: stat.mode,
         size: stat.size,
