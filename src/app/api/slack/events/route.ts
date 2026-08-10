@@ -64,17 +64,6 @@ export async function POST(request: Request) {
     return Response.json({ challenge: payload.challenge ?? "" });
   }
 
-  // Slack retries a delivery it considers slow (http_timeout): the first
-  // delivery already scheduled the work, so those are acknowledged without
-  // reprocessing. Other retry reasons (connection failures, 5xx) mean the
-  // first delivery was never processed, so they go through.
-  if (
-    request.headers.get("x-slack-retry-num") &&
-    request.headers.get("x-slack-retry-reason") === "http_timeout"
-  ) {
-    return Response.json({ ignored: "retry", ok: true });
-  }
-
   const event = payload.event;
   if (payload.type !== "event_callback" || !isActionableEvent(event)) {
     return Response.json({ ok: true });

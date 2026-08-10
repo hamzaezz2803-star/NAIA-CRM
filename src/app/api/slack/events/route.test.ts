@@ -180,16 +180,25 @@ describe("Slack events route", () => {
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
   });
 
-  it("acknowledges http_timeout retries without reprocessing", async () => {
+  it("processes the first http_timeout retry and deduplicates its replay", async () => {
+    mocks.claimSlackEvent
+      .mockResolvedValueOnce({ data: true, error: null })
+      .mockResolvedValueOnce({ data: false, error: null });
     const body = messageImEvent("lis mes emails gmail non lus");
-    const response = await POST(
+    const firstRetry = await POST(
       slackRequest(body, { retryNum: "1", retryReason: "http_timeout" }),
+    );
+    const replay = await POST(
+      slackRequest(body, { retryNum: "2", retryReason: "http_timeout" }),
     );
 
     await flushAfterTasks();
 
-    expect(response.status).toBe(200);
-    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(firstRetry.status).toBe(200);
+    expect(await replay.json()).toEqual({ ignored: "duplicate", ok: true });
+    expect(mocks.claimSlackEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
   });
 
   it("processes retries whose reason is not http_timeout", async () => {
