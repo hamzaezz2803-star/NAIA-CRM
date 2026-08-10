@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import { after } from "next/server";
 
 import {
@@ -78,14 +80,17 @@ export async function POST(request: Request) {
   if (!eventId || !/^Ev[A-Za-z0-9_-]{1,253}$/.test(eventId)) {
     return Response.json({ error: "Invalid Slack event id" }, { status: 400 });
   }
-  const claim = await claimSlackEvent(eventId);
-  if (claim === null) {
+  const lease = await leaseSlackEvent(
+    eventId,
+    request.headers.has("x-slack-retry-num"),
+  );
+  if (lease === null) {
     return Response.json(
       { error: "Slack event claim unavailable" },
       { status: 503 },
     );
   }
-  if (!claim) {
+  if (!lease) {
     return Response.json({ ignored: "duplicate", ok: true });
   }
 
@@ -99,11 +104,17 @@ export async function POST(request: Request) {
   const allowPersonalData =
     event.type === "message" && event.channel_type === "im";
 
+  // IMPORTANT: everything inside this callback must remain read-only until
+  // postLeasedSlackEventMessage wins the publish fence. A signed Slack retry
+  // may replace this processing lease at any time; an older worker must never
+  // execute a CRM/provider mutation before its token is fenced out.
   after(async () => {
     await handleSlackCommand({
       allowPersonalData,
       channel,
       command,
+      eventId,
+      leaseToken: lease,
       slackUserId,
       threadTs,
     });
@@ -112,16 +123,20 @@ export async function POST(request: Request) {
   return Response.json({ ok: true });
 }
 
-async function claimSlackEvent(eventId: string) {
+async function leaseSlackEvent(eventId: string, forceTakeover: boolean) {
   const supabase = createServiceRoleSupabaseClient();
   if (!supabase) return null;
 
-  const { data, error } = await supabase.rpc("claim_slack_event", {
+  const leaseToken = randomUUID();
+  const { data, error } = await supabase.rpc("lease_slack_event", {
     requested_event_id: eventId,
+    requested_force_takeover: forceTakeover,
+    requested_lease_seconds: 30,
+    requested_lease_token: leaseToken,
     requested_ttl_seconds: 86_400,
   });
   if (error || typeof data !== "boolean") return null;
-  return data;
+  return data ? leaseToken : false;
 }
 
 function isActionableEvent(event: SlackEvent | undefined): event is SlackEvent {
@@ -147,12 +162,16 @@ async function handleSlackCommand({
   allowPersonalData,
   channel,
   command,
+  eventId,
+  leaseToken,
   slackUserId,
   threadTs,
 }: {
   allowPersonalData: boolean;
   channel: string;
   command: string;
+  eventId: string;
+  leaseToken: string;
   slackUserId: string;
   threadTs?: string;
 }) {
@@ -163,10 +182,14 @@ async function handleSlackCommand({
     const user = profile?.email ? await resolveBridgeUser(profile.email) : null;
 
     if (!user) {
-      await postSlackMessage({
-        channel,
-        text: "Compte non reconnu : ton email Slack ne correspond à aucun profil Qarizmi OS. Connecte-toi d'abord sur https://os.qarizmi.com avec ton compte Google Qarizmi.",
-        threadTs,
+      await postLeasedSlackEventMessage({
+        eventId,
+        leaseToken,
+        message: {
+          channel,
+          text: "Compte non reconnu : ton email Slack ne correspond à aucun profil Qarizmi OS. Connecte-toi d'abord sur https://os.qarizmi.com avec ton compte Google Qarizmi.",
+          threadTs,
+        },
       });
       return;
     }
@@ -190,24 +213,70 @@ async function handleSlackCommand({
       priorHistory,
       { allowPersonalData },
     );
-    await postSlackMessage({
-      blocks: buildPlanBlocks(plan),
-      channel,
-      text: plan.response,
-      threadTs,
+    await postLeasedSlackEventMessage({
+      eventId,
+      leaseToken,
+      message: {
+        blocks: buildPlanBlocks(plan),
+        channel,
+        text: plan.response,
+        threadTs,
+      },
     });
   } catch (error) {
     console.error("Slack NAIA event processing failed:", error);
     try {
-      await postSlackMessage({
-        channel,
-        text: "NAIA n'a pas pu traiter cette commande. Réessaie dans un instant.",
-        threadTs,
+      await postLeasedSlackEventMessage({
+        eventId,
+        leaseToken,
+        message: {
+          channel,
+          text: "NAIA n'a pas pu traiter cette commande. Réessaie dans un instant.",
+          threadTs,
+        },
       });
     } catch {
       // The error is already logged; nothing else can be reported to Slack.
     }
   }
+}
+
+async function postLeasedSlackEventMessage({
+  eventId,
+  leaseToken,
+  message,
+}: {
+  eventId: string;
+  leaseToken: string;
+  message: Parameters<typeof postSlackMessage>[0];
+}) {
+  const supabase = createServiceRoleSupabaseClient();
+  if (!supabase) throw new Error("slack_event_publish_fence_unavailable");
+
+  const { data: publishing, error: publishError } = await supabase.rpc(
+    "begin_slack_event_publish",
+    {
+      requested_event_id: eventId,
+      requested_lease_token: leaseToken,
+    },
+  );
+  if (publishError || typeof publishing !== "boolean") {
+    throw new Error("slack_event_publish_fence_unavailable");
+  }
+  if (!publishing) return false;
+
+  const posted = await postSlackMessage(message);
+  const { data: completed, error: completeError } = await supabase.rpc(
+    "complete_slack_event_publish",
+    {
+      requested_event_id: eventId,
+      requested_lease_token: leaseToken,
+    },
+  );
+  if (completeError || completed !== true) {
+    console.error("Slack event was published but completion fencing failed.");
+  }
+  return posted;
 }
 
 function buildPlanBlocks(plan: NaiaBridgePlan) {

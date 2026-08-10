@@ -11,6 +11,12 @@ declare
   first_claim boolean;
   replay_claim boolean;
   expired_claim boolean;
+  old_publish boolean;
+  new_publish boolean;
+  publish_completed boolean;
+  first_lease_token uuid := '30000000-0000-0000-0000-000000000091';
+  second_lease_token uuid := '30000000-0000-0000-0000-000000000092';
+  third_lease_token uuid := '30000000-0000-0000-0000-000000000093';
   nabil_allowed boolean;
 begin
   select id into actor_id
@@ -147,26 +153,50 @@ begin
     null;
   end;
 
-  select public.claim_slack_event('EvProviderSecurityReplay91', 300)
+  select public.lease_slack_event(
+    'EvProviderSecurityReplay91', first_lease_token, false, 30, 300
+  )
   into first_claim;
-  select public.claim_slack_event('EvProviderSecurityReplay91', 300)
+  select public.lease_slack_event(
+    'EvProviderSecurityReplay91', second_lease_token, false, 30, 300
+  )
   into replay_claim;
   if not first_claim or replay_claim then
     raise exception 'Slack replay was not deduplicated atomically';
+  end if;
+
+  select public.lease_slack_event(
+    'EvProviderSecurityReplay91', second_lease_token, true, 30, 300
+  ) into replay_claim;
+  select public.begin_slack_event_publish(
+    'EvProviderSecurityReplay91', first_lease_token
+  ) into old_publish;
+  select public.begin_slack_event_publish(
+    'EvProviderSecurityReplay91', second_lease_token
+  ) into new_publish;
+  select public.complete_slack_event_publish(
+    'EvProviderSecurityReplay91', second_lease_token
+  ) into publish_completed;
+  if not replay_claim or old_publish or not new_publish or not publish_completed then
+    raise exception 'Slack retry fencing did not select exactly one publisher';
   end if;
 
   update public.slack_event_claims
   set claimed_at = now() - interval '10 minutes',
       expires_at = now() - interval '5 minutes'
   where event_id = 'EvProviderSecurityReplay91';
-  select public.claim_slack_event('EvProviderSecurityReplay91', 300)
+  select public.lease_slack_event(
+    'EvProviderSecurityReplay91', third_lease_token, false, 30, 300
+  )
   into expired_claim;
   if not expired_claim then
     raise exception 'Expired Slack claim was not safely reused';
   end if;
 
   begin
-    perform public.claim_slack_event('EvInvalidTtl91', 60);
+    perform public.lease_slack_event(
+      'EvInvalidTtl91', third_lease_token, false, 30, 60
+    );
     raise exception 'Expected invalid Slack TTL rejection';
   exception when invalid_parameter_value then
     null;
@@ -200,7 +230,7 @@ begin
     'execute'
   ) or has_function_privilege(
     'authenticated',
-    'public.claim_slack_event(text,integer)',
+    'public.lease_slack_event(text,uuid,boolean,integer,integer)',
     'execute'
   ) then
     raise exception 'Provider security RPC grants are too broad';

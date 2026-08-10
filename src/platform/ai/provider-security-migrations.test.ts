@@ -17,6 +17,13 @@ const slackMigration = readFileSync(
   ),
   "utf8",
 );
+const slackLeaseMigration = readFileSync(
+  resolve(
+    process.cwd(),
+    "supabase/migrations/20260810025005_slack_event_processing_lease.sql",
+  ),
+  "utf8",
+);
 
 describe("provider security migrations", () => {
   it("uses an atomic founder-only daily quota without direct table access", () => {
@@ -44,5 +51,21 @@ describe("provider security migrations", () => {
     expect(slackMigration).toContain("to service_role");
     expect(slackMigration).toContain("from public, anon, authenticated");
     expect(slackMigration).not.toMatch(/\bdelete\s+from\b/i);
+  });
+
+  it("leases Slack processing with forced retry takeover and a publish fence", () => {
+    expect(slackLeaseMigration).toContain("lease_slack_event");
+    expect(slackLeaseMigration).toContain("requested_force_takeover");
+    expect(slackLeaseMigration).toContain("begin_slack_event_publish");
+    expect(slackLeaseMigration).toContain("complete_slack_event_publish");
+    expect(slackLeaseMigration).toContain(
+      "lease_token = requested_lease_token",
+    );
+    expect(slackLeaseMigration).toContain("processing_state = 'publishing'");
+    expect(slackLeaseMigration).toContain("to service_role");
+    expect(slackLeaseMigration).not.toMatch(
+      /add column[^;]*(?:payload|event_text|channel_id)/i,
+    );
+    expect(slackLeaseMigration).not.toMatch(/\bdelete\s+from\b/i);
   });
 });
