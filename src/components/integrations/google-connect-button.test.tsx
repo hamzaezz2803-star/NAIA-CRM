@@ -94,7 +94,7 @@ describe("GoogleConnectButton", () => {
     expect(mocks.refresh).toHaveBeenCalledOnce();
   });
 
-  it("shows and clears the connected account after a successful disconnect", async () => {
+  it("revokes remotely before clearing the connected account", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(JSON.stringify({ ok: true }), {
         headers: { "Content-Type": "application/json" },
@@ -114,10 +114,14 @@ describe("GoogleConnectButton", () => {
     fireEvent.click(screen.getByRole("button", { name: "Déconnecter Google" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Google déconnecté.")).toBeVisible();
+      expect(
+        screen.getByText("Accès Google révoqué et déconnecté."),
+      ).toBeVisible();
     });
-    expect(fetchMock).toHaveBeenCalledWith("/api/integrations/disconnect", {
-      body: JSON.stringify({ provider: "google" }),
+    expect(fetchMock).toHaveBeenCalledWith("/api/integrations/google/revoke", {
+      body: JSON.stringify({
+        confirmation: GOOGLE_REVOCATION_CONFIRMATION,
+      }),
       headers: { "Content-Type": "application/json" },
       method: "POST",
     });
@@ -145,6 +149,43 @@ describe("GoogleConnectButton", () => {
 
     expect(await screen.findByText("Database unavailable")).toBeVisible();
     expect(screen.getByText(/ali@qarizmi.com/)).toBeVisible();
+    expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("quarantines an unproven disconnect and exposes manual confirmation", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: "Google n’a pas confirmé la révocation.",
+            manualReviewRequired: true,
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+            status: 502,
+          },
+        ),
+      ),
+    );
+
+    render(
+      <GoogleConnectButton
+        connectedAccount="ali@qarizmi.com"
+        initialConnected
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Déconnecter Google" }));
+
+    expect(
+      await screen.findByText("Google n’a pas confirmé la révocation."),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("link", { name: "Ouvrir les connexions Google" }),
+    ).toHaveAttribute("href", "https://myaccount.google.com/connections");
+    expect(
+      screen.getByRole("button", { name: "J’ai révoqué l’accès dans Google" }),
+    ).toBeVisible();
     expect(mocks.refresh).not.toHaveBeenCalled();
   });
 

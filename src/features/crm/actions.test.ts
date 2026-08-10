@@ -36,6 +36,7 @@ import {
   checkGoogleAuthAction,
   createGoogleDriveFolderAction,
   createLeadAction,
+  disconnectGoogleAuthAction,
   fetchCompanyDetailAction,
   syncLeadToGoogleCalendarAction,
   updateLeadAction,
@@ -234,6 +235,15 @@ function respondForLead({
 }
 
 describe("CRM Google connection scope quarantine", () => {
+  it("keeps the legacy disconnect server action fail-closed", async () => {
+    await expect(disconnectGoogleAuthAction()).resolves.toEqual({
+      error:
+        "Déconnexion Google sécurisée requise depuis le flux de révocation.",
+      success: false,
+    });
+    expect(mocks.createServerSupabaseClient).not.toHaveBeenCalled();
+  });
+
   const broadDriveScope = "https://www.googleapis.com/auth/drive.readonly";
 
   beforeEach(() => {

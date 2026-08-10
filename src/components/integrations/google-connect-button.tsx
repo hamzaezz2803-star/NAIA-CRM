@@ -112,22 +112,37 @@ export function GoogleConnectButton({
 
   const disconnect = async () => {
     setIsConnecting(true);
+    setMessage("Révocation Google en cours...");
     try {
-      const res = await fetch("/api/integrations/disconnect", {
-        body: JSON.stringify({ provider: "google" }),
+      const res = await fetch("/api/integrations/google/revoke", {
+        body: JSON.stringify({
+          confirmation: GOOGLE_REVOCATION_CONFIRMATION,
+        }),
         headers: { "Content-Type": "application/json" },
         method: "POST",
       });
-      if (res.ok) {
+      const payload = (await res.json().catch(() => null)) as {
+        error?: string;
+        manualReviewRequired?: boolean;
+        ok?: boolean;
+      } | null;
+      if (res.ok && payload?.ok) {
         setConnectedState(false);
         setAccountLabelState(undefined);
-        setMessage("Google déconnecté.");
+        setRequiresRevocationState(false);
+        setMessage("Accès Google révoqué et déconnecté.");
         router.refresh();
       } else {
-        const payload = (await res.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        setMessage(payload?.error ?? "Erreur lors de la déconnexion Google.");
+        const requiresManualReview = Boolean(payload?.manualReviewRequired);
+        setManualReviewRequired(requiresManualReview);
+        if (requiresManualReview) {
+          setRequiresRevocationState(true);
+          setShowRevocationConfirmation(true);
+        }
+        setMessage(
+          payload?.error ??
+            "La révocation Google n’a pas pu être confirmée. Réessayez.",
+        );
       }
     } catch {
       setMessage("Échec de la communication avec le serveur.");

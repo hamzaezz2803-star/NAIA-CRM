@@ -37,7 +37,6 @@ import {
   deleteLeadAction,
   extractLeadFromNaturalTextAction,
   generateFollowUpDraftAction,
-  disconnectGoogleAuthAction,
   createGoogleDriveFolderAction,
   updateLeadAction,
   syncLeadToGoogleCalendarAction,
@@ -67,6 +66,7 @@ import type {
 } from "@/features/crm/contracts";
 import { formatCrmDateTimeForInput } from "@/features/crm/date-time";
 import { usePublishNaiaPageContext } from "@/features/naia/naia-page-context";
+import { GOOGLE_REVOCATION_CONFIRMATION } from "@/platform/integrations/google-revocation-contract";
 import toast from "react-hot-toast";
 
 function formatLeadDateForDisplay(dateStr?: string): string {
@@ -866,6 +866,7 @@ export function CrmPipelineClient({
   // Listen for Google Auth callback popup messaging
   useEffect(() => {
     const handleMessage = (event: MessageEvent) => {
+      if (event.origin !== window.location.origin) return;
       if (event.data?.type === "GOOGLE_AUTH_SUCCESS") {
         setIsGoogleConnected(true);
         setFormError(null);
@@ -891,12 +892,40 @@ export function CrmPipelineClient({
 
   // Disconnect Google
   const handleDisconnectGoogle = async () => {
-    const res = await disconnectGoogleAuthAction();
-    if (res.success) {
-      setIsGoogleConnected(false);
-      toast.success("Compte Google Workspace déconnecté.");
-    } else {
-      toast.error("Erreur de déconnexion Google.");
+    try {
+      const response = await fetch("/api/integrations/google/revoke", {
+        body: JSON.stringify({
+          confirmation: GOOGLE_REVOCATION_CONFIRMATION,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        manualReviewRequired?: boolean;
+        ok?: boolean;
+      } | null;
+      if (response.ok && payload?.ok) {
+        setIsGoogleConnected(false);
+        toast.success("Accès Google révoqué et déconnecté.");
+        return;
+      }
+
+      if (payload?.manualReviewRequired) {
+        // The server quarantined this connection as needs-review. Keep the CRM
+        // fail-closed and direct the user to the full confirmation flow.
+        setIsGoogleConnected(false);
+        toast.error(
+          `${payload.error ?? "Révocation Google à confirmer."} Finalisez depuis Intégrations.`,
+        );
+        return;
+      }
+
+      toast.error(
+        payload?.error ?? "La révocation Google n’a pas pu être confirmée.",
+      );
+    } catch {
+      toast.error("Échec de la communication avec le serveur.");
     }
   };
 

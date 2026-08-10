@@ -1728,40 +1728,13 @@ export async function disconnectGoogleAuthAction(): Promise<{
   success: boolean;
   error?: string;
 }> {
-  const supabase = await createServerSupabaseClient();
-  if (!supabase) return { success: false, error: "Not configured" };
-
-  const orgId = await getOrgId();
-  if (!orgId) return { success: false, error: "Not authenticated" };
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-  if (!user) return { success: false, error: "Not authenticated" };
-
-  // Only the caller's own connection: one click must never disconnect a
-  // colleague's Google account.
-  const { error } = await supabase
-    .from("integration_connections")
-    .delete()
-    .eq("organization_id", orgId)
-    .eq("provider", "google")
-    .eq("connected_by_profile_id", user.id);
-
-  if (error) return { success: false, error: error.message };
-
-  await createSystemNotification({
-    title: "Google déconnecté",
-    description: `Votre intégration Google a été supprimée le ${new Date().toLocaleString("fr-FR")}.`,
-    type: "alert",
-  });
-
-  revalidatePath("/crm");
-  revalidatePath("/dashboard/leads");
-  revalidatePath("/dashboard/settings");
-  revalidatePath("/dashboard/documents");
-
-  return { success: true };
+  // Fail closed for stale clients. Remote OAuth revocation requires the
+  // same-origin, explicitly confirmed `/api/integrations/google/revoke` flow;
+  // deleting only the local row would leave Google's grant active.
+  return {
+    success: false,
+    error: "Déconnexion Google sécurisée requise depuis le flux de révocation.",
+  };
 }
 
 export async function createGoogleDriveFolderAction(
