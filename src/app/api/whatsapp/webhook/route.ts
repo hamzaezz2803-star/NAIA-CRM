@@ -196,7 +196,7 @@ async function handleInboundMessage(message: AuthorizedWhatsAppInboundMessage) {
 
   try {
     const user = await resolveBridgeUser(message.authorizedEmail);
-    if (!user || user.role !== "owner") {
+    if (!user) {
       return;
     }
 
@@ -263,6 +263,14 @@ async function handleTextCommand(
     WHATSAPP_COMMAND_MAX_LENGTH,
     history,
   );
+
+  // Natural human typing latency before sending long responses to prevent rate-limit flags
+  const latencyMs = Math.min(
+    1800,
+    Math.max(500, Math.round(plan.response.length * 3)),
+  );
+  await new Promise((resolve) => setTimeout(resolve, latencyMs));
+
   await sendWhatsAppText({ body: plan.response, to });
 
   for (const action of plan.actions) {

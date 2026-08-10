@@ -684,13 +684,8 @@ describe("WhatsApp webhook (POST)", () => {
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
-  it("silently ignores a mapped non-owner before any database or provider work", async () => {
-    mocks.resolveBridgeUser.mockResolvedValue({
-      ...bridgeUser,
-      email: "member@qarizmi.com",
-      profileId: "profile-member",
-      role: "member",
-    });
+  it("silently ignores an unauthorized user without an org membership", async () => {
+    mocks.resolveBridgeUser.mockResolvedValue(null);
 
     await POST(webhookRequest(inboundPayload([textMessage("lis mes emails")])));
     await flushAfterTasks();
