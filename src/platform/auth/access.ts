@@ -16,6 +16,15 @@ export type AuthAccessDecision = {
     | "not-allowed";
 };
 
+type GoogleIdentitySubject = {
+  app_metadata?: unknown;
+  email?: string | null;
+  id?: string | null;
+  identities?: readonly { provider?: string | null }[] | null;
+  sub?: string | null;
+  user_metadata?: unknown;
+};
+
 export function getAllowedAuthEmails() {
   return parseCsv(process.env.AUTH_ALLOWED_EMAILS);
 }
@@ -76,6 +85,46 @@ export function isAuthorizedUser(user: Pick<User, "email"> | null) {
   return isAuthorizedEmail(user?.email).allowed;
 }
 
+export function hasLinkedGoogleIdentity(
+  subject: GoogleIdentitySubject | null | undefined,
+) {
+  if (!subject) return false;
+
+  const appMetadata = isRecord(subject.app_metadata)
+    ? subject.app_metadata
+    : null;
+  const providers = appMetadata?.providers;
+  const metadataHasGoogle =
+    Array.isArray(providers) &&
+    providers.some((provider) => provider === "google");
+  const identitiesHaveGoogle =
+    Array.isArray(subject.identities) &&
+    subject.identities.some((identity) => identity?.provider === "google");
+
+  return metadataHasGoogle || identitiesHaveGoogle;
+}
+
+export function hasOAuthAuthenticationMethod(claims: unknown) {
+  if (!isRecord(claims) || !Array.isArray(claims.amr)) return false;
+
+  return claims.amr.some((entry) => {
+    if (entry === "oauth") return true;
+    return isRecord(entry) && entry.method === "oauth";
+  });
+}
+
+export function isGoogleOnlyAuthorizedUser(
+  subject: GoogleIdentitySubject | null | undefined,
+  claims: unknown,
+) {
+  return (
+    isAuthorizedEmail(subject?.email).allowed &&
+    hasMatchingAuthSubject(subject, claims) &&
+    hasLinkedGoogleIdentity(subject) &&
+    hasOAuthAuthenticationMethod(claims)
+  );
+}
+
 export function isExactAllowedAuthEmail(email: string | null | undefined) {
   const normalizedEmail = email?.trim().toLowerCase();
   if (!normalizedEmail) return false;
@@ -94,6 +143,22 @@ function hasReviewedProductionAllowlist(allowedEmails: Set<string>) {
   return [...PRODUCTION_FOUNDER_EMAILS].every((email) =>
     allowedEmails.has(email),
   );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function hasMatchingAuthSubject(
+  subject: GoogleIdentitySubject | null | undefined,
+  claims: unknown,
+) {
+  if (!subject || !isRecord(claims) || typeof claims.sub !== "string") {
+    return false;
+  }
+
+  const subjectId = subject.id ?? subject.sub;
+  return typeof subjectId === "string" && subjectId === claims.sub;
 }
 
 function parseCsv(value: string | undefined) {

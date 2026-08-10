@@ -114,8 +114,11 @@ Current production access is limited to:
 - `ali@qarizmi.com`
 - `nabil@qarizmi.com`
 
-These users can sign in with an emailed magic link. Password sign-in remains
-available for accounts with a password.
+These users sign in exclusively with their approved Google account. The Google
+OAuth callback also attests and stores the user's own Calendar/Gmail connection,
+so Workspace access is synchronized during sign-in. Magic-link and password
+sessions are rejected by the application even if an older Supabase identity or
+session still exists.
 
 ## Documentation
 

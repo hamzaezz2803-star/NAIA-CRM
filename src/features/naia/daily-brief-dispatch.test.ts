@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   createServiceRoleSupabaseClient: vi.fn(),
   findSlackUserByEmail: vi.fn(),
   isSlackMessageRejectedError: vi.fn(),
-  listGmailMessages: vi.fn(),
+  listGmailThreadMetadata: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   postSlackMessage: vi.fn(),
   resolveBridgeUser: vi.fn(),
@@ -15,7 +15,7 @@ vi.mock("@/platform/auth/supabase-server", () => ({
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
-  listGmailMessages: mocks.listGmailMessages,
+  listGmailThreadMetadata: mocks.listGmailThreadMetadata,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
 
@@ -113,7 +113,7 @@ describe("NAIA daily brief dispatch", () => {
     vi.stubEnv("NAIA_DAILY_BRIEF_RECIPIENTS", "ali@qarizmi.com");
     vi.stubEnv("NAIA_DAILY_BRIEF_TIME_ZONE", TIME_ZONE);
     mocks.resolveBridgeUser.mockResolvedValue(OWNER);
-    mocks.listGmailMessages.mockResolvedValue([]);
+    mocks.listGmailThreadMetadata.mockResolvedValue([]);
     mocks.listGoogleCalendarEvents.mockResolvedValue([]);
     mocks.isSlackMessageRejectedError.mockReturnValue(false);
     mocks.findSlackUserByEmail.mockResolvedValue({
@@ -222,6 +222,17 @@ describe("NAIA daily brief dispatch", () => {
       }),
     ).resolves.toEqual({ email: "ali@qarizmi.com", status: "sent" });
 
+    expect(mocks.listGmailThreadMetadata).toHaveBeenCalledWith(
+      {
+        maxResults: 100,
+        query:
+          "newer_than:30d -in:sent -in:drafts -in:spam -in:trash -category:promotions -category:social -category:forums -from:notifications@github.com -from:noreply -from:no-reply -from:donotreply -from:do-not-reply -from:dependabot",
+      },
+      expect.objectContaining({
+        organizationId: "org-1",
+        profileId: "profile-ali",
+      }),
+    );
     expect(mocks.findSlackUserByEmail).toHaveBeenCalledWith("ali@qarizmi.com");
     expect(mocks.postSlackMessage).toHaveBeenCalledWith(
       expect.objectContaining({

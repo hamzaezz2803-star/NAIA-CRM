@@ -4,11 +4,17 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 import {
-  listGmailMessages,
+  listGmailThreadMetadata,
   listGoogleCalendarEvents,
-  type GmailMessageSummary,
   type GoogleCalendarEventSummary,
 } from "@/platform/integrations/google-workspace";
+import {
+  formatGmailTriageReason,
+  GMAIL_TRIAGE_CRM_STATUSES,
+  GMAIL_TRIAGE_QUERY,
+  triageGmailThreads,
+  type GmailTriageItem,
+} from "@/features/naia/gmail-triage";
 import {
   findSlackUserByEmail,
   isSlackMessageRejectedError,
@@ -18,13 +24,6 @@ import { resolveBridgeUser, type NaiaBridgeUser } from "@/platform/naia/bridge";
 
 const DEFAULT_RECIPIENT = "ali@qarizmi.com";
 const DEFAULT_TIME_ZONE = "Africa/Casablanca";
-const ACTIVE_LEAD_STATUSES = [
-  "lead-to-contact",
-  "contacted",
-  "to-follow-up",
-  "meeting-booked",
-  "proposal-sent",
-] as const;
 const COFOUNDER_EMAILS = new Set(["ali@qarizmi.com", "nabil@qarizmi.com"]);
 const FAST_OPERATION_TIMEOUT_MS = 5_000;
 const PROVIDER_OPERATION_TIMEOUT_MS = 12_000;
@@ -37,6 +36,8 @@ export type DailyBriefTask = {
 };
 
 export type DailyBriefLead = {
+  companyName?: string;
+  contactEmail?: string;
   id: string;
   leadDate?: string;
   nextAction?: string;
@@ -47,7 +48,7 @@ export type DailyBriefLead = {
 
 export type DailyBriefData = {
   calendarEvents: GoogleCalendarEventSummary[];
-  gmailCandidates: GmailMessageSummary[];
+  gmailCandidates: GmailTriageItem[];
   leads: DailyBriefLead[];
   tasks: DailyBriefTask[];
   warnings: string[];
@@ -76,6 +77,8 @@ type CrmTaskRow = {
 };
 
 type CrmLeadRow = {
+  company: { name: string | null } | null;
+  contact: { email: string | null } | null;
   id: string;
   lead_date: string | null;
   next_action: string | null;
@@ -376,29 +379,30 @@ export async function loadDailyBriefData({
     .limit(100);
   const leadsPromise = supabase
     .from("crm_leads")
-    .select("id,topic,status,next_action,next_action_date,lead_date")
+    .select(
+      "id,topic,status,next_action,next_action_date,lead_date,company:company_id(name),contact:contact_id(email)",
+    )
     .eq("organization_id", user.organizationId)
-    .in("status", [...ACTIVE_LEAD_STATUSES])
+    .in("status", [...GMAIL_TRIAGE_CRM_STATUSES])
     .order("next_action_date", { ascending: true, nullsFirst: false })
-    .limit(100);
+    .limit(1000);
   const calendarPromise = listGoogleCalendarEvents(
     {
-      maxResults: 50,
+      maxResults: 100,
       timeMax: calendarEnd.toISOString(),
       timeMin: now.toISOString(),
     },
     googleContext,
   );
-  const gmailPromise = listGmailMessages(
+  const gmailPromise = listGmailThreadMetadata(
     {
-      maxResults: 20,
-      query:
-        "in:inbox is:unread newer_than:30d -in:spam -in:trash -category:promotions -category:social -category:forums",
+      maxResults: 100,
+      query: GMAIL_TRIAGE_QUERY,
     },
     googleContext,
   );
 
-  const [tasksResult, leadsResult, calendarEvents, gmailCandidates] =
+  const [tasksResult, leadsResult, calendarEvents, gmailThreads] =
     await Promise.all([
       withTimeout(
         tasksPromise,
@@ -431,17 +435,29 @@ export async function loadDailyBriefData({
   if (tasksResult.error) throw new Error("crm_tasks_unavailable");
   if (leadsResult.error) throw new Error("crm_leads_unavailable");
 
-  return {
-    calendarEvents,
-    gmailCandidates,
-    leads: ((leadsResult.data ?? []) as CrmLeadRow[]).map((lead) => ({
+  const leads = ((leadsResult.data ?? []) as unknown as CrmLeadRow[]).map(
+    (lead) => ({
+      companyName: lead.company?.name ?? undefined,
+      contactEmail: lead.contact?.email ?? undefined,
       id: lead.id,
       leadDate: lead.lead_date ?? undefined,
       nextAction: lead.next_action ?? undefined,
       nextActionDate: lead.next_action_date ?? undefined,
       status: lead.status,
       topic: lead.topic,
-    })),
+    }),
+  );
+
+  return {
+    calendarEvents,
+    gmailCandidates: triageGmailThreads({
+      accountEmail: user.email,
+      crmLeads: leads,
+      maxResults: 10,
+      now,
+      threads: gmailThreads,
+    }),
+    leads,
     tasks: ((tasksResult.data ?? []) as CrmTaskRow[]).map((task) => ({
       dueAt: task.due_date ?? undefined,
       id: task.id,
@@ -516,6 +532,8 @@ export function buildDailyBriefMessage({
     const date = eventDateKey(lead.leadDate, timeZone);
     return date >= today && date <= weekEnd;
   });
+  const calendarUnavailable = data.warnings.includes("calendar_unavailable");
+  const gmailUnavailable = data.warnings.includes("gmail_unavailable");
 
   const urgentLines = [
     ...overdueTasks.map(
@@ -536,16 +554,37 @@ export function buildDailyBriefMessage({
       (lead) =>
         `Relance : ${lead.topic}${lead.nextAction ? ` — ${lead.nextAction}` : ""}`,
     ),
+    ...(calendarUnavailable
+      ? ["Google Calendar indisponible : événements du jour non vérifiés"]
+      : []),
   ].slice(0, 10);
   const weekLines = [
-    `${weekEvents.length} événement(s) Calendar à venir`,
+    calendarUnavailable
+      ? "Google Calendar indisponible : agenda non vérifié"
+      : `${weekEvents.length} événement(s) Calendar à venir`,
     `${weekTasks.length} tâche(s) CRM à échéance`,
     `${weekMeetings.length} lead(s) en meeting booked`,
   ];
   const mailLines = data.gmailCandidates.slice(0, 5).map((message) => {
     const from = (message.from ?? "Expéditeur inconnu").slice(0, 100);
     const subject = (message.subject ?? "Sans objet").slice(0, 160);
-    return `${from} — ${subject}`;
+    const priority =
+      message.priority === "urgent"
+        ? "Priorité haute"
+        : message.priority === "important"
+          ? "Important"
+          : "À répondre";
+    const reasons = message.reasons
+      .filter(
+        (reason) =>
+          !["direct-recipient", "gmail-important", "gmail-starred"].includes(
+            reason,
+          ),
+      )
+      .slice(0, 2)
+      .map(formatGmailTriageReason)
+      .join(" · ");
+    return `[${priority}] ${from} — ${subject}${reasons ? ` (${reasons})` : ""}`;
   });
   const dateLabel = new Intl.DateTimeFormat("fr-FR", {
     dateStyle: "full",
@@ -565,11 +604,13 @@ export function buildDailyBriefMessage({
     sectionBlock(formatSection("Vue de la semaine", weekLines)),
     sectionBlock(
       formatSection(
-        "Mails non lus à vérifier",
+        "Mails à traiter",
         mailLines,
-        "Aucun message non lu récent dans la boîte de réception.",
+        gmailUnavailable
+          ? "Gmail indisponible : les fils en attente de réponse n'ont pas été vérifiés."
+          : "Aucun échange humain récent ne semble attendre une réponse.",
       ) +
-        "\n_Indicateur de triage uniquement : NAIA ne prétend pas qu’un mail lu est sans réponse sans relire son fil._",
+        "\n_Triage des fils lus et non lus : bots, noreply, GitHub/Dependabot et listes de diffusion exclus._",
     ),
   ];
 
@@ -577,7 +618,7 @@ export function buildDailyBriefMessage({
     blocks.push(
       sectionBlock(
         `Sources indisponibles pendant ce briefing : ${data.warnings
-          .map((warning) => cleanSlackText(warning.replaceAll("_", " "), 80))
+          .map((warning) => cleanSlackText(formatWarning(warning), 80))
           .join(", ")}.`,
       ),
     );
@@ -588,13 +629,21 @@ export function buildDailyBriefMessage({
     `Urgent: ${urgentLines.length || "aucun"}`,
     `Aujourd’hui: ${todayLines.length || "aucun"}`,
     `Semaine: ${weekLines.join("; ")}`,
-    `Mails non lus à vérifier: ${mailLines.length}`,
+    `Mails à traiter: ${gmailUnavailable ? "source indisponible" : mailLines.length}`,
   ];
 
   return {
     blocks,
     text: fallbackSections.join("\n"),
   };
+}
+
+function formatWarning(warning: string) {
+  const labels: Record<string, string> = {
+    calendar_unavailable: "Google Calendar",
+    gmail_unavailable: "Gmail",
+  };
+  return labels[warning] ?? warning.replaceAll("_", " ");
 }
 
 function sectionBlock(text: string) {

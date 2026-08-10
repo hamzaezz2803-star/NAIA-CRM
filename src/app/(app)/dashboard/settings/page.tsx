@@ -3,7 +3,6 @@ import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { getGroqApiKey, getGroqModelConfiguration } from "@/platform/ai/groq";
 import { getAppSession } from "@/platform/auth/session";
-import { ChangePasswordForm } from "./change-password-form";
 import {
   CheckCircle2,
   AlertCircle,
@@ -125,12 +124,12 @@ function getSystemIntegrations(
       id: "slack",
       name: "Slack",
       description:
-        "Prévu pour les récapitulatifs de canaux, notifications et suivis approuvés.",
+        "Bridge serveur pour les récapitulatifs de canaux, notifications et suivis approuvés.",
       status: slack?.status ?? "not-implemented",
       icon: <PlugZap className="h-5 w-5" />,
       detail:
         slack?.detail ??
-        "SLACK_CLIENT_ID / SLACK_CLIENT_SECRET ne suffisent pas sans route OAuth Slack.",
+        "SLACK_BOT_TOKEN et SLACK_SIGNING_SECRET sont requis côté serveur.",
     },
     {
       id: "whatsapp",
@@ -325,11 +324,17 @@ export default async function SettingsPage() {
                 className="text-xs"
                 style={{ color: "var(--maison-text-secondary)" }}
               >
-                Mettre à jour votre mot de passe
+                Connexion gérée exclusivement par Google
               </p>
             </div>
           </div>
-          <ChangePasswordForm />
+          <p
+            className="text-sm leading-6"
+            style={{ color: "var(--maison-text-secondary)" }}
+          >
+            NAIA-os ne crée ni ne modifie de mot de passe. Utilisez votre compte
+            Google Qarizmi approuvé pour vous connecter.
+          </p>
         </article>
       </section>
 
@@ -522,8 +527,8 @@ export default async function SettingsPage() {
                   visibility: "Serveur uniquement",
                 },
                 {
-                  name: "SLACK_CLIENT_ID / SLACK_CLIENT_SECRET",
-                  usage: "OAuth Slack futur",
+                  name: "SLACK_BOT_TOKEN / SLACK_SIGNING_SECRET",
+                  usage: "Bot Slack et vérification des webhooks",
                   visibility: "Serveur uniquement",
                 },
                 {

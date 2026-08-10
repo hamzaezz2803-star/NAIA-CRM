@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   inspectGoogleWorkspaceCapabilities: vi.fn(),
   listGmailMessages: vi.fn(),
+  listGmailThreadMetadata: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   loadNaiaPrivateKnowledge: vi.fn(),
 }));
@@ -10,6 +11,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/platform/integrations/google-workspace", () => ({
   inspectGoogleWorkspaceCapabilities: mocks.inspectGoogleWorkspaceCapabilities,
   listGmailMessages: mocks.listGmailMessages,
+  listGmailThreadMetadata: mocks.listGmailThreadMetadata,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
 
@@ -40,6 +42,7 @@ const crmLeads: CrmLeadSummary[] = [
   {
     accessScope: "organization",
     companyName: "HPS",
+    contactEmail: "client@example.com",
     contactName: "Abdeslam",
     createdAt: "2026-07-01T10:00:00.000Z",
     id: "lead-hps",
@@ -83,6 +86,27 @@ describe("NAIA personal context answers", () => {
         from: "client@example.com",
         id: "mail-1",
         subject: "Urgent - validation contrat",
+      },
+    ]);
+    mocks.listGmailThreadMetadata.mockResolvedValue([
+      {
+        id: "thread-1",
+        messages: [
+          {
+            headers: {
+              date: "Mon, 10 Aug 2026 08:00:00 +0000",
+              from: "Client <client@example.com>",
+              subject: "Urgent - validation contrat",
+              to: "Ali <ali@qarizmi.com>",
+            },
+            id: "mail-1",
+            internalDate: String(
+              new Date("2026-08-10T08:00:00.000Z").getTime(),
+            ),
+            labelIds: ["INBOX", "UNREAD", "IMPORTANT"],
+            snippet: "Peux-tu valider le contrat aujourd'hui ?",
+          },
+        ],
       },
     ]);
   });
@@ -439,19 +463,59 @@ describe("NAIA personal context answers", () => {
       googleContext,
     });
 
-    expect(mocks.listGmailMessages).toHaveBeenCalledWith(
+    expect(mocks.listGmailThreadMetadata).toHaveBeenCalledWith(
       {
-        maxResults: 10,
+        maxResults: 100,
         query:
-          "is:unread newer_than:14d {label:important subject:urgent subject:important}",
-        unreadOnly: true,
+          "newer_than:30d -in:sent -in:drafts -in:spam -in:trash -category:promotions -category:social -category:forums -from:notifications@github.com -from:noreply -from:no-reply -from:donotreply -from:do-not-reply -from:dependabot",
       },
       googleContext,
     );
+    expect(mocks.listGmailMessages).not.toHaveBeenCalled();
     expect(result.actions).toHaveLength(0);
     expect(result.agent.id).toBe("integrations");
     expect(result.response).toContain("Urgent - validation contrat");
     expect(result.response).toContain("client@example.com");
+    expect(result.response).toContain("Priorité haute");
+    expect(result.response).toContain("GitHub/Dependabot");
+  });
+
+  it("neutralizes Slack markup and control lines from Gmail metadata", async () => {
+    mocks.listGmailThreadMetadata.mockResolvedValue([
+      {
+        id: "thread-hostile",
+        messages: [
+          {
+            headers: {
+              date: "Mon, 10 Aug 2026 08:00:00 +0000",
+              from: "<!channel> @here Client <client@example.com>",
+              subject: "Urgent <https://evil.example|click>\n@everyone",
+              to: "Ali <ali@qarizmi.com>",
+            },
+            id: "mail-hostile",
+            internalDate: String(
+              new Date("2026-08-10T08:00:00.000Z").getTime(),
+            ),
+            labelIds: ["INBOX", "UNREAD"],
+            snippet: "Peux-tu confirmer aujourd'hui ?",
+          },
+        ],
+      },
+    ]);
+
+    const { result } = await planNaiaAssistant({
+      actor,
+      command: "quels sont mes mails urgents ?",
+      crmLeads,
+      googleContext,
+    });
+
+    expect(result.response).not.toContain("<!channel>");
+    expect(result.response).not.toContain("@here");
+    expect(result.response).not.toContain("@everyone");
+    expect(result.response).not.toContain("<https://evil.example|click>");
+    expect(result.response).toContain("@​here");
+    expect(result.response).toContain("‹https://evil.example|click›");
   });
 
   it("returns an actionable reconnect answer when Google is unavailable", async () => {
@@ -483,6 +547,7 @@ describe("NAIA personal context answers", () => {
     });
 
     expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+    expect(mocks.listGmailThreadMetadata).not.toHaveBeenCalled();
     expect(mocks.inspectGoogleWorkspaceCapabilities).not.toHaveBeenCalled();
     expect(mocks.loadNaiaPrivateKnowledge).not.toHaveBeenCalled();
     expect(result.response).toContain("message privé");

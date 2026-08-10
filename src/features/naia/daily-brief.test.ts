@@ -72,9 +72,16 @@ describe("NAIA daily briefing", () => {
         ],
         gmailCandidates: [
           {
+            date: "2026-08-10T07:00:00.000Z",
             from: "Client & Partner <client@example.com>",
-            id: "mail-1",
+            messageId: "mail-1",
+            priority: "important",
+            reasons: ["crm-contact", "read-without-reply"],
+            score: 62,
+            senderEmail: "client@example.com",
             subject: "Prochaine étape",
+            threadId: "thread-1",
+            unread: false,
           },
         ],
         leads: [
@@ -107,9 +114,8 @@ describe("NAIA daily briefing", () => {
     expect(serialized).toContain("Prochaine étape");
     expect(serialized).toContain("Client &amp; Partner");
     expect(serialized).not.toContain("&amp;amp;");
-    expect(serialized).toContain(
-      "ne prétend pas qu’un mail lu est sans réponse",
-    );
+    expect(serialized).toContain("lu sans réponse");
+    expect(serialized).toContain("GitHub/Dependabot");
   });
 
   it("neutralizes Slack mentions and markup from provider data", () => {
@@ -137,6 +143,28 @@ describe("NAIA daily briefing", () => {
 
     expect(JSON.stringify(message.blocks)).toContain(
       "1 lead(s) en meeting booked",
+    );
+  });
+
+  it("does not claim zero Calendar or Gmail items when those sources are unavailable", () => {
+    const message = buildDailyBriefMessage({
+      data: data({
+        warnings: ["calendar_unavailable", "gmail_unavailable"],
+      }),
+      displayName: "Ali",
+      now: new Date("2026-08-10T08:30:00.000Z"),
+      timeZone: TIME_ZONE,
+    });
+
+    const serialized = JSON.stringify(message.blocks);
+    expect(serialized).toContain("agenda non vérifié");
+    expect(serialized).toContain("événements du jour non vérifiés");
+    expect(serialized).toContain("n'ont pas été vérifiés");
+    expect(serialized).toContain("Google Calendar");
+    expect(serialized).toContain("Gmail");
+    expect(serialized).not.toContain("0 événement(s) Calendar");
+    expect(serialized).not.toContain(
+      "Aucun échange humain récent ne semble attendre une réponse",
     );
   });
 });

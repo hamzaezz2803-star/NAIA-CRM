@@ -19,6 +19,8 @@ import {
   inferCrmStatus,
   type NaiaActionDraft,
 } from "@/features/naia/orchestrator";
+import { GMAIL_TRIAGE_CRM_STATUSES } from "@/features/naia/gmail-triage";
+import { isGmailReadQuery } from "@/features/naia/personal-query-intents";
 import {
   canonicalizeConversationText,
   extractLeadIdentity,
@@ -61,6 +63,8 @@ import {
 // and channels that store drafts server-side (WhatsApp) pass their own
 // maxLength to planBridgeCommand instead of inheriting the Slack constraint.
 export const SLACK_COMMAND_MAX_LENGTH = 500;
+const GMAIL_CRM_PAGE_SIZE = 500;
+const GMAIL_CRM_MAX_ROWS = 5_000;
 
 export type NaiaBridgeUser = {
   email: string;
@@ -147,8 +151,19 @@ export async function planBridgeCommand(
   // The commandHash inside the approval tokens is computed on this same
   // truncated string, so HMAC verification stays consistent per channel.
   const cleanCommand = normalizeBridgeCommand(command).slice(0, maxLength);
-  const crmLeads = await fetchBridgeLeads(user);
-  const supabase = createServiceRoleSupabaseClient();
+  const readsGmail = isGmailReadQuery(cleanCommand);
+  const blocksPersonalGmailRead = readsGmail && !allowPersonalData;
+  const crmLeads = blocksPersonalGmailRead
+    ? []
+    : readsGmail
+      ? await fetchBridgeGmailCrmLeads(user)
+      : await fetchBridgeLeads(user);
+  // Shared-channel Gmail questions are rejected by the assistant below. Do
+  // not even resolve a service-role client for a request that is not allowed
+  // to read personal providers or CRM context.
+  const supabase = blocksPersonalGmailRead
+    ? null
+    : createServiceRoleSupabaseClient();
   const { mode, result } = await planNaiaAssistant({
     actor: {
       email: user.email,
@@ -158,6 +173,7 @@ export async function planBridgeCommand(
     allowPersonalData,
     command: cleanCommand,
     crmLeads,
+    gmailCrmLeads: readsGmail ? crmLeads : undefined,
     googleContext: supabase
       ? {
           organizationId: user.organizationId,
@@ -579,6 +595,126 @@ function requireCrmPermission(
     message: `Ton rôle (${user.role}) ne permet pas cette action CRM.`,
     success: false,
   };
+}
+
+async function fetchBridgeGmailCrmLeads(
+  user: NaiaBridgeUser,
+): Promise<CrmLeadSummary[]> {
+  const supabase = createServiceRoleSupabaseClient();
+  if (!supabase) return [];
+
+  const { data: isCofounder, error: cofounderError } = await supabase.rpc(
+    "crm_bridge_actor_is_cofounder",
+    {
+      target_organization_id: user.organizationId,
+      target_profile_id: user.profileId,
+    },
+  );
+  if (cofounderError) {
+    console.error(
+      "NAIA Gmail CRM confidentiality check failed:",
+      cofounderError,
+    );
+    return [];
+  }
+
+  type GmailCrmLeadRow = {
+    access_scope: "cofounders" | "organization";
+    company: {
+      access_scope: "cofounders" | "organization";
+      archived_at: string | null;
+      name: string;
+      organization_id: string;
+    } | null;
+    contact: {
+      access_scope: "cofounders" | "organization";
+      archived_at: string | null;
+      email: string | null;
+      organization_id: string;
+    } | null;
+    created_at: string;
+    id: string;
+    next_action: string | null;
+    next_action_date: string | null;
+    organization_id: string;
+    status: CrmLeadStatus;
+    topic: string;
+    updated_at: string;
+  };
+
+  const rows: GmailCrmLeadRow[] = [];
+  for (
+    let offset = 0;
+    offset < GMAIL_CRM_MAX_ROWS;
+    offset += GMAIL_CRM_PAGE_SIZE
+  ) {
+    let query = supabase
+      .from("crm_leads")
+      .select(
+        `id,organization_id,access_scope,topic,status,next_action,next_action_date,created_at,updated_at,
+        company:company_id(organization_id,name,access_scope,archived_at),
+        contact:contact_id(organization_id,email,access_scope,archived_at)`,
+      )
+      .eq("organization_id", user.organizationId)
+      .is("archived_at", null)
+      .in("status", [...GMAIL_TRIAGE_CRM_STATUSES])
+      .eq("company.organization_id", user.organizationId)
+      .is("company.archived_at", null)
+      .eq("contact.organization_id", user.organizationId)
+      .is("contact.archived_at", null);
+
+    if (isCofounder !== true) {
+      query = query
+        .eq("access_scope", "organization")
+        .eq("company.access_scope", "organization")
+        .eq("contact.access_scope", "organization");
+    }
+
+    const pageEnd = Math.min(
+      offset + GMAIL_CRM_PAGE_SIZE - 1,
+      GMAIL_CRM_MAX_ROWS - 1,
+    );
+    const { data, error } = await query
+      .order("created_at", { ascending: false })
+      .order("id", { ascending: false })
+      .range(offset, pageEnd);
+    if (error || !data) return [];
+
+    const page = data as unknown as GmailCrmLeadRow[];
+    rows.push(...page);
+    if (page.length < pageEnd - offset + 1) break;
+  }
+
+  return rows.map((row) => {
+    const company = isVisibleBridgeRelation(
+      row.company,
+      user.organizationId,
+      isCofounder === true,
+    )
+      ? row.company
+      : null;
+    const contact = isVisibleBridgeRelation(
+      row.contact,
+      user.organizationId,
+      isCofounder === true,
+    )
+      ? row.contact
+      : null;
+
+    return {
+      accessScope: row.access_scope,
+      companyName: company?.name ?? undefined,
+      contactEmail: contact?.email ?? undefined,
+      createdAt: row.created_at,
+      id: row.id,
+      nextAction: row.next_action ?? undefined,
+      nextActionDate: row.next_action_date ?? undefined,
+      organizationId: row.organization_id,
+      status: row.status,
+      topic: row.topic,
+      updatedAt: row.updated_at,
+    };
+  });
 }
 
 async function fetchBridgeLeads(

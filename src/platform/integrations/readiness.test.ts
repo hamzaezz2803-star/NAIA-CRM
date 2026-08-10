@@ -30,7 +30,21 @@ describe("integration readiness", () => {
     });
   });
 
-  it("keeps Slack in the server-configured readiness state without a user OAuth row", async () => {
+  it("reports Slack as not configured when the bot token is missing", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(null);
+    vi.stubEnv("SLACK_BOT_TOKEN", "");
+    vi.stubEnv("SLACK_SIGNING_SECRET", "signing-secret");
+
+    const readiness = await getIntegrationReadiness();
+    const slack = readiness.find((item) => item.provider === "slack");
+
+    expect(slack).toMatchObject({
+      missingEnvVars: ["SLACK_BOT_TOKEN"],
+      status: "not-configured",
+    });
+  });
+
+  it("reports server-configured Slack as connected without a user OAuth row", async () => {
     mocks.createServerSupabaseClient.mockResolvedValue(null);
     vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
     vi.stubEnv("SLACK_SIGNING_SECRET", "signing-secret");
@@ -39,8 +53,9 @@ describe("integration readiness", () => {
     const slack = readiness.find((item) => item.provider === "slack");
 
     expect(slack).toMatchObject({
+      detail: "Bot Slack et verification des webhooks configures cote serveur.",
       missingEnvVars: [],
-      status: "ready-to-connect",
+      status: "connected",
     });
     expect(slack?.plannedScopes).toEqual(
       expect.arrayContaining(["users:read.email", "im:history", "chat:write"]),

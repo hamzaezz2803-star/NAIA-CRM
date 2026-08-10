@@ -82,3 +82,19 @@ export async function getCurrentSupabaseUser() {
 
   return user;
 }
+
+export async function getCurrentSupabaseClaims() {
+  const supabase = await createServerSupabaseClient();
+
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase.auth.getClaims();
+
+  if (error || !data?.claims) {
+    return null;
+  }
+
+  return data.claims;
+}

@@ -13,8 +13,8 @@ const GOOGLE_OAUTH_STATE_COOKIE = "google_oauth_state";
 const GOOGLE_OAUTH_USER_INTENT = "user";
 const GOOGLE_OAUTH_MEETING_INTENT = "meeting-notes";
 
-// Secondary connect/reconnect flow, kept for users signed in via magic link.
-// The primary path captures Google tokens directly at "Sign in with Google".
+// Secondary reconnect/incremental-consent flow for an already Google-authenticated
+// user. The primary path captures Google tokens directly at "Sign in with Google".
 export async function GET(request?: NextRequest) {
   const intent = request
     ? new URL(request.url).searchParams.get("intent")

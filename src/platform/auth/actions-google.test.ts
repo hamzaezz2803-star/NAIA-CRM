@@ -23,7 +23,12 @@ vi.mock("@/platform/auth/supabase-server", () => ({
   createServerSupabaseClient: mocks.createServerSupabaseClient,
 }));
 
-import { signInWithGoogleAction } from "./actions";
+import {
+  changePasswordAction,
+  requestMagicLinkAction,
+  signInWithGoogleAction,
+  signInWithPasswordAction,
+} from "./actions";
 
 describe("Google login scopes", () => {
   beforeEach(() => {
@@ -63,5 +68,36 @@ describe("Google login scopes", () => {
       ].join(" "),
     );
     expect(options.scopes).not.toContain("gmail.send");
+  });
+
+  it.each([
+    ["magic-link", requestMagicLinkAction],
+    ["password", signInWithPasswordAction],
+  ])(
+    "fails the legacy %s action closed without touching Supabase",
+    async (_, action) => {
+      const formData = new FormData();
+      formData.set("email", "ali@qarizmi.com");
+      formData.set("password", "unused-password");
+      formData.set("redirectedFrom", "/meetings");
+
+      await expect(action(formData)).rejects.toThrow(
+        "REDIRECT:/login?error=google-only&redirectedFrom=%2Fmeetings",
+      );
+      expect(mocks.createServerSupabaseClient).not.toHaveBeenCalled();
+      expect(mocks.signInWithOAuth).not.toHaveBeenCalled();
+    },
+  );
+
+  it("fails password changes closed without modifying the Auth user", async () => {
+    const formData = new FormData();
+    formData.set("newPassword", "must-not-be-used");
+
+    await expect(changePasswordAction(formData)).resolves.toEqual({
+      error:
+        "NAIA-os utilise exclusivement la connexion Google. Aucun mot de passe ne peut être créé ou modifié ici.",
+    });
+    expect(mocks.createServerSupabaseClient).not.toHaveBeenCalled();
+    expect(mocks.signInWithOAuth).not.toHaveBeenCalled();
   });
 });

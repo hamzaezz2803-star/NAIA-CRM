@@ -75,6 +75,22 @@ export type GmailMessageSummary = {
   threadId?: string;
 };
 
+export type GmailThreadMessageMetadata = {
+  headers: Record<string, string>;
+  id: string;
+  internalDate?: string;
+  labelIds: string[];
+  snippet?: string;
+  threadId?: string;
+};
+
+export type GmailThreadMetadata = {
+  historyId?: string;
+  id: string;
+  messages: GmailThreadMessageMetadata[];
+  snippet?: string;
+};
+
 export type GmailMeetingNoteMessage = GmailMessageSummary & {
   bodyText: string;
   documentText?: string;
@@ -507,6 +523,290 @@ export async function listGmailMessages(
       };
     }),
   );
+}
+
+const DEFAULT_GMAIL_THREAD_QUERY = "in:inbox newer_than:30d -in:spam -in:trash";
+const DEFAULT_GMAIL_THREAD_RESULTS = 25;
+const MAX_GMAIL_THREAD_RESULTS = 100;
+const MAX_GMAIL_THREAD_MESSAGES = 200;
+const MAX_GMAIL_THREAD_QUERY_LENGTH = 512;
+const GMAIL_THREAD_LIST_PAGE_SIZE = 50;
+const MAX_GMAIL_THREAD_LIST_PAGES = 4;
+const GMAIL_THREAD_DETAIL_CONCURRENCY = 6;
+const GMAIL_THREAD_METADATA_HEADERS = [
+  "From",
+  "To",
+  "Cc",
+  "Reply-To",
+  "Delivered-To",
+  "Subject",
+  "Date",
+  "Message-ID",
+  "In-Reply-To",
+  "References",
+  "List-Id",
+  "List-Unsubscribe",
+  "Precedence",
+  "Auto-Submitted",
+  "X-Auto-Response-Suppress",
+  "Feedback-ID",
+] as const;
+
+/**
+ * Reads complete Gmail conversations as bounded metadata only. Stale 404/410
+ * thread ids are ignored, while provider, rate-limit and malformed-response
+ * errors fail the whole read closed so callers never report a false empty
+ * inbox. Gmail is never modified and message bodies are never requested.
+ */
+export async function listGmailThreadMetadata(
+  {
+    maxResults = DEFAULT_GMAIL_THREAD_RESULTS,
+    query,
+  }: {
+    maxResults?: number;
+    query?: string;
+  } = {},
+  context?: GoogleWorkspaceContext,
+): Promise<GmailThreadMetadata[]> {
+  const boundedMaxResults = boundGmailThreadResults(maxResults);
+  const boundedQuery = normalizeGmailThreadQuery(query);
+  const connection = await getGoogleWorkspaceConnection(context);
+  const accessToken = await getGoogleAccessToken(connection);
+  await revalidateGoogleProviderUse(connection, context);
+  const seenThreadIds = new Set<string>();
+  const seenPageTokens = new Set<string>();
+  const threadIds: string[] = [];
+  let pageToken: string | undefined;
+
+  for (
+    let page = 0;
+    page < MAX_GMAIL_THREAD_LIST_PAGES && threadIds.length < boundedMaxResults;
+    page += 1
+  ) {
+    const listUrl = new URL(
+      "https://gmail.googleapis.com/gmail/v1/users/me/threads",
+    );
+    listUrl.searchParams.set(
+      "maxResults",
+      String(
+        Math.min(
+          GMAIL_THREAD_LIST_PAGE_SIZE,
+          boundedMaxResults - threadIds.length,
+        ),
+      ),
+    );
+    listUrl.searchParams.set("q", boundedQuery);
+    listUrl.searchParams.set("fields", "nextPageToken,threads(id)");
+    if (pageToken) listUrl.searchParams.set("pageToken", pageToken);
+
+    const listResponse = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      method: "GET",
+    });
+    if (!listResponse.ok) {
+      throw new Error(await providerError("Gmail", listResponse));
+    }
+
+    let listPayload: unknown;
+    try {
+      listPayload = await listResponse.json();
+    } catch {
+      throw new Error("Gmail thread list response is invalid.");
+    }
+    if (
+      !isRecord(listPayload) ||
+      (listPayload.threads !== undefined &&
+        !Array.isArray(listPayload.threads)) ||
+      (listPayload.nextPageToken !== undefined &&
+        typeof listPayload.nextPageToken !== "string")
+    ) {
+      throw new Error("Gmail thread list response is invalid.");
+    }
+
+    const listedThreads = Array.isArray(listPayload.threads)
+      ? listPayload.threads
+      : [];
+    for (const thread of listedThreads) {
+      if (!isRecord(thread)) continue;
+      const id = boundedProviderId(thread.id);
+      if (!id || seenThreadIds.has(id)) continue;
+      seenThreadIds.add(id);
+      threadIds.push(id);
+      if (threadIds.length >= boundedMaxResults) break;
+    }
+
+    const nextPageToken = optionalBoundedString(
+      listPayload.nextPageToken,
+      2_048,
+    );
+    if (!nextPageToken) break;
+    if (seenPageTokens.has(nextPageToken)) {
+      throw new Error("Gmail thread pagination response is invalid.");
+    }
+    seenPageTokens.add(nextPageToken);
+    pageToken = nextPageToken;
+  }
+
+  const threads = await mapWithConcurrency(
+    threadIds,
+    GMAIL_THREAD_DETAIL_CONCURRENCY,
+    async (threadId): Promise<GmailThreadMetadata | null> => {
+      const detailUrl = new URL(
+        `https://gmail.googleapis.com/gmail/v1/users/me/threads/${encodeURIComponent(threadId)}`,
+      );
+      detailUrl.searchParams.set("format", "metadata");
+      detailUrl.searchParams.set(
+        "fields",
+        "historyId,id,messages(id,internalDate,labelIds,payload(headers),snippet,threadId),snippet",
+      );
+      for (const header of GMAIL_THREAD_METADATA_HEADERS) {
+        detailUrl.searchParams.append("metadataHeaders", header);
+      }
+      const detailResponse = await fetch(detailUrl, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        method: "GET",
+      });
+      if ([404, 410].includes(detailResponse.status)) return null;
+      if (!detailResponse.ok) {
+        throw new Error(await providerError("Gmail", detailResponse));
+      }
+
+      let detailPayload: unknown;
+      try {
+        detailPayload = await detailResponse.json();
+      } catch {
+        throw new Error("Gmail thread detail response is invalid.");
+      }
+      // A single pathological conversation (for example an extremely long
+      // References header or a thread above our bounded message cap) must not
+      // make the whole mailbox unavailable. Provider/auth/rate-limit failures
+      // above remain fatal; content-level outliers are isolated here.
+      return normalizeGmailThreadMetadata(detailPayload, threadId);
+    },
+  );
+
+  return threads.filter(
+    (thread): thread is GmailThreadMetadata => thread !== null,
+  );
+}
+
+function boundGmailThreadResults(value: number) {
+  if (!Number.isFinite(value)) return DEFAULT_GMAIL_THREAD_RESULTS;
+  return Math.max(1, Math.min(Math.trunc(value), MAX_GMAIL_THREAD_RESULTS));
+}
+
+function normalizeGmailThreadQuery(value?: string) {
+  const query = value?.trim() || DEFAULT_GMAIL_THREAD_QUERY;
+  if (
+    query.length > MAX_GMAIL_THREAD_QUERY_LENGTH ||
+    /[\u0000-\u001f\u007f]/u.test(query)
+  ) {
+    throw new Error("Gmail thread query is invalid.");
+  }
+  return query;
+}
+
+function normalizeGmailThreadMetadata(
+  value: unknown,
+  expectedThreadId: string,
+): GmailThreadMetadata | null {
+  if (!isRecord(value)) return null;
+  const id = boundedProviderId(value.id);
+  if (
+    id !== expectedThreadId ||
+    !Array.isArray(value.messages) ||
+    value.messages.length === 0 ||
+    value.messages.length > MAX_GMAIL_THREAD_MESSAGES
+  ) {
+    return null;
+  }
+
+  const messages: GmailThreadMessageMetadata[] = [];
+  for (const rawMessage of value.messages) {
+    const message = normalizeGmailThreadMessage(rawMessage, id);
+    if (!message) return null;
+    messages.push(message);
+  }
+
+  const historyId = optionalBoundedString(value.historyId, 256);
+  const snippet = optionalTruncatedString(value.snippet, 1_000);
+
+  return {
+    ...(historyId ? { historyId } : {}),
+    id,
+    messages,
+    ...(snippet ? { snippet } : {}),
+  };
+}
+
+function normalizeGmailThreadMessage(
+  value: unknown,
+  expectedThreadId: string,
+): GmailThreadMessageMetadata | null {
+  if (!isRecord(value)) return null;
+  const id = boundedProviderId(value.id);
+  const threadId = optionalBoundedString(value.threadId, 256);
+  if (!id || (threadId && threadId !== expectedThreadId)) return null;
+  if (value.labelIds !== undefined && !Array.isArray(value.labelIds)) {
+    return null;
+  }
+  const labelIds = (value.labelIds ?? []).flatMap((label) => {
+    const normalized = optionalBoundedString(label, 256);
+    return normalized ? [normalized] : [];
+  });
+  if (labelIds.length !== (value.labelIds ?? []).length) return null;
+
+  if (!isRecord(value.payload) || !Array.isArray(value.payload.headers)) {
+    return null;
+  }
+  const headers = normalizeGmailHeaders(value.payload.headers);
+  if (!headers) return null;
+
+  const internalDate = optionalBoundedString(value.internalDate, 32);
+  if (internalDate && !/^\d{1,20}$/u.test(internalDate)) return null;
+  const snippet = optionalTruncatedString(value.snippet, 1_000);
+
+  return {
+    headers,
+    id,
+    ...(internalDate ? { internalDate } : {}),
+    labelIds: [...new Set(labelIds)],
+    ...(snippet ? { snippet } : {}),
+    ...(threadId ? { threadId } : {}),
+  };
+}
+
+function normalizeGmailHeaders(value: unknown[]) {
+  const headers: Record<string, string> = {};
+  for (const header of value.slice(0, 100)) {
+    if (!isRecord(header)) continue;
+    const name = optionalBoundedString(header.name, 128)?.toLowerCase();
+    const headerValue = optionalTruncatedString(header.value, 8_192);
+    if (!name || !headerValue) continue;
+    if (headers[name] === undefined) headers[name] = headerValue;
+  }
+  return headers;
+}
+
+function boundedProviderId(value: unknown) {
+  const id = optionalBoundedString(value, 256);
+  return id && /^[A-Za-z0-9_-]+$/u.test(id) ? id : undefined;
+}
+
+function optionalBoundedString(value: unknown, maxLength: number) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized && normalized.length <= maxLength ? normalized : undefined;
+}
+
+function optionalTruncatedString(value: unknown, maxLength: number) {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized ? normalized.slice(0, maxLength) : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 const GEMINI_MEETING_NOTE_SENDERS = new Set([

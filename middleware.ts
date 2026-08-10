@@ -1,7 +1,7 @@
 import { createServerClient } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
-import { isAuthorizedUser } from "@/platform/auth/access";
+import { isGoogleOnlyAuthorizedUser } from "@/platform/auth/access";
 import {
   getPublicEnv,
   getSupabasePublicKey,
@@ -75,15 +75,13 @@ export async function middleware(request: NextRequest) {
   );
 
   console.log(`[middleware] Path: ${pathname}`);
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+  const { data: claimsData, error } = await supabase.auth.getClaims();
+  const claims = claimsData?.claims;
 
-  if (error || !user) {
+  if (error || !claims) {
     console.log(
-      "[middleware] No active session or getUser error:",
-      error?.message || "No user",
+      "[middleware] No verified claims or getClaims error:",
+      error?.message || "No claims",
     );
     if (process.env.NODE_ENV === "development") {
       console.log(
@@ -97,11 +95,15 @@ export async function middleware(request: NextRequest) {
     });
   }
 
-  console.log("[middleware] Active user session found:", user.email);
+  const email = typeof claims.email === "string" ? claims.email : null;
+  console.log("[middleware] Active user session found:", email);
 
-  if (!isAuthorizedUser(user)) {
-    console.warn("[middleware] User not authorized:", user.email);
-    await supabase.auth.signOut();
+  if (!isGoogleOnlyAuthorizedUser(claims, claims)) {
+    console.warn(
+      "[middleware] User not authorized for Google-only access:",
+      email,
+    );
+    await supabase.auth.signOut({ scope: "local" });
     return rejectProtectedRequest(request, {
       error: "unauthorized",
       message: "Not authorized.",
@@ -109,7 +111,7 @@ export async function middleware(request: NextRequest) {
     });
   }
 
-  console.log("[middleware] Access granted for:", user.email);
+  console.log("[middleware] Access granted for:", email);
   return response;
 }
 

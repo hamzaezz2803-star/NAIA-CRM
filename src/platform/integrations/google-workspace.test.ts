@@ -20,6 +20,7 @@ import {
   googleCalendarIdempotencyId,
   inferGoogleWorkspaceReadCapabilities,
   listGeminiMeetingNoteMessages,
+  listGmailThreadMetadata,
 } from "./google-workspace";
 
 afterEach(() => {
@@ -87,6 +88,374 @@ describe("Google Calendar idempotency", () => {
     ).rejects.toThrow(/authorization changed before use/iu);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+});
+
+describe("Gmail thread metadata reader", () => {
+  it("reads bounded metadata with normalized headers using GET only", async () => {
+    const query = "in:anywhere newer_than:45d -in:spam -in:trash";
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        if (url.pathname.endsWith("/users/me/threads")) {
+          expect(url.searchParams.get("maxResults")).toBe("50");
+          expect(url.searchParams.get("q")).toBe(query);
+          expect(url.searchParams.get("fields")).toBe(
+            "nextPageToken,threads(id)",
+          );
+          return Response.json({
+            threads: [
+              { id: "thread-a" },
+              { id: "thread-a" },
+              { id: "invalid/thread" },
+            ],
+          });
+        }
+
+        expect(url.pathname).toBe("/gmail/v1/users/me/threads/thread-a");
+        expect(url.searchParams.get("format")).toBe("metadata");
+        expect(url.searchParams.get("fields")).toContain("payload(headers)");
+        expect(url.searchParams.getAll("metadataHeaders")).toEqual(
+          expect.arrayContaining([
+            "From",
+            "Subject",
+            "Message-ID",
+            "In-Reply-To",
+            "Auto-Submitted",
+          ]),
+        );
+        return Response.json({
+          historyId: " history-9 ",
+          id: "thread-a",
+          messages: [
+            {
+              id: "message-a",
+              internalDate: "1786000000000",
+              labelIds: ["INBOX", "UNREAD", "UNREAD"],
+              payload: {
+                headers: [
+                  {
+                    name: "From",
+                    value: " Client <client@example.com> ",
+                  },
+                  { name: "SUBJECT", value: " Action required " },
+                  { name: "subject", value: "Must not override" },
+                  {
+                    name: "List-Unsubscribe",
+                    value: "<https://example.com/unsubscribe>",
+                  },
+                ],
+              },
+              snippet: " Latest snippet ",
+              threadId: "thread-a",
+            },
+          ],
+          snippet: " Thread snippet ",
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    await expect(
+      listGmailThreadMetadata({ maxResults: 500, query }, context),
+    ).resolves.toEqual([
+      {
+        historyId: "history-9",
+        id: "thread-a",
+        messages: [
+          {
+            headers: {
+              from: "Client <client@example.com>",
+              "list-unsubscribe": "<https://example.com/unsubscribe>",
+              subject: "Action required",
+            },
+            id: "message-a",
+            internalDate: "1786000000000",
+            labelIds: ["INBOX", "UNREAD"],
+            snippet: "Latest snippet",
+            threadId: "thread-a",
+          },
+        ],
+        snippet: "Thread snippet",
+      },
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses safe defaults and accepts Gmail's empty-list response", async () => {
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        expect(url.searchParams.get("maxResults")).toBe("25");
+        expect(url.searchParams.get("q")).toBe(
+          "in:inbox newer_than:30d -in:spam -in:trash",
+        );
+        return Response.json({ resultSizeEstimate: 0 });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    await expect(listGmailThreadMetadata({}, context)).resolves.toEqual([]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails closed when any live thread detail has a provider error", async () => {
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        if (url.pathname.endsWith("/users/me/threads")) {
+          return Response.json({
+            threads: [{ id: "valid" }, { id: "unavailable" }],
+          });
+        }
+        if (url.pathname.endsWith("/threads/unavailable")) {
+          return new Response("temporary outage", { status: 503 });
+        }
+        return Response.json({
+          id: "valid",
+          messages: [
+            {
+              id: "valid-message",
+              labelIds: ["INBOX"],
+              payload: { headers: [] },
+              threadId: "valid",
+            },
+          ],
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    await expect(listGmailThreadMetadata({}, context)).rejects.toThrow(
+      /Gmail/iu,
+    );
+  });
+
+  it("normalizes oversized content and skips an overlong thread without hiding valid threads", async () => {
+    const oversizedHeader = "x".repeat(9_000);
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        if (url.pathname.endsWith("/users/me/threads")) {
+          return Response.json({
+            threads: [
+              { id: "valid" },
+              { id: "oversized-header" },
+              { id: "overlong-thread" },
+            ],
+          });
+        }
+        if (url.pathname.endsWith("/threads/overlong-thread")) {
+          return Response.json({
+            id: "overlong-thread",
+            messages: Array.from({ length: 201 }, (_, index) => ({
+              id: `message-${index}`,
+              labelIds: ["INBOX"],
+              payload: { headers: [] },
+              threadId: "overlong-thread",
+            })),
+          });
+        }
+        if (url.pathname.endsWith("/threads/oversized-header")) {
+          return Response.json({
+            id: "oversized-header",
+            messages: [
+              {
+                id: "oversized-message",
+                labelIds: ["INBOX"],
+                payload: {
+                  headers: [
+                    { name: "Subject", value: oversizedHeader },
+                    { name: "Cc", value: "" },
+                    null,
+                  ],
+                },
+                snippet: oversizedHeader,
+                threadId: "oversized-header",
+              },
+            ],
+            snippet: oversizedHeader,
+          });
+        }
+        return Response.json({
+          id: "valid",
+          messages: [
+            {
+              id: "valid-message",
+              labelIds: ["INBOX"],
+              payload: { headers: [] },
+              threadId: "valid",
+            },
+          ],
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    const result = await listGmailThreadMetadata({}, context);
+
+    expect(result.map((thread) => thread.id)).toEqual([
+      "valid",
+      "oversized-header",
+    ]);
+    const normalized = result.find(
+      (thread) => thread.id === "oversized-header",
+    );
+    expect(normalized?.snippet).toHaveLength(1_000);
+    expect(normalized?.messages[0].snippet).toHaveLength(1_000);
+    expect(normalized?.messages[0].headers.subject).toHaveLength(8_192);
+    expect(normalized?.messages[0].headers.cc).toBeUndefined();
+  });
+
+  it("ignores a stale 404 thread id while returning complete live threads", async () => {
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        if (url.pathname.endsWith("/users/me/threads")) {
+          return Response.json({
+            threads: [{ id: "valid" }, { id: "stale" }],
+          });
+        }
+        if (url.pathname.endsWith("/threads/stale")) {
+          return new Response("gone", { status: 404 });
+        }
+        return Response.json({
+          id: "valid",
+          messages: [
+            {
+              id: "valid-message",
+              labelIds: ["INBOX"],
+              payload: { headers: [] },
+              threadId: "valid",
+            },
+          ],
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    await expect(listGmailThreadMetadata({}, context)).resolves.toEqual([
+      {
+        id: "valid",
+        messages: [
+          {
+            headers: {},
+            id: "valid-message",
+            labelIds: ["INBOX"],
+            threadId: "valid",
+          },
+        ],
+      },
+    ]);
+  });
+
+  it("paginates thread ids within the bounded scan cap", async () => {
+    const listTokens: Array<string | null> = [];
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        if (url.pathname.endsWith("/users/me/threads")) {
+          const token = url.searchParams.get("pageToken");
+          listTokens.push(token);
+          return token
+            ? Response.json({ threads: [{ id: "thread-second" }] })
+            : Response.json({
+                nextPageToken: "page-2",
+                threads: [{ id: "thread-first" }],
+              });
+        }
+
+        const threadId = url.pathname.split("/").at(-1) ?? "";
+        return Response.json({
+          id: threadId,
+          messages: [
+            {
+              id: `message-${threadId}`,
+              labelIds: ["INBOX"],
+              payload: { headers: [] },
+              threadId,
+            },
+          ],
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    await expect(
+      listGmailThreadMetadata({ maxResults: 100 }, context),
+    ).resolves.toHaveLength(2);
+    expect(listTokens).toEqual([null, "page-2"]);
+  });
+
+  it("bounds concurrent Gmail thread-detail reads", async () => {
+    let activeDetailReads = 0;
+    let maximumConcurrentReads = 0;
+    const fetchMock = vi.fn(
+      async (input: string | URL | Request, init?: RequestInit) => {
+        expect(init?.method).toBe("GET");
+        const url = requestUrl(input);
+        if (url.pathname.endsWith("/users/me/threads")) {
+          return Response.json({
+            threads: Array.from({ length: 12 }, (_, index) => ({
+              id: `thread-${index}`,
+            })),
+          });
+        }
+
+        activeDetailReads += 1;
+        maximumConcurrentReads = Math.max(
+          maximumConcurrentReads,
+          activeDetailReads,
+        );
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        activeDetailReads -= 1;
+        const threadId = url.pathname.split("/").at(-1) ?? "";
+        return Response.json({
+          id: threadId,
+          messages: [
+            {
+              id: `message-${threadId}`,
+              labelIds: [],
+              payload: { headers: [] },
+              threadId,
+            },
+          ],
+        });
+      },
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const context = installGoogleContext(googleConnection());
+
+    const threads = await listGmailThreadMetadata({}, context);
+
+    expect(threads).toHaveLength(12);
+    expect(maximumConcurrentReads).toBe(6);
+  });
+
+  it.each(["in:inbox\nfrom:attacker@example.com", "x".repeat(513)])(
+    "rejects an unsafe query before resolving credentials: %s",
+    async (query) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      await expect(listGmailThreadMetadata({ query })).rejects.toThrow(
+        "Gmail thread query is invalid.",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(mocks.createServiceRoleSupabaseClient).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("Gemini meeting-note mailbox isolation", () => {
@@ -573,6 +942,31 @@ describe("Gemini meeting-note mailbox isolation", () => {
     );
   });
 });
+
+function requestUrl(input: string | URL | Request) {
+  return new URL(
+    typeof input === "string"
+      ? input
+      : input instanceof URL
+        ? input.toString()
+        : input.url,
+  );
+}
+
+function googleConnection() {
+  return {
+    connected_by_profile_id: "profile-1",
+    encrypted_token_reference: JSON.stringify({
+      access_token: "redacted-test-token",
+      expiry_date: Date.now() + 3_600_000,
+    }),
+    external_account_label: "ali@qarizmi.com",
+    id: "connection-1",
+    organization_id: "organization-1",
+    scopes: [...GOOGLE_USER_SCOPES],
+    status: "connected",
+  };
+}
 
 function installGoogleContext(connection: Record<string, unknown>) {
   return installGoogleContextWithUpdate(connection).context;

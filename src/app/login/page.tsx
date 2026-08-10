@@ -1,24 +1,18 @@
-import { LockKeyhole, Mail, ShieldCheck } from "lucide-react";
+import { LockKeyhole, ShieldCheck } from "lucide-react";
 import Image from "next/image";
 import { redirect } from "next/navigation";
 
 import { PageHeader } from "@/components/layout/page-header";
 import { StatusBadge } from "@/components/ui/status-badge";
-import {
-  requestMagicLinkAction,
-  signInWithGoogleAction,
-} from "@/platform/auth/actions";
-import { isAuthorizedUser } from "@/platform/auth/access";
+import { signInWithGoogleAction } from "@/platform/auth/actions";
+import { isGoogleOnlyAuthorizedUser } from "@/platform/auth/access";
 import { isSupabaseConfigured } from "@/platform/auth/config";
 import { sanitizeRedirectPath } from "@/platform/auth/safe-redirect";
-import { getCurrentSupabaseUser } from "@/platform/auth/supabase-server";
-
-import { MagicLinkSubmitButton } from "./magic-link-submit-button";
+import { getCurrentSupabaseClaims } from "@/platform/auth/supabase-server";
 
 type LoginPageProps = {
   searchParams?: Promise<{
     error?: string;
-    notice?: string;
     redirectedFrom?: string;
   }>;
 };
@@ -27,14 +21,16 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
   const configured = isSupabaseConfigured();
   const params = await searchParams;
   const redirectedFrom = sanitizeRedirectPath(params?.redirectedFrom);
-  const currentUser = await getCurrentSupabaseUser();
+  const currentClaims = await getCurrentSupabaseClaims();
 
-  if (currentUser && isAuthorizedUser(currentUser)) {
+  if (
+    currentClaims &&
+    isGoogleOnlyAuthorizedUser(currentClaims, currentClaims)
+  ) {
     redirect(redirectedFrom);
   }
 
   const errorMessage = getLoginErrorMessage(params?.error);
-  const noticeMessage = getLoginNoticeMessage(params?.notice);
 
   return (
     <main
@@ -141,45 +137,6 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                 >
                   Sign in with Google
                 </button>
-              </form>
-              <form
-                action={requestMagicLinkAction}
-                className="rounded-lg border border-stone-200 p-5"
-              >
-                <input
-                  name="redirectedFrom"
-                  type="hidden"
-                  value={redirectedFrom}
-                />
-                <Mail className="h-5 w-5 text-teal-700" />
-                <h2 className="mt-4 text-base font-semibold text-stone-950">
-                  Email sign-in link
-                </h2>
-                <div className="mt-4 space-y-2">
-                  <label
-                    className="text-sm font-medium text-stone-800"
-                    htmlFor="magic-email"
-                  >
-                    Email
-                  </label>
-                  <input
-                    autoComplete="email"
-                    className="h-11 w-full rounded-md border border-stone-300 bg-white px-3 text-sm text-stone-950 outline-none transition placeholder:text-stone-400 focus:border-teal-700 focus:ring-2 focus:ring-teal-700/20 disabled:bg-stone-100 disabled:text-stone-500"
-                    disabled={!configured}
-                    id="magic-email"
-                    name="email"
-                    required
-                    type="email"
-                  />
-                </div>
-                {noticeMessage ? (
-                  <p
-                    className="mt-4 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-800"
-                    role="status"
-                  >
-                    {noticeMessage}
-                  </p>
-                ) : null}
                 {errorMessage ? (
                   <p
                     className="mt-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
@@ -188,7 +145,6 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                     {errorMessage}
                   </p>
                 ) : null}
-                <MagicLinkSubmitButton disabled={!configured} />
               </form>
             </div>
             <div className="rounded-lg border border-stone-200 p-5">
@@ -197,17 +153,16 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
                 Qarizmi-only access
               </h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                Google sign-in is reserved for @qarizmi.com accounts. New
-                teammates are provisioned automatically as members; roles are
-                managed by the cofounders.
+                Google sign-in is mandatory and reserved for approved
+                @qarizmi.com accounts.
               </p>
               <ShieldCheck className="h-5 w-5 text-emerald-700" />
               <h2 className="mt-4 text-base font-semibold text-stone-950">
                 NAIA-os-only policy
               </h2>
               <p className="mt-2 text-sm leading-6 text-stone-600">
-                By default, access is restricted to approved NAIA-os email
-                accounts and can be narrowed to exact addresses in Vercel.
+                NAIA-os requires both a linked Google identity and a verified
+                Google OAuth session in addition to the email allowlist.
               </p>
             </div>
           </div>
@@ -221,31 +176,16 @@ function getLoginErrorMessage(error: string | undefined) {
   switch (error) {
     case "config":
       return "Supabase authentication is not configured for this environment.";
-    case "invalid":
-      return "The email or password is incorrect.";
-    case "missing":
-      return "Enter your email and password.";
-    case "missing-email":
-      return "Enter your NAIA-os email.";
-    case "magic-link":
-      return "A sign-in link could not be sent for that email.";
+    case "google-only":
+      return "NAIA-os accepts Google sign-in only. Continue with your approved Google account.";
     case "google":
       return "Google sign-in could not be started. Check the Supabase Google provider configuration.";
     case "google-signin":
       return "Google sign-in was cancelled or failed. Please try again.";
     case "invalid-link":
-      return "That sign-in link is invalid or expired.";
+      return "That Google sign-in link is invalid or expired.";
     case "unauthorized":
       return "This account is not authorized for NAIA-os.";
-    default:
-      return null;
-  }
-}
-
-function getLoginNoticeMessage(notice: string | undefined) {
-  switch (notice) {
-    case "sent":
-      return "Check your NAIA-os inbox for a sign-in link.";
     default:
       return null;
   }

@@ -64,6 +64,26 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       };
     }
 
+    if (provider.provider === "slack") {
+      const isConfigured = missingEnvVars.length === 0;
+
+      return {
+        capabilities: [...provider.capabilities],
+        detail: isConfigured
+          ? "Bot Slack et verification des webhooks configures cote serveur."
+          : `Variables manquantes: ${missingEnvVars.join(", ")}.`,
+        envVars: [...provider.envVars],
+        externalAccountLabel: undefined,
+        isImplemented: true,
+        label: provider.label,
+        missingEnvVars,
+        plannedScopes: [...provider.plannedScopes],
+        provider: provider.provider,
+        scopes: [],
+        status: isConfigured ? "connected" : "not-configured",
+      };
+    }
+
     if (
       connection &&
       connection.status !== "revoked" &&

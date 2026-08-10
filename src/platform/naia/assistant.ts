@@ -32,11 +32,18 @@ import {
 import {
   inspectGoogleWorkspaceCapabilities,
   listGmailMessages,
+  listGmailThreadMetadata,
   listGoogleCalendarEvents,
   type GmailMessageSummary,
   type GoogleCalendarEventSummary,
   type GoogleWorkspaceContext,
 } from "@/platform/integrations/google-workspace";
+import {
+  formatGmailTriageReason,
+  GMAIL_TRIAGE_QUERY,
+  triageGmailThreads,
+  type GmailTriageItem,
+} from "@/features/naia/gmail-triage";
 import { completeGroqJson, getGroqApiKey } from "@/platform/ai/groq";
 import {
   loadNaiaPrivateKnowledge,
@@ -80,6 +87,7 @@ export async function planNaiaAssistant({
   allowPersonalData = true,
   command,
   crmLeads,
+  gmailCrmLeads = crmLeads,
   googleContext,
   history = [],
   pageContext,
@@ -89,6 +97,7 @@ export async function planNaiaAssistant({
   allowPersonalData?: boolean;
   command: string;
   crmLeads: CrmLeadSummary[];
+  gmailCrmLeads?: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
   history?: NaiaConversationMessage[];
   pageContext?: NaiaPageContext;
@@ -146,6 +155,7 @@ export async function planNaiaAssistant({
     allowPersonalData,
     command: personalCommand,
     crmLeads: crmReadLeads,
+    gmailCrmLeads,
     googleContext,
     meetingPagePeriod: getContextualMeetingPeriod(command, pageContext),
     privateKnowledge: resolvedPrivateKnowledge,
@@ -461,6 +471,7 @@ async function answerPersonalQuery({
   allowPersonalData,
   command,
   crmLeads,
+  gmailCrmLeads,
   googleContext,
   meetingPagePeriod,
   privateKnowledge,
@@ -470,6 +481,7 @@ async function answerPersonalQuery({
   allowPersonalData: boolean;
   command: string;
   crmLeads: CrmLeadSummary[];
+  gmailCrmLeads: CrmLeadSummary[];
   googleContext?: GoogleWorkspaceContext;
   meetingPagePeriod?: "past" | "upcoming";
   privateKnowledge?: NaiaPrivateKnowledgeContext;
@@ -541,16 +553,34 @@ async function answerPersonalQuery({
     try {
       const urgent = isUrgentGmailQuery(command);
       const normalized = normalizePersonalQuery(command);
+      if (urgent) {
+        const threads = await listGmailThreadMetadata(
+          {
+            maxResults: 100,
+            query: GMAIL_TRIAGE_QUERY,
+          },
+          googleContext,
+        );
+        const candidates = triageGmailThreads({
+          accountEmail: actor?.email,
+          crmLeads: gmailCrmLeads,
+          maxResults: 10,
+          threads,
+        });
+        return createDirectAnswer({
+          agentId: "integrations",
+          command: resultCommand,
+          crmLeads,
+          response: formatGmailTriageAnswer(candidates),
+        });
+      }
+
       const messages = await listGmailMessages(
         {
-          maxResults: urgent ? 10 : 8,
-          query: urgent
-            ? "is:unread newer_than:14d {label:important subject:urgent subject:important}"
-            : undefined,
+          maxResults: 8,
+          query: undefined,
           unreadOnly:
-            urgent ||
-            normalized.includes("non lu") ||
-            normalized.includes("unread"),
+            normalized.includes("non lu") || normalized.includes("unread"),
         },
         googleContext,
       );
@@ -558,7 +588,7 @@ async function answerPersonalQuery({
         agentId: "integrations",
         command: resultCommand,
         crmLeads,
-        response: formatGmailAnswer(messages, urgent),
+        response: formatGmailAnswer(messages),
       });
     } catch (error) {
       return createDirectAnswer({
@@ -812,28 +842,80 @@ function formatCrmMeetingLine(lead: CrmLeadSummary) {
   return `• ${company}${contact}${date}`;
 }
 
-function formatGmailAnswer(messages: GmailMessageSummary[], urgent: boolean) {
+function formatGmailAnswer(messages: GmailMessageSummary[]) {
   if (messages.length === 0) {
-    return urgent
-      ? "Je n'ai trouvé aucun mail urgent non lu dans Gmail sur les 14 derniers jours."
-      : "Je n'ai trouvé aucun mail correspondant dans Gmail.";
+    return "Je n'ai trouvé aucun mail correspondant dans Gmail.";
   }
 
-  const heading = urgent
-    ? messages.length === 1
-      ? "J'ai trouvé 1 mail urgent ou important non lu:"
-      : `J'ai trouvé ${messages.length} mails urgents ou importants non lus:`
-    : messages.length === 1
+  const heading =
+    messages.length === 1
       ? "J'ai trouvé 1 mail dans Gmail:"
       : `J'ai trouvé ${messages.length} mails dans Gmail:`;
   const lines = messages.slice(0, 8).map((message) => {
-    const sender = message.from ?? "Expéditeur inconnu";
-    const subject = message.subject ?? "Sans objet";
+    const sender = cleanAssistantProviderText(
+      message.from ?? "Expéditeur inconnu",
+      140,
+    );
+    const subject = cleanAssistantProviderText(
+      message.subject ?? "Sans objet",
+      180,
+    );
     const date = formatMailDate(message.date);
     return `• ${subject} — ${sender}${date ? ` (${date})` : ""}`;
   });
 
   return [heading, ...lines].join("\n").slice(0, 2800);
+}
+
+function formatGmailTriageAnswer(items: GmailTriageItem[]) {
+  if (items.length === 0) {
+    return "Je n'ai trouvé aucun échange humain récent qui semble attendre ta réponse. Les notifications automatiques (GitHub, Dependabot, noreply et listes de diffusion) sont exclues de ce tri.";
+  }
+
+  const priorityLabels: Record<GmailTriageItem["priority"], string> = {
+    important: "Important",
+    reply: "À répondre",
+    urgent: "Priorité haute",
+  };
+  const lines = items.slice(0, 10).map((item) => {
+    const reasons = item.reasons
+      .filter(
+        (reason) =>
+          !["direct-recipient", "gmail-important", "gmail-starred"].includes(
+            reason,
+          ),
+      )
+      .slice(0, 3)
+      .map(formatGmailTriageReason)
+      .join(" · ");
+    const date = formatMailDate(item.date);
+    const context = [reasons, date].filter(Boolean).join(" · ");
+    const subject = cleanAssistantProviderText(item.subject, 180);
+    const sender = cleanAssistantProviderText(item.from, 140);
+    return `• [${priorityLabels[item.priority]}] ${subject} — ${sender}${context ? ` (${context})` : ""}`;
+  });
+
+  return [
+    items.length === 1
+      ? "J'ai analysé les fils Gmail récents et trouvé 1 conversation humaine qui attend probablement ta réponse:"
+      : `J'ai analysé les fils Gmail récents et trouvé ${items.length} conversations humaines qui attendent probablement ta réponse:`,
+    ...lines,
+    "Les bots, noreply, notifications GitHub/Dependabot et listes de diffusion sont exclus; la priorité combine le CRM, l'état lu/non lu, l'absence de réponse et le contenu de la demande.",
+  ]
+    .join("\n")
+    .slice(0, 2800);
+}
+
+function cleanAssistantProviderText(value: string, maxLength: number) {
+  return value
+    .replace(/@(channel|everyone|here)/giu, "@\u200b$1")
+    .replaceAll("&", "＆")
+    .replaceAll("<", "‹")
+    .replaceAll(">", "›")
+    .replace(/[\u0000-\u001f\u007f]+/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, maxLength);
 }
 
 function formatCalendarAnswer(

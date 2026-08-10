@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   extractLeadFromNaturalTextAction: vi.fn(),
   inspectGoogleWorkspaceCapabilities: vi.fn(),
   listGmailMessages: vi.fn(),
+  listGmailThreadMetadata: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
 }));
 
@@ -22,6 +23,7 @@ vi.mock("@/platform/integrations/google-workspace", () => ({
   createGoogleCalendarReminder: mocks.createGoogleCalendarReminder,
   inspectGoogleWorkspaceCapabilities: mocks.inspectGoogleWorkspaceCapabilities,
   listGmailMessages: mocks.listGmailMessages,
+  listGmailThreadMetadata: mocks.listGmailThreadMetadata,
   listGoogleCalendarEvents: mocks.listGoogleCalendarEvents,
 }));
 
@@ -112,16 +114,27 @@ function fakeServiceRoleClient({
   leads?: unknown[];
 } = {}) {
   const crmEq = vi.fn(() => crmQuery);
+  const crmIn = vi.fn(() => crmQuery);
+  const crmRange = vi.fn((from: number, to: number) =>
+    Promise.resolve({
+      data: leads.slice(from, to + 1),
+      error: null,
+    }),
+  );
   const crmQuery = {
     eq: crmEq,
+    in: crmIn,
     is: () => crmQuery,
     limit: vi.fn().mockResolvedValue({ data: leads, error: null }),
     order: () => crmQuery,
+    range: crmRange,
     select: () => crmQuery,
   };
 
   return {
     crmEq,
+    crmIn,
+    crmRange,
     rpc: vi.fn((functionName: string, args: unknown) => {
       if (functionName === "claim_crm_bridge_action") {
         return mocks.claimBridgeAction(args);
@@ -167,6 +180,26 @@ describe("executeBridgeAction single-use approval tokens", () => {
     );
     mocks.listGmailMessages.mockResolvedValue([
       { from: "nabil@qarizmi.com", id: "gmail-1", subject: "Demo client" },
+    ]);
+    mocks.listGmailThreadMetadata.mockResolvedValue([
+      {
+        id: "thread-client",
+        messages: [
+          {
+            headers: {
+              date: "Mon, 10 Aug 2026 08:00:00 +0000",
+              from: "Client <client@example.com>",
+              subject: "Demo client",
+              to: "Ali <ali@qarizmi.com>",
+            },
+            id: "gmail-thread-message-1",
+            internalDate: String(
+              new Date("2026-08-10T08:00:00.000Z").getTime(),
+            ),
+            labelIds: ["INBOX", "UNREAD"],
+          },
+        ],
+      },
     ]);
     mocks.listGoogleCalendarEvents.mockResolvedValue([
       {
@@ -570,11 +603,10 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(capability.response).toContain("Gmail en lecture");
     expect(urgent.actions).toHaveLength(0);
     expect(urgent.response).toContain("Demo client");
-    expect(mocks.listGmailMessages).toHaveBeenCalledWith(
+    expect(mocks.listGmailThreadMetadata).toHaveBeenCalledWith(
       expect.objectContaining({
         query:
-          "is:unread newer_than:14d {label:important subject:urgent subject:important}",
-        unreadOnly: true,
+          "newer_than:30d -in:sent -in:drafts -in:spam -in:trash -category:promotions -category:social -category:forums -from:notifications@github.com -from:noreply -from:no-reply -from:donotreply -from:do-not-reply -from:dependabot",
       }),
       expect.objectContaining({
         organizationId: "org-1",
@@ -593,11 +625,80 @@ describe("executeBridgeAction single-use approval tokens", () => {
     );
 
     expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+    expect(mocks.listGmailThreadMetadata).not.toHaveBeenCalled();
     expect(mocks.inspectGoogleWorkspaceCapabilities).not.toHaveBeenCalled();
+    expect(mocks.createServiceRoleSupabaseClient).not.toHaveBeenCalled();
     expect(plan.actions).toHaveLength(0);
     expect(plan.response).toContain("message privé");
     expect(plan.response).not.toContain("Demo client");
     expect(plan.response).not.toContain(bridgeUser.email);
+  });
+
+  it("pages a minimal active CRM email index and carries overdue actions into Gmail triage", async () => {
+    const leads = Array.from({ length: 501 }, (_, index) => ({
+      access_scope: "organization",
+      company: {
+        access_scope: "organization",
+        archived_at: null,
+        name: `Company ${index}`,
+        organization_id: "org-1",
+      },
+      contact: {
+        access_scope: "organization",
+        archived_at: null,
+        email:
+          index === 500 ? "client@example.com" : `client-${index}@example.com`,
+        organization_id: "org-1",
+      },
+      created_at: `2026-08-09T${String(index % 24).padStart(2, "0")}:00:00.000Z`,
+      id: `lead-${index}`,
+      next_action: "Relancer le client",
+      next_action_date: "2020-01-01",
+      organization_id: "org-1",
+      status: "contacted",
+      topic: `Lead ${index}`,
+      updated_at: "2026-08-09T00:00:00.000Z",
+    }));
+    const client = fakeServiceRoleClient({ leads });
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(client);
+    mocks.listGmailThreadMetadata.mockResolvedValue([
+      {
+        id: "thread-overdue-client",
+        messages: [
+          {
+            headers: {
+              date: new Date().toUTCString(),
+              from: "Client <client@example.com>",
+              subject: "Point client",
+              to: "Ali <ali@qarizmi.com>",
+            },
+            id: "gmail-overdue-client",
+            internalDate: String(Date.now()),
+            labelIds: ["INBOX"],
+          },
+        ],
+      },
+    ]);
+
+    const plan = await planBridgeCommand(
+      bridgeUser,
+      "quels sont mes mails urgents ?",
+    );
+
+    expect(client.crmIn).toHaveBeenCalledWith("status", [
+      "contacted",
+      "lead-to-contact",
+      "meeting-booked",
+      "proposal-sent",
+      "to-follow-up",
+      "won",
+    ]);
+    expect(client.crmRange.mock.calls).toEqual([
+      [0, 499],
+      [500, 999],
+    ]);
+    expect(plan.response).toContain("contact client dans le CRM");
+    expect(plan.response).toContain("relance CRM arrivée à échéance");
   });
 
   it("keeps new lead contact capture in CRM even when a presentation is mentioned", async () => {
