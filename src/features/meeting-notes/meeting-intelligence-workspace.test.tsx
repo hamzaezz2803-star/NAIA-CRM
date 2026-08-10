@@ -1,15 +1,20 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { MeetingIntelligenceState } from "./contracts";
 
 const mocks = vi.hoisted(() => ({
   approveMeetingOutputAction: vi.fn(),
+  askMeetingKnowledgeAction: vi.fn(),
   fetchMeetingIntelligenceAction: vi.fn(),
   fetchMeetingTranscriptAction: vi.fn(),
+  linkGeminiArtifactToMeetingAction: vi.fn(),
   queueMeetingProcessingAction: vi.fn(),
+  registerMeetingSupportAction: vi.fn(),
   retryMeetingDriveArchiveAction: vi.fn(),
   retryMeetingProcessingAction: vi.fn(),
+  saveMeetingCaptureDraftAction: vi.fn(),
+  syncGeminiMeetingNotesAction: vi.fn(),
   remove: vi.fn(),
   storageFrom: vi.fn(),
   upload: vi.fn(),
@@ -17,11 +22,16 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./actions", () => ({
   approveMeetingOutputAction: mocks.approveMeetingOutputAction,
+  askMeetingKnowledgeAction: mocks.askMeetingKnowledgeAction,
   fetchMeetingIntelligenceAction: mocks.fetchMeetingIntelligenceAction,
   fetchMeetingTranscriptAction: mocks.fetchMeetingTranscriptAction,
+  linkGeminiArtifactToMeetingAction: mocks.linkGeminiArtifactToMeetingAction,
   queueMeetingProcessingAction: mocks.queueMeetingProcessingAction,
+  registerMeetingSupportAction: mocks.registerMeetingSupportAction,
   retryMeetingDriveArchiveAction: mocks.retryMeetingDriveArchiveAction,
   retryMeetingProcessingAction: mocks.retryMeetingProcessingAction,
+  saveMeetingCaptureDraftAction: mocks.saveMeetingCaptureDraftAction,
+  syncGeminiMeetingNotesAction: mocks.syncGeminiMeetingNotesAction,
 }));
 
 vi.mock("@/platform/auth/supabase-client", () => ({
@@ -40,10 +50,12 @@ const baseState: MeetingIntelligenceState = {
   configured: true,
   meetings: [
     {
+      attendees: [],
       companyName: "HPS",
       contactName: "Abdeslam Alaoui",
       id: meetingId,
       leadId: "55555555-5555-4555-8555-555555555555",
+      liveNotesMarkdown: "",
       organizationId,
       startsAt: "2026-07-18T10:00:00.000Z",
       status: "scheduled",
@@ -56,6 +68,11 @@ const baseState: MeetingIntelligenceState = {
 describe("MeetingIntelligenceWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    try {
+      window.localStorage.clear();
+    } catch {
+      // Node can run jsdom without a persisted localStorage file.
+    }
     mocks.upload.mockResolvedValue({ error: null });
     mocks.remove.mockResolvedValue({ error: null });
     mocks.storageFrom.mockReturnValue({
@@ -63,6 +80,24 @@ describe("MeetingIntelligenceWorkspace", () => {
       upload: mocks.upload,
     });
     mocks.queueMeetingProcessingAction.mockResolvedValue({ success: true });
+    mocks.registerMeetingSupportAction.mockResolvedValue({ success: true });
+    mocks.saveMeetingCaptureDraftAction.mockResolvedValue({ success: true });
+    mocks.syncGeminiMeetingNotesAction.mockResolvedValue({
+      imported: 0,
+      matched: 0,
+      nextPageToken: undefined,
+      scanned: 0,
+      success: true,
+      total: 0,
+    });
+    mocks.linkGeminiArtifactToMeetingAction.mockResolvedValue({
+      success: true,
+    });
+    mocks.askMeetingKnowledgeAction.mockResolvedValue({
+      answer: "Passages pertinents.",
+      sources: [],
+      success: true,
+    });
     mocks.fetchMeetingTranscriptAction.mockResolvedValue({
       success: true,
       transcriptSrt:
@@ -80,6 +115,10 @@ describe("MeetingIntelligenceWorkspace", () => {
     vi.spyOn(crypto, "randomUUID").mockReturnValue(sessionId);
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("uploads an imported recording in 5 MB chunks before queuing it", async () => {
     render(<MeetingIntelligenceWorkspace initialState={baseState} />);
 
@@ -88,8 +127,9 @@ describe("MeetingIntelligenceWorkspace", () => {
       "meeting.m4a",
       { type: "audio/mp4" },
     );
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     expect(input).not.toBeNull();
 
     fireEvent.change(input as HTMLInputElement, {
@@ -136,7 +176,7 @@ describe("MeetingIntelligenceWorkspace", () => {
     );
   });
 
-  it("removes uploaded chunks when a later chunk fails", async () => {
+  it("preserves uploaded chunks when a later chunk fails", async () => {
     mocks.upload
       .mockResolvedValueOnce({ error: null })
       .mockResolvedValueOnce({ error: { message: "network down" } });
@@ -147,19 +187,18 @@ describe("MeetingIntelligenceWorkspace", () => {
       "meeting.m4a",
       { type: "audio/mp4" },
     );
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
 
     await waitFor(() => {
-      expect(mocks.remove).toHaveBeenCalledWith([
-        `${organizationId}/${meetingId}/${sessionId}/chunk-0000.m4a`,
-      ]);
+      expect(screen.getByText(/Envoi audio interrompu/)).toBeInTheDocument();
     });
     expect(mocks.queueMeetingProcessingAction).not.toHaveBeenCalled();
-    expect(screen.getByText(/Envoi audio interrompu/)).toBeInTheDocument();
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it("does not upload a chunk when hashing fails", async () => {
@@ -171,8 +210,9 @@ describe("MeetingIntelligenceWorkspace", () => {
     const audio = new File([new Uint8Array([1])], "meeting.m4a", {
       type: "audio/mp4",
     });
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
@@ -194,8 +234,9 @@ describe("MeetingIntelligenceWorkspace", () => {
     const audio = new File([new Uint8Array([1])], "meeting.m4a", {
       type: "audio/mp4",
     });
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
@@ -209,7 +250,7 @@ describe("MeetingIntelligenceWorkspace", () => {
     expect(mocks.remove).not.toHaveBeenCalled();
   });
 
-  it("removes uploaded chunks after an explicit pre-commit queue rejection", async () => {
+  it("preserves uploaded chunks after an explicit pre-commit queue rejection", async () => {
     mocks.queueMeetingProcessingAction.mockResolvedValueOnce({
       discardUploadedAudio: true,
       error: "Un traitement est déjà en cours pour ce meeting.",
@@ -220,18 +261,429 @@ describe("MeetingIntelligenceWorkspace", () => {
     const audio = new File([new Uint8Array([1])], "meeting.m4a", {
       type: "audio/mp4",
     });
-    const input =
-      document.querySelector<HTMLInputElement>('input[type="file"]');
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="audio"]',
+    );
     fireEvent.change(input as HTMLInputElement, {
       target: { files: [audio] },
     });
 
     await waitFor(() => {
-      expect(mocks.remove).toHaveBeenCalledWith([
-        `${organizationId}/${meetingId}/${sessionId}/chunk-0000.m4a`,
-      ]);
+      expect(screen.getByText(/déjà en cours/)).toBeInTheDocument();
     });
-    expect(screen.getByText(/déjà en cours/)).toBeInTheDocument();
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+
+  it("requires explicit informed consent before recording", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Démarrer l'enregistrement" }),
+    );
+
+    expect(
+      await screen.findByText(
+        /^Confirme que les participants ont été informés/i,
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("uses the discreet control to start, pause and resume capture", async () => {
+    const pause = vi.fn();
+    const resume = vi.fn();
+    class FakeMediaRecorder {
+      static isTypeSupported = () => true;
+      mimeType = "audio/mp4";
+      ondataavailable: ((event: { data: Blob }) => void) | null = null;
+      onstop: (() => void) | null = null;
+      state: "inactive" | "paused" | "recording" = "inactive";
+
+      pause() {
+        this.state = "paused";
+        pause();
+      }
+
+      resume() {
+        this.state = "recording";
+        resume();
+      }
+
+      start() {
+        this.state = "recording";
+      }
+
+      stop() {
+        this.state = "inactive";
+      }
+    }
+    const stopTrack = vi.fn();
+    vi.stubGlobal("MediaRecorder", FakeMediaRecorder);
+    vi.stubGlobal("navigator", {
+      ...window.navigator,
+      mediaDevices: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: stopTrack }],
+        }),
+      },
+    });
+
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+    fireEvent.click(
+      screen.getByRole("checkbox", {
+        name: /participants ont été informés/i,
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Démarrer l'enregistrement" }),
+    );
+    const pauseButton = await screen.findByRole("button", {
+      name: "Mettre l'enregistrement en pause",
+    });
+    fireEvent.click(pauseButton);
+    expect(pause).toHaveBeenCalledTimes(1);
+    const resumeButton = screen.getByRole("button", {
+      name: "Reprendre l'enregistrement",
+    });
+    fireEvent.click(resumeButton);
+    expect(resume).toHaveBeenCalledTimes(1);
+  });
+
+  it("syncs Gemini read-only and searches private meeting knowledge", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    );
+    await waitFor(() => {
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenCalledWith({
+        pageToken: undefined,
+      });
+    });
+    expect(
+      screen.getByText(/0 message\(s\) Gmail analysé\(s\)/i),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText(/Qu'avons-nous décidé/i), {
+      target: { value: "Qu'avons-nous décidé pour le lancement ?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
+    await waitFor(() =>
+      expect(mocks.askMeetingKnowledgeAction).toHaveBeenCalledWith({
+        meetingId,
+        question: "Qu'avons-nous décidé pour le lancement ?",
+        scope: "meeting",
+      }),
+    );
+    expect(screen.getByText("Passages pertinents.")).toBeInTheDocument();
+  });
+
+  it("continues the Gemini backfill with the returned cursor and reports scanned messages", async () => {
+    mocks.syncGeminiMeetingNotesAction
+      .mockResolvedValueOnce({
+        imported: 2,
+        matched: 1,
+        nextPageToken: "gmail-page-2",
+        scanned: 200,
+        success: true,
+        total: 2,
+      })
+      .mockResolvedValueOnce({
+        imported: 0,
+        matched: 0,
+        nextPageToken: undefined,
+        scanned: 37,
+        success: true,
+        total: 0,
+      });
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenNthCalledWith(1, {
+        pageToken: undefined,
+      });
+    });
+    expect(
+      await screen.findByText(/200 message\(s\) Gmail analysé\(s\)/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Continuer le backfill Gemini" }),
+    ).toBeEnabled();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Continuer le backfill Gemini" }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.syncGeminiMeetingNotesAction).toHaveBeenNthCalledWith(2, {
+        pageToken: "gmail-page-2",
+      });
+    });
+    expect(
+      await screen.findByText(/37 message\(s\) Gmail analysé\(s\)/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    ).toBeEnabled();
+  });
+
+  it("searches only the 50 most recent meetings when requested", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.change(screen.getByLabelText("Périmètre de recherche"), {
+      target: { value: "recent" },
+    });
+    expect(
+      screen.getByRole("option", { name: "50 meetings récents" }),
+    ).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText(/Qu'avons-nous décidé/i), {
+      target: { value: "Quelles décisions sont encore ouvertes ?" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Rechercher" }));
+
+    await waitFor(() => {
+      expect(mocks.askMeetingKnowledgeAction).toHaveBeenCalledWith({
+        meetingId: undefined,
+        question: "Quelles décisions sont encore ouvertes ?",
+        scope: "recent",
+      });
+    });
+  });
+
+  it("authorizes Meet documents in a popup and trusts only the same origin callback", async () => {
+    const popup = { close: vi.fn(), closed: false };
+    const open = vi
+      .spyOn(window, "open")
+      .mockReturnValue(popup as unknown as Window);
+    mocks.fetchMeetingIntelligenceAction.mockResolvedValueOnce({
+      ...baseState,
+      geminiDocumentAccess: true,
+    });
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    expect(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    ).toBeEnabled();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Autoriser les documents Meet" }),
+    );
+    expect(open).toHaveBeenCalledWith(
+      "/api/integrations/google/auth?intent=meeting-notes",
+      "GoogleMeetingNotesAuth",
+      expect.stringContaining("width=520"),
+    );
+    expect(
+      screen.getByRole("button", {
+        name: "Synchroniser les notes Gemini depuis Gmail",
+      }),
+    ).toBeEnabled();
+
+    fireEvent(
+      window,
+      new MessageEvent("message", {
+        data: { type: "GOOGLE_AUTH_SUCCESS" },
+        origin: "https://attacker.example",
+      }),
+    );
+    expect(mocks.fetchMeetingIntelligenceAction).not.toHaveBeenCalled();
+
+    fireEvent(
+      window,
+      new MessageEvent("message", {
+        data: { type: "GOOGLE_AUTH_SUCCESS" },
+        origin: window.location.origin,
+      }),
+    );
+
+    await waitFor(() => {
+      expect(mocks.fetchMeetingIntelligenceAction).toHaveBeenCalledTimes(1);
+    });
+    expect(popup.close).toHaveBeenCalledTimes(1);
+    expect(
+      await screen.findByText("Documents et transcripts Gemini actifs"),
+    ).toBeInTheDocument();
+  });
+
+  it("blocks a legacy broad Drive connection and routes to explicit review", () => {
+    render(
+      <MeetingIntelligenceWorkspace
+        initialState={{
+          ...baseState,
+          geminiDocumentAccess: false,
+          googleWorkspaceReconnectRequired: true,
+        }}
+      />,
+    );
+
+    expect(screen.getByText("Connexion Google à revoir")).toBeInTheDocument();
+    expect(
+      screen.getByText(/ancienne autorisation Drive trop large a été bloquée/i),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Révoquer et reconnecter Google" }),
+    ).toHaveAttribute("href", "/integrations");
+    expect(
+      screen.queryByRole("button", {
+        name: "Autoriser les documents Meet",
+      }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("uses in-app navigation when the browser blocks the Google popup", () => {
+    vi.spyOn(window, "open").mockReturnValue(null);
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Autoriser les documents Meet" }),
+    );
+
+    expect(window.open).toHaveBeenNthCalledWith(
+      2,
+      "/api/integrations/google/auth?intent=meeting-notes",
+      "_self",
+    );
+  });
+
+  it("keeps unmatched Gemini notes private until a founder links them", async () => {
+    const geminiState: MeetingIntelligenceState = {
+      ...baseState,
+      geminiArtifacts: [
+        {
+          documentTextAvailable: false,
+          id: "44444444-4444-4444-8444-444444444444",
+          notesMarkdown: "Résumé privé de la réunion.",
+          occurredAt: "2026-07-18T10:00:00.000Z",
+          provider: "google-gemini",
+          title: "Projet HPS",
+        },
+      ],
+    };
+    render(<MeetingIntelligenceWorkspace initialState={geminiState} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Projet HPS" }));
+    await waitFor(() =>
+      expect(mocks.linkGeminiArtifactToMeetingAction).toHaveBeenCalledWith({
+        artifactId: "44444444-4444-4444-8444-444444444444",
+        meetingId,
+      }),
+    );
+  });
+
+  it("prefills participants and exposes the matched Google Meet safely", async () => {
+    render(
+      <MeetingIntelligenceWorkspace
+        calendarEvents={[
+          {
+            attachments: [
+              {
+                fileId: "drive-slide-1",
+                fileUrl: "https://drive.google.com/file/d/drive-slide-1/view",
+                mimeType: "application/vnd.google-apps.presentation",
+                title: "Pitch HPS",
+              },
+            ],
+            attendees: [
+              { email: "ali@qarizmi.com", self: true },
+              {
+                displayName: "Sara Benali",
+                email: "sara@hps.com",
+                responseStatus: "accepted",
+              },
+            ],
+            conferenceUrl: "https://meet.google.com/abc-defg-hij",
+            htmlLink: "https://calendar.google.com/event?eid=private",
+            id: "calendar-event-1",
+            start: "2026-07-18T10:00:00.000Z",
+            title: "Meeting HPS",
+          },
+        ]}
+        initialState={baseState}
+      />,
+    );
+
+    expect(screen.getByLabelText("Participants")).toHaveValue(
+      "ali@qarizmi.com, Sara Benali <sara@hps.com>",
+    );
+    expect(
+      screen.getByRole("link", { name: "Rejoindre Meet" }),
+    ).toHaveAttribute("href", "https://meet.google.com/abc-defg-hij");
+    expect(
+      screen.getByText(/aucun enregistrement automatique/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Qarizmi")).toBeInTheDocument();
+    expect(screen.getByText("Client")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Pitch HPS/ })).toHaveAttribute(
+      "href",
+      "https://drive.google.com/file/d/drive-slide-1/view",
+    );
+  });
+
+  it("autosaves live notes and participants to the founder-only draft", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    fireEvent.change(screen.getByLabelText("Participants"), {
+      target: { value: "Sara Benali, sara@hps.com" },
+    });
+    fireEvent.change(screen.getByLabelText(/Notes en direct/), {
+      target: { value: "Le client confirme un pilote en septembre." },
+    });
+
+    await waitFor(
+      () => {
+        expect(mocks.saveMeetingCaptureDraftAction).toHaveBeenLastCalledWith({
+          attendees: [{ name: "Sara Benali" }, { email: "sara@hps.com" }],
+          consentConfirmed: false,
+          liveNotesMarkdown: "Le client confirme un pilote en septembre.",
+          meetingId,
+          title: "Meeting HPS",
+        });
+      },
+      { timeout: 2_500 },
+    );
+    expect(screen.getByText("Sauvegardé")).toBeInTheDocument();
+  });
+
+  it("registers an optional PDF support without deleting the uploaded file", async () => {
+    render(<MeetingIntelligenceWorkspace initialState={baseState} />);
+
+    const support = new File([new Uint8Array([1, 2, 3])], "pitch-hps.pdf", {
+      type: "application/pdf",
+    });
+    const input = document.querySelector<HTMLInputElement>(
+      'input[type="file"][accept^="application/pdf"]',
+    );
+    fireEvent.change(input as HTMLInputElement, {
+      target: { files: [support] },
+    });
+
+    await waitFor(() => {
+      expect(mocks.registerMeetingSupportAction).toHaveBeenCalledWith({
+        meetingId,
+        support: expect.objectContaining({
+          chunks: [
+            expect.objectContaining({
+              path: `${organizationId}/${meetingId}/${sessionId}/chunk-0000.pdf`,
+              sizeBytes: 3,
+            }),
+          ],
+          mimeType: "application/pdf",
+          originalFileName: "pitch-hps.pdf",
+          totalBytes: 3,
+        }),
+      });
+    });
+    expect(mocks.remove).not.toHaveBeenCalled();
   });
 
   it("submits edited notes with only the recommendations selected by the founder", async () => {

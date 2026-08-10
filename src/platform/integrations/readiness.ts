@@ -7,7 +7,10 @@ import {
   type IntegrationHealth,
   plannedIntegrationProviders,
 } from "./contracts";
-import { GOOGLE_USER_SCOPES } from "./google-workspace-scopes";
+import {
+  GOOGLE_USER_REQUIRED_SCOPES,
+  hasForbiddenGoogleDriveScope,
+} from "./google-workspace-scopes";
 
 type IntegrationConnectionRow = {
   encrypted_token_reference: string | null;
@@ -30,8 +33,10 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
     const scopes = connection?.scopes ?? [];
     const missingRequiredScopes =
       provider.provider === "google"
-        ? GOOGLE_USER_SCOPES.filter((scope) => !scopes.includes(scope))
+        ? GOOGLE_USER_REQUIRED_SCOPES.filter((scope) => !scopes.includes(scope))
         : [];
+    const legacyDrivePermission =
+      provider.provider === "google" && hasForbiddenGoogleDriveScope(scopes);
 
     if (!provider.isImplemented) {
       return {
@@ -49,6 +54,28 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
         provider: provider.provider,
         scopes,
         status: "not-implemented",
+      };
+    }
+
+    if (
+      connection &&
+      connection.status !== "revoked" &&
+      legacyDrivePermission
+    ) {
+      return {
+        capabilities: [...provider.capabilities],
+        detail:
+          "Cette connexion utilise une ancienne autorisation Drive trop large. Révoque explicitement cet accès, puis reconnecte Google Workspace avec les autorisations minimales.",
+        envVars: [...provider.envVars],
+        externalAccountLabel: connection.external_account_label ?? undefined,
+        isImplemented: true,
+        label: provider.label,
+        missingEnvVars,
+        plannedScopes: [...provider.plannedScopes],
+        provider: provider.provider,
+        requiresRevocation: true,
+        scopes,
+        status: "needs-review",
       };
     }
 
@@ -79,7 +106,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
         capabilities: [...provider.capabilities],
         detail:
           missingRequiredScopes.length > 0
-            ? "Une connexion existe, mais elle n'a pas encore les nouveaux scopes Gmail. Reconnecte Google Workspace."
+            ? "Une connexion existe, mais elle n'a pas encore tous les scopes Calendar et Gmail requis. Reconnecte Google Workspace."
             : "Une connexion existe, mais il manque une variable serveur ou une reference token. Reconnecte le provider.",
         envVars: [...provider.envVars],
         externalAccountLabel: connection.external_account_label ?? undefined,

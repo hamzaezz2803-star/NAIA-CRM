@@ -1,6 +1,11 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
+  GOOGLE_REVOCATION_CONFIRMATION,
+} from "@/platform/integrations/google-revocation-contract";
+
 const mocks = vi.hoisted(() => {
   const push = vi.fn();
   const refresh = vi.fn();
@@ -141,5 +146,125 @@ describe("GoogleConnectButton", () => {
     expect(await screen.findByText("Database unavailable")).toBeVisible();
     expect(screen.getByText(/ali@qarizmi.com/)).toBeVisible();
     expect(mocks.refresh).not.toHaveBeenCalled();
+  });
+
+  it("requires an inline confirmation before revoking a legacy Google grant", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ alreadyRevoked: false, ok: true }), {
+        headers: { "Content-Type": "application/json" },
+        status: 200,
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <GoogleConnectButton label="Reconnecter Google" requiresRevocation />,
+    );
+
+    expect(
+      screen.getByText("Ancienne autorisation Google bloquée"),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", { name: "Révoquer l’ancien accès" }),
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(
+      screen.getByText(/Aucun fichier, e-mail ou événement ne sera supprimé/i),
+    ).toBeVisible();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirmer la révocation" }),
+    );
+
+    expect(
+      await screen.findByText(/Ancienne autorisation révoquée/i),
+    ).toBeVisible();
+    expect(fetchMock).toHaveBeenCalledWith("/api/integrations/google/revoke", {
+      body: JSON.stringify({
+        confirmation: GOOGLE_REVOCATION_CONFIRMATION,
+      }),
+      headers: { "Content-Type": "application/json" },
+      method: "POST",
+    });
+    expect(
+      screen.getByRole("button", { name: "Reconnecter Google" }),
+    ).toBeEnabled();
+    expect(mocks.refresh).toHaveBeenCalledOnce();
+  });
+
+  it("guides and double-confirms manual revocation after Google cannot prove it", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            error: "Révocation non confirmée.",
+            manualReviewRequired: true,
+          }),
+          {
+            headers: { "Content-Type": "application/json" },
+            status: 502,
+          },
+        ),
+      )
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ manualConfirmed: true, ok: true }), {
+          headers: { "Content-Type": "application/json" },
+          status: 200,
+        }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <GoogleConnectButton label="Reconnecter Google" requiresRevocation />,
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Révoquer l’ancien accès" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Confirmer la révocation" }),
+    );
+
+    expect(await screen.findByText("Révocation non confirmée.")).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: "Confirmer la révocation" }),
+    ).toBeEnabled();
+    expect(
+      screen.getByRole("link", { name: "Ouvrir les connexions Google" }),
+    ).toHaveAttribute("href", "https://myaccount.google.com/connections");
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "J’ai révoqué l’accès dans Google",
+      }),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(
+      screen.getByText(/Je confirme avoir retiré moi-même l’accès NAIA/i),
+    ).toBeVisible();
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Confirmer que j’ai révoqué dans Google",
+      }),
+    );
+
+    expect(
+      await screen.findByText(/Révocation manuelle confirmée/i),
+    ).toBeVisible();
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/integrations/google/revoke",
+      {
+        body: JSON.stringify({
+          confirmation: GOOGLE_MANUAL_REVOCATION_CONFIRMATION,
+        }),
+        headers: { "Content-Type": "application/json" },
+        method: "POST",
+      },
+    );
+    expect(
+      screen.getByRole("button", { name: "Reconnecter Google" }),
+    ).toBeEnabled();
+    expect(mocks.refresh).toHaveBeenCalledOnce();
   });
 });

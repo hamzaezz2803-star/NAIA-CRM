@@ -71,7 +71,10 @@ export default async function MeetingsPage() {
       />
 
       {meetingIntelligence ? (
-        <MeetingIntelligenceWorkspace initialState={meetingIntelligence} />
+        <MeetingIntelligenceWorkspace
+          calendarEvents={googleEvents}
+          initialState={meetingIntelligence}
+        />
       ) : null}
 
       <section

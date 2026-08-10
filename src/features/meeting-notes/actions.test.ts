@@ -13,7 +13,12 @@ vi.mock("./access", () => ({
   requireMeetingNotesAccess: mocks.requireMeetingNotesAccess,
 }));
 
-import { queueMeetingProcessingAction } from "./actions";
+import {
+  fetchMeetingIntelligenceAction,
+  queueMeetingProcessingAction,
+  registerMeetingSupportAction,
+  saveMeetingCaptureDraftAction,
+} from "./actions";
 
 const organizationId = "11111111-1111-4111-8111-111111111111";
 const meetingId = "22222222-2222-4222-8222-222222222222";
@@ -31,7 +36,7 @@ describe("meeting intelligence queue action", () => {
     vi.clearAllMocks();
   });
 
-  it("removes uploaded audio after an atomic queue rejection", async () => {
+  it("preserves uploaded audio after an atomic queue rejection", async () => {
     const fixture = makeSupabaseFixture({
       assetRecovery: null,
       rpcResult: {
@@ -44,11 +49,10 @@ describe("meeting intelligence queue action", () => {
     const result = await queueMeetingProcessingAction(meetingId, manifest);
 
     expect(result).toMatchObject({
-      discardUploadedAudio: true,
       error: "processing job insert failed",
       success: false,
     });
-    expect(fixture.remove).toHaveBeenCalledWith([chunkPath]);
+    expect(fixture.remove).not.toHaveBeenCalled();
   });
 
   it("recovers a committed job when the RPC response is lost", async () => {
@@ -67,6 +71,86 @@ describe("meeting intelligence queue action", () => {
     });
     expect(fixture.remove).not.toHaveBeenCalled();
     expect(mocks.revalidatePath).toHaveBeenCalledWith("/meetings");
+  });
+});
+
+describe("one-step meeting capture validation", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects an empty title before accessing founder data", async () => {
+    const result = await saveMeetingCaptureDraftAction({
+      attendees: [],
+      liveNotesMarkdown: "notes",
+      meetingId,
+      title: "   ",
+    });
+
+    expect(result).toMatchObject({ success: false });
+    expect(mocks.requireMeetingNotesAccess).not.toHaveBeenCalled();
+  });
+
+  it("rejects unsupported presentation formats before storage access", async () => {
+    const result = await registerMeetingSupportAction({
+      meetingId,
+      support: {
+        chunks: [
+          {
+            path: `${organizationId}/${meetingId}/${sessionId}/chunk-0000.pptx`,
+            sha256: "a".repeat(64),
+            sizeBytes: 1,
+          },
+        ],
+        mimeType:
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        originalFileName: "pitch.pptx",
+        totalBytes: 1,
+      },
+    });
+
+    expect(result).toMatchObject({
+      error: "Le support doit être un PDF, TXT ou Markdown.",
+      success: false,
+    });
+    expect(mocks.requireMeetingNotesAccess).not.toHaveBeenCalled();
+  });
+});
+
+describe("Meeting Intelligence Google scope state", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("surfaces an explicit reconnect state for a legacy broad Drive grant", async () => {
+    const meetings = makeThenableQuery({ data: [], error: null });
+    const artifacts = makeThenableQuery({ data: [], error: null });
+    const connection = makeThenableQuery({
+      data: {
+        scopes: [
+          "https://www.googleapis.com/auth/gmail.readonly",
+          "https://www.googleapis.com/auth/drive.file",
+        ],
+      },
+      error: null,
+    });
+    const supabase = {
+      from: vi.fn((table: string) => {
+        if (table === "meetings") return meetings;
+        if (table === "meeting_external_artifacts") return artifacts;
+        if (table === "integration_connections") return connection;
+        throw new Error(`Unexpected table ${table}`);
+      }),
+    };
+    grantAccess(supabase);
+
+    const state = await fetchMeetingIntelligenceAction();
+
+    expect(state).toMatchObject({
+      configured: true,
+      geminiDocumentAccess: false,
+      googleWorkspaceReconnectRequired: true,
+    });
   });
 });
 
@@ -135,5 +219,16 @@ function makeQuery(result: { data: unknown; error: unknown }) {
   }
   query.maybeSingle = vi.fn().mockResolvedValue(result);
   query.single = vi.fn().mockResolvedValue(result);
+  return query;
+}
+
+function makeThenableQuery(result: { data: unknown; error: unknown }) {
+  const query: Record<string, unknown> = {};
+  for (const method of ["eq", "limit", "order", "select"]) {
+    query[method] = vi.fn(() => query);
+  }
+  query.maybeSingle = vi.fn().mockResolvedValue(result);
+  query.then = (resolve: (value: typeof result) => unknown) =>
+    Promise.resolve(resolve(result));
   return query;
 }

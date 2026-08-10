@@ -83,6 +83,7 @@ export type IntegrationHealth = {
   missingEnvVars: string[];
   plannedScopes: string[];
   provider: IntegrationProvider;
+  requiresRevocation?: boolean;
   scopes: string[];
   status: IntegrationHealthStatus;
 };

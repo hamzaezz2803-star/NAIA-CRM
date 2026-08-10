@@ -5,6 +5,11 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 
 import { createServerSupabaseClient } from "@/platform/auth/supabase-server";
 
+import {
+  canReadGoogleMeetingDocuments,
+  hasForbiddenGoogleDriveScope,
+} from "./google-workspace-scopes";
+
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000;
 
 // Optional execution context for trusted server-side bridges (for example the
@@ -34,9 +39,24 @@ type GoogleConnectionRow = {
 };
 
 export type GoogleCalendarEventSummary = {
+  attachments?: Array<{
+    fileId?: string;
+    fileUrl?: string;
+    mimeType?: string;
+    title?: string;
+  }>;
+  attendees?: Array<{
+    displayName?: string;
+    email?: string;
+    responseStatus?: string;
+    self?: boolean;
+  }>;
+  conferenceUrl?: string;
   end?: string;
   htmlLink?: string;
   id: string;
+  location?: string;
+  organizer?: { displayName?: string; email?: string; self?: boolean };
   start?: string;
   title: string;
 };
@@ -48,6 +68,18 @@ export type GmailMessageSummary = {
   snippet?: string;
   subject?: string;
   threadId?: string;
+};
+
+export type GmailMeetingNoteMessage = GmailMessageSummary & {
+  bodyText: string;
+  documentText?: string;
+  senderEmail: string;
+};
+
+export type GmailMeetingNoteBatch = {
+  messages: GmailMeetingNoteMessage[];
+  nextPageToken?: string;
+  scanned: number;
 };
 
 export type GoogleCalendarReminderResult = {
@@ -285,18 +317,45 @@ export async function listGoogleCalendarEvents(
 
   const payload = (await response.json()) as {
     items?: Array<{
+      attachments?: Array<{
+        fileId?: string;
+        fileUrl?: string;
+        mimeType?: string;
+        title?: string;
+      }>;
+      attendees?: Array<{
+        displayName?: string;
+        email?: string;
+        responseStatus?: string;
+        self?: boolean;
+      }>;
+      conferenceData?: {
+        entryPoints?: Array<{ entryPointType?: string; uri?: string }>;
+      };
       end?: { date?: string; dateTime?: string };
+      hangoutLink?: string;
       htmlLink?: string;
       id?: string;
+      location?: string;
+      organizer?: { displayName?: string; email?: string; self?: boolean };
       start?: { date?: string; dateTime?: string };
       summary?: string;
     }>;
   };
 
   return (payload.items ?? []).map((event) => ({
+    attachments: event.attachments,
+    attendees: event.attendees,
+    conferenceUrl:
+      event.hangoutLink ??
+      event.conferenceData?.entryPoints?.find(
+        (entryPoint) => entryPoint.entryPointType === "video",
+      )?.uri,
     end: event.end?.dateTime ?? event.end?.date,
     htmlLink: event.htmlLink,
     id: event.id ?? crypto.randomUUID(),
+    location: event.location,
+    organizer: event.organizer,
     start: event.start?.dateTime ?? event.start?.date,
     title: event.summary ?? "Evenement sans titre",
   }));
@@ -430,6 +489,274 @@ export async function listGmailMessages(
   );
 }
 
+const GEMINI_MEETING_NOTE_SENDERS = new Set([
+  "gemini-notes@google.com",
+  "meetings-noreply@google.com",
+]);
+
+/**
+ * Reads only Google Meet/Gemini meeting-note notifications. The exact sender
+ * allowlist and subject filter intentionally live inside this integration so
+ * callers cannot turn the feature into an arbitrary mailbox-body reader.
+ * Gmail is never modified: no labels, read-state changes, drafts or sends.
+ */
+export async function listGeminiMeetingNoteMessages(
+  {
+    maxResults = 100,
+    newerThanDays = 120,
+    pageToken,
+  }: {
+    maxResults?: number;
+    newerThanDays?: number;
+    pageToken?: string;
+  } = {},
+  context?: GoogleWorkspaceContext,
+): Promise<GmailMeetingNoteBatch> {
+  const connection = await getGoogleWorkspaceConnection(context);
+  const accessToken = await getGoogleAccessToken(connection, context?.supabase);
+  const boundedMaxResults = Math.max(1, Math.min(maxResults, 200));
+  const boundedDays = Math.max(1, Math.min(newerThanDays, 365));
+  const canReadLinkedDocuments = canReadGoogleMeetingDocuments(
+    connection.scopes,
+  );
+  const messages: Array<{ id: string; threadId?: string }> = [];
+  let nextPageToken = pageToken?.trim() || undefined;
+  do {
+    const listUrl = new URL(
+      "https://gmail.googleapis.com/gmail/v1/users/me/messages",
+    );
+    listUrl.searchParams.set(
+      "maxResults",
+      String(Math.min(100, boundedMaxResults - messages.length)),
+    );
+    listUrl.searchParams.set(
+      "q",
+      `{from:gemini-notes@google.com from:meetings-noreply@google.com} newer_than:${boundedDays}d -in:spam -in:trash`,
+    );
+    if (nextPageToken) listUrl.searchParams.set("pageToken", nextPageToken);
+
+    const listResponse = await fetch(listUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!listResponse.ok) {
+      throw new Error(await providerError("Gmail", listResponse));
+    }
+
+    const listPayload = (await listResponse.json()) as {
+      messages?: Array<{ id?: string; threadId?: string }>;
+      nextPageToken?: string;
+    };
+    messages.push(
+      ...(listPayload.messages ?? []).filter(
+        (message): message is { id: string; threadId?: string } =>
+          Boolean(message.id),
+      ),
+    );
+    nextPageToken = listPayload.nextPageToken;
+  } while (nextPageToken && messages.length < boundedMaxResults);
+
+  const boundedMessages = messages.slice(0, boundedMaxResults);
+
+  const detailed = await mapWithConcurrency<
+    (typeof messages)[number],
+    GmailMeetingNoteMessage | undefined
+  >(boundedMessages, 8, async (message) => {
+    const detailUrl = new URL(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${message.id}`,
+    );
+    detailUrl.searchParams.set("format", "full");
+    const detailResponse = await fetch(detailUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!detailResponse.ok) return undefined;
+
+    const detail = (await detailResponse.json()) as GmailFullMessagePayload;
+    const rawHeaders = detail.payload?.headers ?? [];
+    const headers = new Map(
+      rawHeaders.map((header) => [
+        header.name?.toLocaleLowerCase("en") ?? "",
+        header.value,
+      ]),
+    );
+    const from = headers.get("from") ?? "";
+    const senderEmail = extractMailboxAddress(from);
+    const subject = headers.get("subject") ?? "";
+    if (
+      !isAuthenticatedGeminiSender(rawHeaders, senderEmail) ||
+      !/^notes\s*:/iu.test(subject.trim())
+    ) {
+      return undefined;
+    }
+
+    const bodyText = extractGmailMessageText(detail.payload).slice(0, 300_000);
+    if (!bodyText.trim()) return undefined;
+    const documentFileId = bodyText.match(
+      /https:\/\/docs\.google\.com\/document\/d\/([a-zA-Z0-9_-]+)/u,
+    )?.[1];
+    const documentText =
+      canReadLinkedDocuments && documentFileId
+        ? await downloadGeminiDocumentText(documentFileId, accessToken)
+        : undefined;
+
+    return {
+      bodyText,
+      date: headers.get("date"),
+      documentText,
+      from,
+      id: message.id,
+      senderEmail,
+      snippet: detail.snippet,
+      subject,
+      threadId: detail.threadId ?? message.threadId,
+    } satisfies GmailMeetingNoteMessage;
+  });
+
+  return {
+    messages: detailed.filter((message): message is GmailMeetingNoteMessage =>
+      Boolean(message),
+    ),
+    nextPageToken,
+    scanned: boundedMessages.length,
+  };
+}
+
+async function downloadGeminiDocumentText(
+  documentFileId: string,
+  accessToken: string,
+) {
+  const url = new URL(
+    `https://www.googleapis.com/drive/v3/files/${encodeURIComponent(documentFileId)}/export`,
+  );
+  url.searchParams.set("mimeType", "text/plain");
+  try {
+    const response = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) return undefined;
+    const contentLength = Number(response.headers.get("content-length") ?? 0);
+    if (contentLength > 2_000_000) return undefined;
+    return (await response.text()).trim().slice(0, 1_500_000) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+type GmailFullMessagePayload = {
+  payload?: GmailMessagePart;
+  snippet?: string;
+  threadId?: string;
+};
+
+type GmailMessagePart = {
+  body?: { data?: string };
+  headers?: Array<{ name?: string; value?: string }>;
+  mimeType?: string;
+  parts?: GmailMessagePart[];
+};
+
+function extractGmailMessageText(payload?: GmailMessagePart) {
+  if (!payload) return "";
+  const plainParts: string[] = [];
+  const htmlParts: string[] = [];
+  const visit = (part: GmailMessagePart) => {
+    const data = part.body?.data;
+    if (data && part.mimeType === "text/plain") {
+      plainParts.push(decodeGmailBase64Url(data));
+    } else if (data && part.mimeType === "text/html") {
+      htmlParts.push(decodeGmailBase64Url(data));
+    }
+    for (const child of part.parts ?? []) visit(child);
+  };
+  visit(payload);
+  if (plainParts.length) return plainParts.join("\n\n").trim();
+  return htmlToPlainText(htmlParts.join("\n")).trim();
+}
+
+function decodeGmailBase64Url(value: string) {
+  try {
+    return Buffer.from(value, "base64url").toString("utf8");
+  } catch {
+    return "";
+  }
+}
+
+function htmlToPlainText(value: string) {
+  return value
+    .replace(/<\s*br\s*\/?\s*>/giu, "\n")
+    .replace(/<\/(?:div|p|li|h[1-6])\s*>/giu, "\n")
+    .replace(/<[^>]+>/gu, " ")
+    .replace(/&nbsp;/giu, " ")
+    .replace(/&amp;/giu, "&")
+    .replace(/&lt;/giu, "<")
+    .replace(/&gt;/giu, ">")
+    .replace(/&quot;/giu, '"')
+    .replace(/&#39;/giu, "'")
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n");
+}
+
+function extractMailboxAddress(value: string) {
+  const bracketed = value.match(/<([^<>\s]+@[^<>\s]+)>/u)?.[1];
+  const bare = value.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/iu)?.[0];
+  return (bracketed ?? bare ?? "").trim().toLocaleLowerCase("en");
+}
+
+function isAuthenticatedGeminiSender(
+  headers: Array<{ name?: string; value?: string }>,
+  senderEmail: string,
+) {
+  if (!GEMINI_MEETING_NOTE_SENDERS.has(senderEmail)) return false;
+  // Gmail prepends its own Authentication-Results header before any
+  // untrusted header supplied by the sender. Only the first result minted by
+  // mx.google.com is authoritative; accepting a later, sender-controlled
+  // header would make an exact From address spoofable.
+  const authenticationResult = headers
+    .filter(
+      (header) =>
+        header.name?.trim().toLocaleLowerCase("en") ===
+        "authentication-results",
+    )
+    .map((header) => header.value?.replace(/\s+/g, " ").trim() ?? "")
+    .find((value) => /^mx\.google\.com\s*;/iu.test(value));
+
+  if (!authenticationResult) return false;
+  const authenticationClauses = authenticationResult
+    .split(";")
+    .map((clause) => clause.trim());
+  const alignedDkim = authenticationClauses.some(
+    (clause) =>
+      /^dkim=pass(?:\s|$)/iu.test(clause) &&
+      /header\.(?:d|i)\s*=\s*@?google\.com(?:\s|$)/iu.test(clause),
+  );
+  const alignedDmarc = authenticationClauses.some(
+    (clause) =>
+      /^dmarc=pass(?:\s|$)/iu.test(clause) &&
+      /header\.from\s*=\s*google\.com(?:\s|$)/iu.test(clause),
+  );
+  return alignedDkim && alignedDmarc;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: T[],
+  concurrency: number,
+  mapper: (value: T) => Promise<R>,
+) {
+  const results = new Array<R>(values.length);
+  let cursor = 0;
+  const workers = Array.from(
+    { length: Math.min(concurrency, values.length) },
+    async () => {
+      while (cursor < values.length) {
+        const index = cursor;
+        cursor += 1;
+        results[index] = await mapper(values[index]);
+      }
+    },
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 export async function sendGmailDraft({
   body,
   subject,
@@ -522,7 +849,14 @@ async function getGoogleWorkspaceConnection(
     throw new Error("Google Workspace is not connected for this user.");
   }
 
-  return data as GoogleConnectionRow;
+  const connection = data as GoogleConnectionRow;
+  if (hasForbiddenGoogleDriveScope(connection.scopes)) {
+    throw new Error(
+      "Google Workspace must be reconnected because its legacy Drive permission is too broad.",
+    );
+  }
+
+  return connection;
 }
 
 async function getGoogleAccessToken(
