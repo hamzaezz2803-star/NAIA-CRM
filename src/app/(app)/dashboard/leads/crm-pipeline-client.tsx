@@ -1667,14 +1667,7 @@ export function CrmPipelineClient({
       ) : viewMode === "kanban" ? (
         <div>
           <div ref={kanbanContainerRef} className="overflow-x-auto pb-4">
-            <div
-              className="grid min-w-max grid-flow-col auto-cols-[minmax(220px,80vw)] items-start gap-2 md:min-w-0 md:grid-flow-row md:auto-cols-auto md:grid-cols-[repeat(var(--kanban-columns),minmax(0,1fr))]"
-              style={
-                {
-                  "--kanban-columns": categories.length,
-                } as React.CSSProperties
-              }
-            >
+            <div className="grid min-w-max grid-flow-col auto-cols-[minmax(220px,80vw)] items-start gap-2 md:auto-cols-[minmax(260px,280px)] md:gap-3">
               {categories.map((col, index) => {
                 const colLeads = leads.filter(
                   (l) => l.status === col.statusKey,
