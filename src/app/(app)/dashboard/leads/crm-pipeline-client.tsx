@@ -1250,24 +1250,7 @@ export function CrmPipelineClient({
       "Génération des brouillons de relance...",
     );
 
-    // Parse company & contact from notes string
-    const noteLines = (lead.notes ?? "").split("\n");
-    const companyName = noteLines
-      .find((l) => l.startsWith("Entreprise:"))
-      ?.replace("Entreprise:", "")
-      .trim();
-    const contactName = noteLines
-      .find((l) => l.startsWith("Contact:"))
-      ?.replace("Contact:", "")
-      .trim();
-
-    const res = await generateFollowUpDraftAction({
-      topic: lead.topic,
-      companyName,
-      contactName,
-      notes: lead.notes,
-      nextAction: lead.nextAction,
-    });
+    const res = await generateFollowUpDraftAction(lead.id);
 
     if (res.success && res.drafts) {
       setDrafts(res.drafts);

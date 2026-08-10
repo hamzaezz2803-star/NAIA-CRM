@@ -2,6 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { getGroqApiKey } from "@/platform/ai/groq";
@@ -11,10 +12,10 @@ import {
   ensureClientDriveFolder,
   isDriveServiceConfigured,
 } from "@/platform/integrations/google-drive-service";
+import { getGoogleWorkspaceAccessToken } from "@/platform/integrations/google-workspace";
 import {
   attestGoogleScopes,
   GOOGLE_MEETING_NOTE_SCOPE,
-  hasForbiddenGoogleDriveScope,
 } from "@/platform/integrations/google-workspace-scopes";
 import { createSystemNotification } from "@/platform/notifications/actions";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -39,6 +40,8 @@ import { extractCrmLeadWithGroq, generateCrmFollowUpWithGroq } from "./ai";
 import { normalizeCrmDateTimeForStorage } from "./date-time";
 import {
   allowsCrmProviderSideEffects,
+  classifyCrmAccessScope,
+  containsSensitiveCrmText,
   type CrmAccessScope,
 } from "./confidentiality";
 import { CRM_PIPELINE_LEAD_COLUMNS, mapCrmPipelineLead } from "./pipeline-data";
@@ -608,6 +611,7 @@ export async function createLeadAction(
       calendarError: calendarSyncResult?.error,
       calendarSynced: calendarSyncResult?.success,
       lead: {
+        accessScope: created.access_scope,
         id: row.id,
         organizationId: row.organization_id,
         companyId: row.company_id ?? undefined,
@@ -639,6 +643,7 @@ export async function createLeadAction(
     calendarLink: extractGoogleCalendarEventLink(popRow.notes),
     calendarSynced: calendarSyncResult?.success,
     lead: {
+      accessScope: popRow.access_scope,
       id: popRow.id,
       organizationId: popRow.organization_id,
       companyId: popRow.company_id ?? undefined,
@@ -704,6 +709,12 @@ function createDummyLead(input: {
   const suffix = Math.random().toString(36).slice(2, 9);
   const { company, contact } = parseContactInfoFromNotes(input.notes);
   const lead: CrmLeadSummary = {
+    accessScope: classifyCrmAccessScope(
+      input.topic,
+      input.notes,
+      input.companyName,
+      input.contactName,
+    ),
     assignedToProfileId: input.assignedToProfileId,
     companyId: input.companyId,
     companyName: input.companyName ?? company ?? undefined,
@@ -964,6 +975,7 @@ export async function updateLeadAction(
   if (updatedData) {
     const row = updatedData as any;
     updatedLead = {
+      accessScope: row.access_scope,
       id: row.id,
       organizationId: row.organization_id,
       companyId: row.company_id ?? undefined,
@@ -1085,16 +1097,17 @@ export async function deleteLeadAction(
       if (!authorized.ok) {
         return { error: authorized.error, success: false };
       }
-      const { data: connection } = await supabase
-        .from("integration_connections")
-        .select("*")
-        .eq("id", authorized.connection.id)
-        .eq("organization_id", orgId)
-        .eq("connected_by_profile_id", actingUser.id)
-        .maybeSingle();
-      const accessToken = connection
-        ? await getOrRefreshGoogleToken(supabase, orgId, connection)
-        : null;
+      const accessToken = await getGoogleWorkspaceAccessToken(
+        {
+          expectedConnectionId: authorized.connection.id,
+          requiredScopes: ["https://www.googleapis.com/auth/calendar.events"],
+        },
+        {
+          organizationId: orgId,
+          profileId: actingUser.id,
+          supabase,
+        },
+      ).catch(() => null);
       if (!accessToken) {
         return {
           success: false,
@@ -1403,6 +1416,7 @@ export async function fetchCompanyDetailAction(companyId: string): Promise<{
   const leads: import("./contracts").CrmLeadSummary[] = (
     (leadsRes.data ?? []) as DbLead[]
   ).map((l) => ({
+    accessScope: l.access_scope,
     id: l.id,
     organizationId: l.organization_id,
     companyId: l.company_id ?? undefined,
@@ -1681,6 +1695,53 @@ export async function deleteContactAction(
 // GROQ — Lead extraction from natural language
 // ────────────────────────────────────────────────────────────
 
+const CRM_AI_MAX_INPUT_CHARACTERS = 4_000;
+const CRM_AI_MAX_NOTES_CHARACTERS = 8_000;
+
+async function resolveCrmAiActor(action: "create" | "read"): Promise<
+  | {
+      actorProfileId: string;
+      organizationId: string;
+      supabase: SupabaseClient;
+      ok: true;
+    }
+  | { error: string; ok: false }
+> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { error: "Not configured", ok: false };
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+  if (userError || !user?.id) {
+    return { error: "Not authenticated", ok: false };
+  }
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("organization_id,role")
+    .eq("profile_id", user.id)
+    .limit(1)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !membership?.organization_id ||
+    !role ||
+    !hasPermission(role, { action, module: "crm" })
+  ) {
+    return {
+      error: "Tu n'as pas la permission d'utiliser l'IA CRM.",
+      ok: false,
+    };
+  }
+  return {
+    actorProfileId: user.id,
+    organizationId: membership.organization_id,
+    ok: true,
+    supabase,
+  };
+}
+
 export async function extractLeadFromNaturalTextAction(text: string): Promise<{
   success: boolean;
   extracted?: {
@@ -1700,13 +1761,31 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
   };
   error?: string;
 }> {
+  const actor = await resolveCrmAiActor("create");
+  if (!actor.ok) return { error: actor.error, success: false };
+
+  const normalizedText = typeof text === "string" ? text.trim() : "";
+  if (!normalizedText || normalizedText.length > CRM_AI_MAX_INPUT_CHARACTERS) {
+    return {
+      success: false,
+      error: `Le texte doit contenir entre 1 et ${CRM_AI_MAX_INPUT_CHARACTERS} caractères.`,
+    };
+  }
+  if (containsSensitiveCrmText(normalizedText)) {
+    return {
+      success: false,
+      error:
+        "Les données de recrutement et de stagiaires restent dans NAIA et ne sont pas envoyées à un fournisseur IA externe.",
+    };
+  }
+
   const apiKey = getGroqApiKey();
   if (!apiKey) {
     return { success: false, error: "GROQ_API_KEY not configured" };
   }
 
   try {
-    const extracted = await extractCrmLeadWithGroq(text);
+    const extracted = await extractCrmLeadWithGroq(normalizedText);
     if (!extracted) {
       return { success: false, error: "Could not parse AI response" };
     }
@@ -1721,17 +1800,76 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
 // GROQ — Follow-up draft generation
 // ────────────────────────────────────────────────────────────
 
-export async function generateFollowUpDraftAction(lead: {
-  topic: string;
-  contactName?: string;
-  companyName?: string;
-  notes?: string;
-  nextAction?: string;
-}): Promise<{
+export async function generateFollowUpDraftAction(leadId: string): Promise<{
   success: boolean;
   drafts?: { email: string; whatsapp: string };
   error?: string;
 }> {
+  const actor = await resolveCrmAiActor("read");
+  if (!actor.ok) return { error: actor.error, success: false };
+  if (typeof leadId !== "string" || !leadId.trim() || leadId.length > 128) {
+    return { success: false, error: "Identifiant de lead invalide." };
+  }
+
+  const { data: canonicalLead, error: leadError } = await actor.supabase
+    .from("crm_leads")
+    .select(
+      "id,organization_id,topic,notes,next_action,access_scope,company:company_id(name,access_scope,archived_at),contact:contact_id(name,access_scope,archived_at)",
+    )
+    .eq("id", leadId)
+    .eq("organization_id", actor.organizationId)
+    .eq("access_scope", "organization")
+    .is("archived_at", null)
+    .maybeSingle();
+  const company = Array.isArray(canonicalLead?.company)
+    ? canonicalLead.company[0]
+    : canonicalLead?.company;
+  const contact = Array.isArray(canonicalLead?.contact)
+    ? canonicalLead.contact[0]
+    : canonicalLead?.contact;
+  if (
+    leadError ||
+    !canonicalLead ||
+    canonicalLead.access_scope !== "organization" ||
+    company?.access_scope === "cofounders" ||
+    company?.archived_at ||
+    contact?.access_scope === "cofounders" ||
+    contact?.archived_at
+  ) {
+    return {
+      success: false,
+      error:
+        leadError?.message ??
+        "Lead introuvable ou confidentiel; aucune donnée n'a été envoyée à l'IA.",
+    };
+  }
+
+  const lead = {
+    companyName: company?.name?.trim() || undefined,
+    contactName: contact?.name?.trim() || undefined,
+    nextAction: canonicalLead.next_action?.trim() || undefined,
+    notes: canonicalLead.notes?.trim() || undefined,
+    topic: canonicalLead.topic?.trim(),
+  };
+  if (
+    !lead.topic ||
+    lead.topic.length > 500 ||
+    (lead.notes?.length ?? 0) > CRM_AI_MAX_NOTES_CHARACTERS ||
+    containsSensitiveCrmText(
+      lead.topic,
+      lead.notes,
+      lead.companyName,
+      lead.contactName,
+      lead.nextAction,
+    )
+  ) {
+    return {
+      success: false,
+      error:
+        "Ce lead dépasse les limites IA ou contient des données confidentielles; aucune donnée n'a été envoyée.",
+    };
+  }
+
   const apiKey = getGroqApiKey();
   if (!apiKey) {
     return { success: false, error: "GROQ_API_KEY not configured" };
@@ -1785,9 +1923,13 @@ export async function checkGoogleAuthAction(): Promise<boolean> {
 
   return (
     data.status === "connected" &&
-    !hasForbiddenGoogleDriveScope(
+    attestGoogleScopes(
       Array.isArray(data.scopes) ? (data.scopes as string[]) : [],
-    )
+      Array.isArray(data.scopes) &&
+        data.scopes.includes(GOOGLE_MEETING_NOTE_SCOPE)
+        ? "meeting-notes"
+        : "user",
+    ).ok
   );
 }
 
@@ -2181,73 +2323,6 @@ async function createLeadDriveFolderIfConfigured(
   }
 }
 
-async function getOrRefreshGoogleToken(
-  supabase: SupabaseClient,
-  orgId: string,
-  connection: {
-    encrypted_token_reference: string | null;
-    id: string;
-    scopes?: string[] | null;
-  },
-): Promise<string | null> {
-  if (hasForbiddenGoogleDriveScope(connection.scopes)) return null;
-
-  const tokenData = JSON.parse(connection.encrypted_token_reference || "{}");
-  const now = Date.now();
-
-  // If token is valid for more than 5 minutes, use it
-  if (tokenData.expiry_date && tokenData.expiry_date > now + 300000) {
-    return tokenData.access_token;
-  }
-
-  // Token is expired, refresh it
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret || !tokenData.refresh_token) {
-    return null;
-  }
-
-  try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: tokenData.refresh_token,
-        grant_type: "refresh_token",
-      }),
-    });
-
-    if (!res.ok) {
-      return null;
-    }
-
-    const data = await res.json();
-    const updatedTokenData = {
-      access_token: data.access_token,
-      refresh_token: data.refresh_token || tokenData.refresh_token,
-      expiry_date: Date.now() + data.expires_in * 1000,
-    };
-
-    // Update connection credentials in DB
-    await supabase
-      .from("integration_connections")
-      .update({
-        encrypted_token_reference: JSON.stringify(updatedTokenData),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", connection.id);
-
-    return data.access_token;
-  } catch {
-    return null;
-  }
-}
-
 function parseGoogleError(errText: string): string {
   try {
     const parsed = JSON.parse(errText);
@@ -2499,6 +2574,24 @@ function stripCalendarEventMetadata(notes?: string | null) {
     .trim();
 }
 
+function deterministicCalendarEventId({
+  actorProfileId,
+  leadId,
+  organizationId,
+}: {
+  actorProfileId: string;
+  leadId: string;
+  organizationId: string;
+}) {
+  // Google event IDs accept lowercase base32hex characters. Hex is a strict
+  // subset, and a deterministic ID turns retries into reconciliation rather
+  // than duplicate calendar entries.
+  return `naia${createHash("sha256")
+    .update(`${organizationId}:${leadId}:${actorProfileId}`)
+    .digest("hex")
+    .slice(0, 48)}`;
+}
+
 async function resolveAuthorizedCalendarLead({
   actorProfileId: requestedActorProfileId,
   expectedRevision,
@@ -2698,18 +2791,30 @@ async function syncLeadToGoogleCalendar(
     if (!authorized.ok) {
       return { error: authorized.error, success: false };
     }
+    // Keep the provider-side-effect boundary explicit at the mutation entry
+    // point as well as inside every authorization re-read below.
+    if (!allowsCrmProviderSideEffects(authorized.lead.access_scope)) {
+      return {
+        error:
+          "Synchronisation Calendar désactivée pour les leads confidentiels.",
+        success: false,
+      };
+    }
 
-    const { data: connection } = await supabase
-      .from("integration_connections")
-      .select("*")
-      .eq("id", authorized.connection.id)
-      .eq("organization_id", orgId)
-      .eq("connected_by_profile_id", authorized.actorProfileId)
-      .maybeSingle();
-
-    const accessToken = connection
-      ? await getOrRefreshGoogleToken(supabase, orgId, connection)
-      : null;
+    const accessToken = await getGoogleWorkspaceAccessToken(
+      {
+        expectedConnectionId: authorized.connection.id,
+        requiredScopes: [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+        ],
+      },
+      {
+        organizationId: orgId,
+        profileId: authorized.actorProfileId,
+        supabase,
+      },
+    ).catch(() => null);
     if (!accessToken) {
       return {
         success: false,
@@ -2730,7 +2835,7 @@ async function syncLeadToGoogleCalendar(
     }
 
     let lead = authorized.lead;
-    let revision = lead.updated_at;
+    const revision = lead.updated_at;
     let notesStr = lead.notes || "";
     let eventMetadata = readCalendarEventMetadata(notesStr);
     let existingEventId = eventMetadata.eventId;
@@ -2999,90 +3104,126 @@ async function syncLeadToGoogleCalendar(
     notesStr = lead.notes ?? "";
     eventPayload = buildCalendarEventPayload(lead);
 
-    const createRes = await fetch(
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none",
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          "Content-Type": "application/json",
+    const deterministicEventId = deterministicCalendarEventId({
+      actorProfileId: actingUserId,
+      leadId,
+      organizationId: orgId,
+    });
+    const eventUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${deterministicEventId}`;
+    const existingDeterministicEvent = await fetch(eventUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      method: "GET",
+    });
+
+    let event: Record<string, unknown>;
+    if (existingDeterministicEvent.ok) {
+      event = (await existingDeterministicEvent.json()) as Record<
+        string,
+        unknown
+      >;
+    } else if (
+      existingDeterministicEvent.status === 404 ||
+      existingDeterministicEvent.status === 410
+    ) {
+      const insertAuthorization = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUserId,
+        expectedRevision: revision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!insertAuthorization.ok) {
+        return { error: insertAuthorization.error, success: false };
+      }
+      eventPayload = buildCalendarEventPayload(insertAuthorization.lead);
+      const createRes = await fetch(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none",
+        {
+          body: JSON.stringify({ id: deterministicEventId, ...eventPayload }),
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
         },
-        body: JSON.stringify(eventPayload),
-      },
-    );
-
-    if (createRes.ok) {
-      const event = await createRes.json();
-      const newEventId = typeof event.id === "string" ? event.id.trim() : "";
-      const htmlLink =
-        typeof event.htmlLink === "string" ? event.htmlLink.trim() : "";
-      if (!newEventId || !htmlLink) {
+      );
+      if (!createRes.ok) {
         return {
-          error: "Google Calendar n'a pas confirmé l'événement créé.",
+          error: parseGoogleError(await createRes.text()),
           success: false,
         };
       }
-
-      const postCreate = await resolveAuthorizedCalendarLead({
-        actorProfileId: actingUserId,
-        expectedRevision: revision,
-        leadId,
-        organizationId: orgId,
-        supabase,
-      });
-      if (!postCreate.ok) {
-        return { error: postCreate.error, success: false };
-      }
-
-      const cleanIdNotes = stripCalendarEventMetadata(postCreate.lead.notes);
-      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId}]\n[Google Calendar Event Link: ${htmlLink}]`;
-      const updatedNotes = cleanIdNotes
-        ? `${cleanIdNotes}\n${eventTags}`
-        : eventTags;
-
-      const writeResult = await writeCalendarNotes({
-        expectedRevision: revision,
-        leadId,
-        notes: updatedNotes,
-        organizationId: orgId,
-        supabase,
-      });
-      if (!writeResult.ok) {
-        return { error: writeResult.error, success: false };
-      }
-
-      const finalAuthorization = await resolveAuthorizedCalendarLead({
-        actorProfileId: actingUserId,
-        expectedRevision: writeResult.updatedAt,
-        leadId,
-        organizationId: orgId,
-        supabase,
-      });
-      const finalMetadata = finalAuthorization.ok
-        ? readCalendarEventMetadata(finalAuthorization.lead.notes)
-        : null;
-      if (
-        !finalAuthorization.ok ||
-        finalMetadata?.eventId !== newEventId ||
-        finalMetadata?.eventOwner !== actingUserId ||
-        finalMetadata?.eventLink !== htmlLink
-      ) {
-        return {
-          error: finalAuthorization.ok
-            ? "La liaison Calendar finale n'a pas été confirmée."
-            : finalAuthorization.error,
-          success: false,
-        };
-      }
-
-      return { success: true };
+      event = (await createRes.json()) as Record<string, unknown>;
     } else {
-      const errText = await createRes.text();
       return {
+        error: parseGoogleError(await existingDeterministicEvent.text()),
         success: false,
-        error: parseGoogleError(errText),
       };
     }
+
+    const newEventId = typeof event.id === "string" ? event.id.trim() : "";
+    const htmlLink =
+      typeof event.htmlLink === "string" ? event.htmlLink.trim() : "";
+    if (newEventId !== deterministicEventId || !htmlLink) {
+      return {
+        error: "Google Calendar n'a pas confirmé l'événement déterministe.",
+        success: false,
+      };
+    }
+
+    const postCreate = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: revision,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!postCreate.ok) {
+      return { error: postCreate.error, success: false };
+    }
+
+    const cleanIdNotes = stripCalendarEventMetadata(postCreate.lead.notes);
+    const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId}]\n[Google Calendar Event Link: ${htmlLink}]`;
+    const updatedNotes = cleanIdNotes
+      ? `${cleanIdNotes}\n${eventTags}`
+      : eventTags;
+
+    const writeResult = await writeCalendarNotes({
+      expectedRevision: revision,
+      leadId,
+      notes: updatedNotes,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!writeResult.ok) {
+      return { error: writeResult.error, success: false };
+    }
+
+    const finalAuthorization = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: writeResult.updatedAt,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    const finalMetadata = finalAuthorization.ok
+      ? readCalendarEventMetadata(finalAuthorization.lead.notes)
+      : null;
+    if (
+      !finalAuthorization.ok ||
+      finalMetadata?.eventId !== newEventId ||
+      finalMetadata?.eventOwner !== actingUserId ||
+      finalMetadata?.eventLink !== htmlLink
+    ) {
+      return {
+        error: finalAuthorization.ok
+          ? "La liaison Calendar finale n'a pas été confirmée."
+          : finalAuthorization.error,
+        success: false,
+      };
+    }
+
+    return { success: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erreur inconnue";
     console.error("Error syncing to Google Calendar:", err);
@@ -3120,6 +3261,7 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
   if (leadData) {
     const row = leadData as DbLead;
     updatedLead = {
+      accessScope: row.access_scope,
       id: row.id,
       organizationId: row.organization_id,
       companyId: row.company_id ?? undefined,

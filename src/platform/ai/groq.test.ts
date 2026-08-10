@@ -176,6 +176,26 @@ describe("Groq model router", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["oversized message", 100, "x".repeat(16_001)],
+    ["oversized token budget", 1_201, "Réponds"],
+  ])(
+    "rejects a %s before any provider call",
+    async (_label, maxTokens, content) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+
+      const completion = await completeGroqText({
+        maxTokens,
+        messages: [{ content, role: "user" }],
+        temperature: 0.2,
+      });
+
+      expect(completion).toBeNull();
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("uses the legacy Groq key when the primary variable is blank", () => {
     vi.stubEnv("GROQ_API_KEY", "   ");
     vi.stubEnv("GROQ_KEY", " legacy-key ");

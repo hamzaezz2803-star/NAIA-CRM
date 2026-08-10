@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import type { CrmLeadSummary } from "@/features/crm/contracts";
+import { containsSensitiveCrmText } from "@/features/crm/confidentiality";
 import {
   getNaiaAgent,
   naiaAgents,
@@ -99,6 +100,15 @@ export async function planNaiaAssistant({
     pageContext,
     crmLeads,
   );
+  const externalAiCrmLeads = crmReadLeads.filter(
+    (lead) => lead.accessScope === "organization",
+  );
+  const externalAiSelectedLead =
+    selectedLead?.accessScope === "organization" ? selectedLead : undefined;
+  const referencesConfidentialCrm = commandReferencesConfidentialLead(
+    command,
+    crmLeads,
+  );
   const localResult = orchestrateNaiaCommand({
     command,
     contextAgentId: getContextAgentId(pageContext),
@@ -150,6 +160,12 @@ export async function planNaiaAssistant({
   if (
     !apiKey ||
     !command ||
+    containsSensitiveCrmText(
+      command,
+      ...history.map((message) => message.content),
+    ) ||
+    Boolean(selectedLead && selectedLead.accessScope !== "organization") ||
+    referencesConfidentialCrm ||
     isNaiaOverviewQuestion(command) ||
     localResult.responseType !== "handoff"
   ) {
@@ -180,7 +196,10 @@ export async function planNaiaAssistant({
             status: agent.status,
           })),
           command,
-          conversationHistory: allowPersonalData ? history.slice(-8) : [],
+          // Personal conversation history can contain a confidential entity
+          // from a previous local-only turn. It stays local; the current
+          // bounded command is the only user text sent to the provider.
+          conversationHistory: [],
           currentPage:
             allowPersonalData && pageContext
               ? {
@@ -188,13 +207,13 @@ export async function planNaiaAssistant({
                   filters: pageContext.filters,
                   moduleId: pageContext.moduleId,
                   pathname: pageContext.pathname,
-                  selectedEntity: selectedLead
+                  selectedEntity: externalAiSelectedLead
                     ? {
-                        companyName: selectedLead.companyName,
-                        contactName: selectedLead.contactName,
-                        id: selectedLead.id,
-                        status: selectedLead.status,
-                        topic: selectedLead.topic,
+                        companyName: externalAiSelectedLead.companyName,
+                        contactName: externalAiSelectedLead.contactName,
+                        id: externalAiSelectedLead.id,
+                        status: externalAiSelectedLead.status,
+                        topic: externalAiSelectedLead.topic,
                       }
                     : pageContext.entity
                       ? {
@@ -218,7 +237,7 @@ export async function planNaiaAssistant({
             operations:
               "simulated working data; always disclose this when used",
           },
-          crmSnapshot: (allowPersonalData ? crmReadLeads : [])
+          crmSnapshot: (allowPersonalData ? externalAiCrmLeads : [])
             .slice(0, 30)
             .map((lead) => ({
               companyName: lead.companyName,
@@ -269,6 +288,55 @@ function resolveSelectedLead(
 ) {
   if (pageContext?.entity?.kind !== "lead") return undefined;
   return crmLeads.find((lead) => lead.id === pageContext.entity?.id);
+}
+
+function commandReferencesConfidentialLead(
+  command: string,
+  crmLeads: CrmLeadSummary[],
+) {
+  const normalize = (value: string) =>
+    value
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase("fr-FR");
+  const normalizedCommand = normalize(command.trim());
+  if (!normalizedCommand) return false;
+  const ignoredTokens = new Set([
+    "avec",
+    "client",
+    "company",
+    "contact",
+    "lead",
+    "meeting",
+    "person",
+    "project",
+    "projet",
+  ]);
+
+  return crmLeads
+    .filter((lead) => lead.accessScope !== "organization")
+    .some((lead) =>
+      [
+        lead.id,
+        lead.topic,
+        lead.companyName,
+        lead.contactName,
+        lead.contactEmail,
+        lead.contactPhone,
+      ]
+        .filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length >= 3,
+        )
+        .some((value) => {
+          const normalizedValue = normalize(value.trim());
+          if (normalizedCommand.includes(normalizedValue)) return true;
+          return normalizedValue
+            .split(/[^a-z0-9@.+-]+/u)
+            .filter((token) => token.length >= 4 && !ignoredTokens.has(token))
+            .some((token) => normalizedCommand.includes(token));
+        }),
+    );
 }
 
 function filterCrmLeadsForPageContext(

@@ -14,6 +14,7 @@ export const CRM_PIPELINE_LEAD_COLUMNS = `
   organization_id,
   company_id,
   contact_id,
+  access_scope,
   topic,
   source,
   status,
@@ -121,6 +122,7 @@ export function mapCrmPipelineLead(row: any): CrmLeadSummary {
   const contact = relation(row.contact);
 
   return {
+    accessScope: row.access_scope,
     id: row.id,
     organizationId: row.organization_id,
     companyId: row.company_id ?? undefined,

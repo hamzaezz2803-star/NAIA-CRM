@@ -608,7 +608,7 @@ async function fetchBridgeLeads(
   let query = supabase
     .from("crm_leads")
     .select(
-      `id,organization_id,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
+      `id,organization_id,access_scope,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
       company:company_id(id,organization_id,name,access_scope,archived_at),
       contact:contact_id(id,organization_id,name,email,phone,access_scope,archived_at)`,
     )
@@ -633,6 +633,7 @@ async function fetchBridgeLeads(
   if (error || !data) return [];
 
   type BridgeLeadRow = {
+    access_scope: "cofounders" | "organization";
     company: {
       access_scope: "cofounders" | "organization";
       archived_at: string | null;
@@ -679,6 +680,7 @@ async function fetchBridgeLeads(
       : null;
 
     return {
+      accessScope: row.access_scope,
       companyId: company?.id ?? undefined,
       companyName: company?.name ?? undefined,
       contactEmail: contact?.email ?? undefined,

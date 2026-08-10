@@ -6,6 +6,9 @@ const mocks = vi.hoisted(() => ({
   createServerSupabaseClient: vi.fn(),
   createSystemNotification: vi.fn(),
   ensureClientDriveFolder: vi.fn(),
+  extractCrmLeadWithGroq: vi.fn(),
+  generateCrmFollowUpWithGroq: vi.fn(),
+  getGoogleWorkspaceAccessToken: vi.fn(),
   isDriveServiceConfigured: vi.fn(() => true),
 }));
 
@@ -32,13 +35,24 @@ vi.mock("@/platform/integrations/google-drive-service", () => ({
   isDriveServiceConfigured: mocks.isDriveServiceConfigured,
 }));
 
+vi.mock("@/platform/integrations/google-workspace", () => ({
+  getGoogleWorkspaceAccessToken: mocks.getGoogleWorkspaceAccessToken,
+}));
+
+vi.mock("./ai", () => ({
+  extractCrmLeadWithGroq: mocks.extractCrmLeadWithGroq,
+  generateCrmFollowUpWithGroq: mocks.generateCrmFollowUpWithGroq,
+}));
+
 import {
   checkGoogleAuthAction,
   createGoogleDriveFolderAction,
   createLeadAction,
   deleteLeadAction,
   disconnectGoogleAuthAction,
+  extractLeadFromNaturalTextAction,
   fetchCompanyDetailAction,
+  generateFollowUpDraftAction,
   syncLeadToGoogleCalendarAction,
   updateLeadAction,
   updateLeadStatusAction,
@@ -375,9 +389,155 @@ describe("CRM Google connection scope quarantine", () => {
       success: false,
     });
     expect(credentialRead).not.toHaveBeenCalled();
+    expect(mocks.getGoogleWorkspaceAccessToken).not.toHaveBeenCalled();
     expect(fetchSpy).not.toHaveBeenCalled();
 
     fetchSpy.mockRestore();
+  });
+});
+
+describe("CRM external AI authorization boundary", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function aiClient(lead: Record<string, unknown> | null = null) {
+    return createFakeSupabase((state) => {
+      if (state.table === "organization_memberships") {
+        return {
+          data: { organization_id: "org-1", role: "owner" },
+          error: null,
+        };
+      }
+      if (state.table === "crm_leads") {
+        return { data: lead, error: null };
+      }
+      return { data: null, error: null };
+    });
+  }
+
+  it("never calls Groq for an unauthenticated extraction", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(null);
+
+    await expect(
+      extractLeadFromNaturalTextAction("Nouveau lead Atlas"),
+    ).resolves.toEqual({ error: "Not configured", success: false });
+    expect(mocks.extractCrmLeadWithGroq).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["oversize", "x".repeat(4_001)],
+    ["sensitive", "Prépare une fiche pour la candidate stagiaire Sara"],
+  ])("rejects %s extraction text before Groq", async (_label, text) => {
+    mocks.createServerSupabaseClient.mockResolvedValue(aiClient());
+
+    const result = await extractLeadFromNaturalTextAction(text);
+
+    expect(result.success).toBe(false);
+    expect(mocks.extractCrmLeadWithGroq).not.toHaveBeenCalled();
+  });
+
+  it("extracts a bounded ordinary lead after exact membership authorization", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(aiClient());
+    mocks.extractCrmLeadWithGroq.mockResolvedValue({
+      status: "lead-to-contact",
+      topic: "Atlas AI discovery",
+    });
+
+    await expect(
+      extractLeadFromNaturalTextAction("Nouveau lead Atlas AI discovery"),
+    ).resolves.toEqual({
+      extracted: {
+        status: "lead-to-contact",
+        topic: "Atlas AI discovery",
+      },
+      success: true,
+    });
+    expect(mocks.extractCrmLeadWithGroq).toHaveBeenCalledWith(
+      "Nouveau lead Atlas AI discovery",
+    );
+  });
+
+  it("accepts only a lead ID and never trusts a forged browser draft payload", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(aiClient());
+
+    const result = await generateFollowUpDraftAction({
+      notes: "secret",
+      topic: "forged",
+    } as unknown as string);
+
+    expect(result).toEqual({
+      error: "Identifiant de lead invalide.",
+      success: false,
+    });
+    expect(mocks.generateCrmFollowUpWithGroq).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["cross-tenant or missing", null],
+    [
+      "confidential",
+      {
+        access_scope: "cofounders",
+        company: null,
+        contact: null,
+        id: "lead-1",
+        next_action: null,
+        notes: "Entretien stagiaire",
+        organization_id: "org-1",
+        topic: "Candidate",
+      },
+    ],
+  ])("rejects a %s canonical lead before Groq", async (_label, lead) => {
+    mocks.createServerSupabaseClient.mockResolvedValue(aiClient(lead));
+
+    const result = await generateFollowUpDraftAction("lead-1");
+
+    expect(result.success).toBe(false);
+    expect(mocks.generateCrmFollowUpWithGroq).not.toHaveBeenCalled();
+  });
+
+  it("loads the canonical active organization lead before generating a draft", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      aiClient({
+        access_scope: "organization",
+        company: {
+          access_scope: "organization",
+          archived_at: null,
+          name: "Atlas",
+        },
+        contact: {
+          access_scope: "organization",
+          archived_at: null,
+          name: "Amine",
+        },
+        id: "lead-1",
+        next_action: "Relancer mardi",
+        notes: "Démo réalisée",
+        organization_id: "org-1",
+        topic: "Atlas AI discovery",
+      }),
+    );
+    mocks.generateCrmFollowUpWithGroq.mockResolvedValue({
+      email: "Bonjour Amine",
+      whatsapp: "Bonjour Amine",
+    });
+
+    const result = await generateFollowUpDraftAction("lead-1");
+
+    expect(result.success).toBe(true);
+    expect(mocks.generateCrmFollowUpWithGroq).toHaveBeenCalledWith({
+      companyName: "Atlas",
+      contactName: "Amine",
+      nextAction: "Relancer mardi",
+      notes: "Démo réalisée",
+      topic: "Atlas AI discovery",
+    });
   });
 });
 
@@ -425,12 +585,13 @@ function createCalendarBoundaryResponder({
   dropLinkAfterWrite?: boolean;
   leads?: CalendarTestLead[];
   roles?: Array<"admin" | "member" | "owner" | "viewer">;
-  updateMatches?: boolean;
+  updateMatches?: boolean | boolean[];
 } = {}): { queries: QueryState[]; respond: QueryResponder } {
   const queries: QueryState[] = [];
   let currentLead = { ...leads[0] };
   let leadReadCount = 0;
   let roleReadCount = 0;
+  let updateReadCount = 0;
   let shouldDropLink = false;
 
   return {
@@ -449,11 +610,6 @@ function createCalendarBoundaryResponder({
         return {
           data: {
             connected_by_profile_id: "user-1",
-            encrypted_token_reference: JSON.stringify({
-              access_token: "valid-access-token",
-              expiry_date: Date.now() + 60 * 60 * 1000,
-              refresh_token: "refresh-token",
-            }),
             id: "google-connection-1",
             organization_id: "org-1",
             scopes: calendarScopes,
@@ -463,7 +619,11 @@ function createCalendarBoundaryResponder({
         };
       }
       if (state.table === "crm_leads" && state.op === "update") {
-        if (!updateMatches) return { data: null, error: null };
+        const updateMatch = Array.isArray(updateMatches)
+          ? (updateMatches[updateReadCount] ?? false)
+          : updateMatches;
+        updateReadCount += 1;
+        if (!updateMatch) return { data: null, error: null };
         const payload = state.payload as {
           notes: string | null;
           updated_at: string;
@@ -506,10 +666,34 @@ function createCalendarBoundaryResponder({
   };
 }
 
+async function calendarCreateFetch(
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) {
+  if (String(input).includes("freeBusy")) {
+    return new Response(
+      JSON.stringify({ calendars: { primary: { busy: [] } } }),
+      { status: 200 },
+    );
+  }
+  if (init?.method === "GET") {
+    return new Response(null, { status: 404 });
+  }
+  const body = JSON.parse(String(init?.body ?? "{}")) as { id?: string };
+  return new Response(
+    JSON.stringify({
+      htmlLink: "https://calendar.google.com/event-1",
+      id: body.id,
+    }),
+    { status: 200 },
+  );
+}
+
 describe("CRM Calendar external authorization boundary", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.afterCallbacks.length = 0;
+    mocks.getGoogleWorkspaceAccessToken.mockResolvedValue("valid-access-token");
   });
 
   afterEach(() => {
@@ -531,6 +715,20 @@ describe("CRM Calendar external authorization boundary", () => {
       error: "Tu n'as plus la permission de synchroniser ce lead.",
       success: false,
     });
+    expect(mocks.getGoogleWorkspaceAccessToken).toHaveBeenCalledWith(
+      {
+        expectedConnectionId: "google-connection-1",
+        requiredScopes: [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+        ],
+      },
+      {
+        organizationId: "org-1",
+        profileId: "user-1",
+        supabase: expect.anything(),
+      },
+    );
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -592,21 +790,7 @@ describe("CRM Calendar external authorization boundary", () => {
     mocks.createServerSupabaseClient.mockResolvedValue(
       createFakeSupabase(boundary.respond),
     );
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      if (String(input).includes("freeBusy")) {
-        return new Response(
-          JSON.stringify({ calendars: { primary: { busy: [] } } }),
-          { status: 200 },
-        );
-      }
-      return new Response(
-        JSON.stringify({
-          htmlLink: "https://calendar.google.com/event-1",
-          id: "event-1",
-        }),
-        { status: 200 },
-      );
-    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(calendarCreateFetch);
 
     const result = await syncLeadToGoogleCalendarAction("lead-1");
 
@@ -624,6 +808,63 @@ describe("CRM Calendar external authorization boundary", () => {
     );
   });
 
+  it("reconciles the deterministic event after a DB-zero retry without a second insert", async () => {
+    const boundary = createCalendarBoundaryResponder({
+      updateMatches: [false, true],
+    });
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      createFakeSupabase(boundary.respond),
+    );
+    let storedEventId: string | undefined;
+    const fetchSpy = vi
+      .spyOn(globalThis, "fetch")
+      .mockImplementation(async (input, init) => {
+        if (String(input).includes("freeBusy")) {
+          return new Response(
+            JSON.stringify({ calendars: { primary: { busy: [] } } }),
+            { status: 200 },
+          );
+        }
+        if (init?.method === "GET") {
+          return storedEventId
+            ? new Response(
+                JSON.stringify({
+                  htmlLink: "https://calendar.google.com/event-1",
+                  id: storedEventId,
+                }),
+                { status: 200 },
+              )
+            : new Response(null, { status: 404 });
+        }
+        const body = JSON.parse(String(init?.body ?? "{}")) as {
+          id?: string;
+        };
+        storedEventId = body.id;
+        return new Response(
+          JSON.stringify({
+            htmlLink: "https://calendar.google.com/event-1",
+            id: storedEventId,
+          }),
+          { status: 200 },
+        );
+      });
+
+    const first = await syncLeadToGoogleCalendarAction("lead-1");
+    const second = await syncLeadToGoogleCalendarAction("lead-1");
+
+    expect(first.success).toBe(false);
+    expect(second.success).toBe(true);
+    const eventInsertCalls = fetchSpy.mock.calls.filter(
+      ([input, init]) =>
+        String(input).includes("/calendar/v3/calendars/primary/events?") &&
+        init?.method === "POST",
+    );
+    expect(eventInsertCalls).toHaveLength(1);
+    expect(JSON.parse(String(eventInsertCalls[0]?.[1]?.body)).id).toBe(
+      storedEventId,
+    );
+  });
+
   it("fails closed when the final re-read no longer confirms the stored link", async () => {
     const boundary = createCalendarBoundaryResponder({
       dropLinkAfterWrite: true,
@@ -631,21 +872,7 @@ describe("CRM Calendar external authorization boundary", () => {
     mocks.createServerSupabaseClient.mockResolvedValue(
       createFakeSupabase(boundary.respond),
     );
-    vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
-      if (String(input).includes("freeBusy")) {
-        return new Response(
-          JSON.stringify({ calendars: { primary: { busy: [] } } }),
-          { status: 200 },
-        );
-      }
-      return new Response(
-        JSON.stringify({
-          htmlLink: "https://calendar.google.com/event-1",
-          id: "event-1",
-        }),
-        { status: 200 },
-      );
-    });
+    vi.spyOn(globalThis, "fetch").mockImplementation(calendarCreateFetch);
 
     const result = await syncLeadToGoogleCalendarAction("lead-1");
 
@@ -662,21 +889,7 @@ describe("CRM Calendar external authorization boundary", () => {
     );
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
-      .mockImplementation(async (input) => {
-        if (String(input).includes("freeBusy")) {
-          return new Response(
-            JSON.stringify({ calendars: { primary: { busy: [] } } }),
-            { status: 200 },
-          );
-        }
-        return new Response(
-          JSON.stringify({
-            htmlLink: "https://calendar.google.com/event-1",
-            id: "event-1",
-          }),
-          { status: 200 },
-        );
-      });
+      .mockImplementation(calendarCreateFetch);
 
     const result = await syncLeadToGoogleCalendarAction("lead-1");
 
@@ -689,6 +902,26 @@ describe("CRM Calendar external authorization boundary", () => {
     );
     expect(String(createCall?.[0])).toContain("sendUpdates=none");
     expect(String(createCall?.[1]?.body)).toContain("Client meeting");
+    expect(
+      boundary.queries.some(
+        ({ columns, table }) =>
+          table === "integration_connections" && columns === "*",
+      ),
+    ).toBe(false);
+    expect(mocks.getGoogleWorkspaceAccessToken).toHaveBeenCalledWith(
+      {
+        expectedConnectionId: "google-connection-1",
+        requiredScopes: [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+        ],
+      },
+      {
+        organizationId: "org-1",
+        profileId: "user-1",
+        supabase: expect.anything(),
+      },
+    );
   });
 
   it("revalidates confidentiality immediately before deleteLeadAction touches Calendar", async () => {
@@ -734,6 +967,17 @@ describe("CRM Calendar external authorization boundary", () => {
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.stringContaining("event-1?sendUpdates=none"),
       expect.objectContaining({ method: "DELETE" }),
+    );
+    expect(mocks.getGoogleWorkspaceAccessToken).toHaveBeenCalledWith(
+      {
+        expectedConnectionId: "google-connection-1",
+        requiredScopes: ["https://www.googleapis.com/auth/calendar.events"],
+      },
+      {
+        organizationId: "org-1",
+        profileId: "user-1",
+        supabase: expect.anything(),
+      },
     );
     expect(
       boundary.queries.find((query) => query.op === "delete")?.filters,

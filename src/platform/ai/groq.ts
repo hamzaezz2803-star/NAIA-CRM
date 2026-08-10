@@ -5,6 +5,12 @@ import type { ZodType } from "zod";
 const GROQ_CHAT_COMPLETIONS_URL =
   "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
+export const GROQ_REQUEST_LIMITS = {
+  maxMessageCharacters: 16_000,
+  maxMessages: 24,
+  maxRequestCharacters: 32_000,
+  maxTokens: 1_200,
+} as const;
 
 export const defaultGroqModels = {
   fast: "openai/gpt-oss-20b",
@@ -118,6 +124,7 @@ export async function completeGroqJson<T>({
   temperature,
   workload = "orchestrator",
 }: GroqJsonRequest<T>): Promise<GroqCompletion<T> | null> {
+  if (!isBoundedGroqRequest({ maxTokens, messages })) return null;
   const apiKey = getGroqApiKey();
   if (!apiKey) return null;
 
@@ -168,6 +175,7 @@ export async function completeGroqText({
   temperature,
   workload = "orchestrator",
 }: GroqTextRequest): Promise<GroqCompletion<string> | null> {
+  if (!isBoundedGroqRequest({ maxTokens, messages })) return null;
   const apiKey = getGroqApiKey();
   if (!apiKey) return null;
 
@@ -200,6 +208,36 @@ function activeModel(value: string | undefined) {
   const model = value?.trim();
   if (!model || retiringGroqModels.has(model)) return undefined;
   return model;
+}
+
+function isBoundedGroqRequest({
+  maxTokens,
+  messages,
+}: Pick<GroqBaseRequest, "maxTokens" | "messages">) {
+  if (
+    !Number.isInteger(maxTokens) ||
+    maxTokens < 1 ||
+    maxTokens > GROQ_REQUEST_LIMITS.maxTokens ||
+    messages.length < 1 ||
+    messages.length > GROQ_REQUEST_LIMITS.maxMessages
+  ) {
+    return false;
+  }
+
+  let totalCharacters = 0;
+  for (const message of messages) {
+    if (
+      !message.content ||
+      message.content.length > GROQ_REQUEST_LIMITS.maxMessageCharacters
+    ) {
+      return false;
+    }
+    totalCharacters += message.content.length;
+    if (totalCharacters > GROQ_REQUEST_LIMITS.maxRequestCharacters) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function readGroqEnvironment(): GroqEnvironment {
