@@ -112,6 +112,36 @@ manual review instead of rewriting tenant ownership.
 
 ## Dry-run, apply, and rollback
 
+The production operator uses the audited TypeScript runner. The export path is
+optional only because the private Application Support path is the default; any
+other file still has to match the reviewed byte size and SHA-256 exactly.
+
+```bash
+npm run crm:trello-import -- dry-run
+npm run crm:trello-import -- apply --confirm-apply
+```
+
+If the Supabase link lives in another checkout, pass only its directory (never
+a database URL or token):
+
+```bash
+npm run crm:trello-import -- dry-run --database-workdir /absolute/repo/path
+```
+
+The runner sends every SQL statement to `supabase db query` through
+`/dev/stdin`. SQL, normalized rows, CRM snapshots, provider stdout, and provider
+stderr remain captured in memory. Terminal output is restricted to reviewed
+hashes, aggregate counts, booleans, and the import run UUID. Do not add shell
+tracing, `tee`, `--debug`, or provider output logging around this command.
+
+`dry-run` is read-only: it verifies the exact export, migration/grant/RLS
+contract, founder context, in-memory CRM reconciliation, and deterministic
+attestation. `apply` repeats those gates, then stages and applies explicitly.
+It checks founder and non-founder RLS, all mappings, expected tag relations,
+scope/hash consistency, row deltas, conflicts, and an exact idempotent replay.
+If a newly applied run fails a postcondition, the runner invokes the
+soft-archive rollback and verifies it; it never emits a `DELETE` statement.
+
 1. Run `normalizeTrelloExport` locally and inspect only aggregate counts,
    warnings, duplicate groups, and privacy reasons.
 2. Call `stageTrelloImportDryRun` only after the migration is deployed. It
