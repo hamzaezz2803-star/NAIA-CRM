@@ -18,6 +18,11 @@ const gmailAction: NaiaActionDraft = {
   risk: "low",
 };
 
+const slackBinding = {
+  actorProfileId: "profile-ali",
+  organizationId: "org-1",
+};
+
 describe("NAIA action approval tokens", () => {
   beforeEach(() => {
     vi.stubEnv("NAIA_ACTION_APPROVAL_SECRET", "test-secret");
@@ -60,6 +65,46 @@ describe("NAIA action approval tokens", () => {
         signed.approvalToken,
         gmailAction.id,
         "autre commande",
+      ),
+    ).toBeNull();
+  });
+
+  it("binds bridge tokens to the exact actor and organization", () => {
+    const command = "NAIA lis mes emails non lus";
+    const signed = signAction(gmailAction, command, slackBinding);
+
+    expect(
+      verifyApprovalToken(
+        signed.approvalToken,
+        gmailAction.id,
+        command,
+        slackBinding,
+      ),
+    ).toEqual(gmailAction);
+    expect(
+      verifyApprovalToken(signed.approvalToken, gmailAction.id, command, {
+        ...slackBinding,
+        actorProfileId: "profile-nabil",
+      }),
+    ).toBeNull();
+    expect(
+      verifyApprovalToken(signed.approvalToken, gmailAction.id, command, {
+        ...slackBinding,
+        organizationId: "org-2",
+      }),
+    ).toBeNull();
+  });
+
+  it("rejects an unbound token when bridge verification requires a binding", () => {
+    const command = "NAIA lis mes emails non lus";
+    const signed = signAction(gmailAction, command);
+
+    expect(
+      verifyApprovalToken(
+        signed.approvalToken,
+        gmailAction.id,
+        command,
+        slackBinding,
       ),
     ).toBeNull();
   });

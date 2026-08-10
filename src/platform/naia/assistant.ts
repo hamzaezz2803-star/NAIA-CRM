@@ -2,6 +2,7 @@ import "server-only";
 
 import { z } from "zod";
 import type { CrmLeadSummary } from "@/features/crm/contracts";
+import { containsSensitiveCrmText } from "@/features/crm/confidentiality";
 import {
   getNaiaAgent,
   naiaAgents,
@@ -99,6 +100,15 @@ export async function planNaiaAssistant({
     pageContext,
     crmLeads,
   );
+  const externalAiCrmLeads = crmReadLeads.filter(
+    (lead) => lead.accessScope === "organization",
+  );
+  const externalAiSelectedLead =
+    selectedLead?.accessScope === "organization" ? selectedLead : undefined;
+  const referencesConfidentialCrm = commandReferencesConfidentialLead(
+    command,
+    crmLeads,
+  );
   const localResult = orchestrateNaiaCommand({
     command,
     contextAgentId: getContextAgentId(pageContext),
@@ -106,12 +116,7 @@ export async function planNaiaAssistant({
     crmReadLeads,
     selectedLeadId: selectedLead?.id,
   });
-  if (
-    !allowPersonalData &&
-    localResult.agent.id === "crm" &&
-    localResult.actions.length === 0 &&
-    localResult.responseType === "answer"
-  ) {
+  if (!allowPersonalData && localResult.agent.id === "crm") {
     return {
       mode: "local-orchestrated",
       result: createDirectAnswer({
@@ -155,16 +160,17 @@ export async function planNaiaAssistant({
   if (
     !apiKey ||
     !command ||
+    containsSensitiveCrmText(
+      command,
+      ...history.map((message) => message.content),
+    ) ||
+    Boolean(selectedLead && selectedLead.accessScope !== "organization") ||
+    referencesConfidentialCrm ||
     isNaiaOverviewQuestion(command) ||
     localResult.responseType !== "handoff"
   ) {
     return { mode: "local-orchestrated", result: localResult };
   }
-
-  const realGoogleCalendar =
-    allowPersonalData && shouldReadCalendar(command)
-      ? await buildRealGoogleCalendarContext(googleContext)
-      : null;
 
   const completion = await completeGroqJson({
     jsonSchema: naiaDecisionJsonSchema,
@@ -185,7 +191,10 @@ export async function planNaiaAssistant({
             status: agent.status,
           })),
           command,
-          conversationHistory: allowPersonalData ? history.slice(-8) : [],
+          // Personal conversation history can contain a confidential entity
+          // from a previous local-only turn. It stays local; the current
+          // bounded command is the only user text sent to the provider.
+          conversationHistory: [],
           currentPage:
             allowPersonalData && pageContext
               ? {
@@ -193,13 +202,13 @@ export async function planNaiaAssistant({
                   filters: pageContext.filters,
                   moduleId: pageContext.moduleId,
                   pathname: pageContext.pathname,
-                  selectedEntity: selectedLead
+                  selectedEntity: externalAiSelectedLead
                     ? {
-                        companyName: selectedLead.companyName,
-                        contactName: selectedLead.contactName,
-                        id: selectedLead.id,
-                        status: selectedLead.status,
-                        topic: selectedLead.topic,
+                        companyName: externalAiSelectedLead.companyName,
+                        contactName: externalAiSelectedLead.contactName,
+                        id: externalAiSelectedLead.id,
+                        status: externalAiSelectedLead.status,
+                        topic: externalAiSelectedLead.topic,
                       }
                     : pageContext.entity
                       ? {
@@ -214,16 +223,14 @@ export async function planNaiaAssistant({
             crm: allowPersonalData
               ? "live organization data"
               : "not loaded on shared surfaces",
-            googleCalendar: realGoogleCalendar
-              ? "live connected user data"
-              : "not loaded",
+            googleCalendar: "not loaded; Calendar stays local-only",
             qarizmiKnowledge: resolvedPrivateKnowledge
               ? `private internal deck: ${resolvedPrivateKnowledge.sourceFileName}`
               : "not loaded",
             operations:
               "simulated working data; always disclose this when used",
           },
-          crmSnapshot: (allowPersonalData ? crmReadLeads : [])
+          crmSnapshot: (allowPersonalData ? externalAiCrmLeads : [])
             .slice(0, 30)
             .map((lead) => ({
               companyName: lead.companyName,
@@ -238,7 +245,7 @@ export async function planNaiaAssistant({
           suggestedAgentId: localResult.agent.id,
           operatingContext: buildNaiaOperatingContext(),
           privateKnowledge: resolvedPrivateKnowledge,
-          realGoogleCalendar: realGoogleCalendar ?? undefined,
+          realGoogleCalendar: undefined,
         }),
         role: "user",
       },
@@ -274,6 +281,55 @@ function resolveSelectedLead(
 ) {
   if (pageContext?.entity?.kind !== "lead") return undefined;
   return crmLeads.find((lead) => lead.id === pageContext.entity?.id);
+}
+
+function commandReferencesConfidentialLead(
+  command: string,
+  crmLeads: CrmLeadSummary[],
+) {
+  const normalize = (value: string) =>
+    value
+      .normalize("NFKD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .toLocaleLowerCase("fr-FR");
+  const normalizedCommand = normalize(command.trim());
+  if (!normalizedCommand) return false;
+  const ignoredTokens = new Set([
+    "avec",
+    "client",
+    "company",
+    "contact",
+    "lead",
+    "meeting",
+    "person",
+    "project",
+    "projet",
+  ]);
+
+  return crmLeads
+    .filter((lead) => lead.accessScope !== "organization")
+    .some((lead) =>
+      [
+        lead.id,
+        lead.topic,
+        lead.companyName,
+        lead.contactName,
+        lead.contactEmail,
+        lead.contactPhone,
+      ]
+        .filter(
+          (value): value is string =>
+            typeof value === "string" && value.trim().length >= 3,
+        )
+        .some((value) => {
+          const normalizedValue = normalize(value.trim());
+          if (normalizedCommand.includes(normalizedValue)) return true;
+          return normalizedValue
+            .split(/[^a-z0-9@.+-]+/u)
+            .filter((token) => token.length >= 4 && !ignoredTokens.has(token))
+            .some((token) => normalizedCommand.includes(token));
+        }),
+    );
 }
 
 function filterCrmLeadsForPageContext(
@@ -958,7 +1014,6 @@ function buildSystemPrompt() {
     'Retourne uniquement du JSON valide: {"agentId":"...","confidence":0.0,"response":"..."}.',
     "Le crmSnapshot contient des données CRM réelles de l'organisation. N'invente jamais un lead, un chiffre ou une action.",
     "operatingContext contient encore des données de travail simulées pour Finance, Projects et HR. Si tu les utilises, commence explicitement par dire qu'il s'agit de données simulées.",
-    "realGoogleCalendar, lorsqu'il est présent, contient les vrais événements Google Calendar de l'utilisateur et prime sur tout exemple.",
     "privateKnowledge, lorsqu'il est présent, provient du dernier deck générique du Drive privé Qarizmi. Utilise uniquement les extraits fournis et n'invente aucun parcours, credential, chiffre ou offre absent de cette source.",
     "Le contexte privé est réservé aux cofondateurs en conversation privée. Ne le répète jamais comme une information publique et ne prétends pas avoir lu d'autres documents.",
     "Pour une question générale, choisis naia et réponds comme un assistant compétent.",
@@ -1025,56 +1080,7 @@ function parseAgentId(value: unknown): NaiaAgentId | null {
     : null;
 }
 
-function shouldReadCalendar(command: string) {
-  return /\b(agenda|calendar|calendrier|dispo|disponibilit|meeting|reunion|réunion|rdv|rendez[- ]vous)\b/i.test(
-    command,
-  );
-}
-
-const REAL_CALENDAR_DAYS_AHEAD = 7;
-const REAL_CALENDAR_MAX_EVENTS = 15;
 const REAL_CALENDAR_TIME_ZONE = "Africa/Casablanca";
-const REAL_CALENDAR_CONTEXT_TIMEOUT_MS = 2500;
-
-async function buildRealGoogleCalendarContext(
-  googleContext?: GoogleWorkspaceContext,
-): Promise<string | null> {
-  try {
-    const events = await withDeadline(
-      listGoogleCalendarEvents(
-        {
-          daysAhead: REAL_CALENDAR_DAYS_AHEAD,
-          maxResults: REAL_CALENDAR_MAX_EVENTS,
-        },
-        googleContext,
-      ),
-      REAL_CALENDAR_CONTEXT_TIMEOUT_MS,
-    );
-
-    if (events.length === 0) {
-      return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours): aucun événement.`;
-    }
-
-    const summary = events
-      .map((event) => `${event.title} — ${formatRealCalendarDate(event.start)}`)
-      .join(" ; ");
-    return `Agenda Google réel de l'utilisateur (${REAL_CALENDAR_DAYS_AHEAD} prochains jours): ${summary}`;
-  } catch {
-    return null;
-  }
-}
-
-function withDeadline<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const deadline = new Promise<never>((_, reject) => {
-    timer = setTimeout(
-      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
-      timeoutMs,
-    );
-  });
-
-  return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
-}
 
 function formatRealCalendarDate(start?: string) {
   if (!start) return "date non précisée";

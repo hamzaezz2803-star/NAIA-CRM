@@ -7,7 +7,7 @@ import { getPublicEnv, getSupabasePublicKey } from "@/platform/auth/config";
 import { saveGoogleConnectionFromLogin } from "@/platform/integrations/google-connection";
 
 export async function GET(request: NextRequest) {
-  console.log("[auth-callback] Received request:", request.url);
+  console.log("[auth-callback] Received authentication callback");
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
   const tokenHash = requestUrl.searchParams.get("token_hash");

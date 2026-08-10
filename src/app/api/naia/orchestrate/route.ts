@@ -4,7 +4,6 @@ import {
   fetchLeadsAction,
   updateLeadStatusAction,
   fetchTagsAction,
-  createTagAction,
 } from "@/features/crm/actions";
 import {
   crmLeadStatuses,
@@ -33,7 +32,12 @@ import {
   listGmailMessages,
   listGoogleCalendarEvents,
 } from "@/platform/integrations/google-workspace";
-import { signAction, verifyApprovalToken } from "@/platform/naia/action-tokens";
+import {
+  hashApprovalToken,
+  signAction,
+  verifyApprovalToken,
+  type NaiaActionApprovalBinding,
+} from "@/platform/naia/action-tokens";
 import {
   planNaiaAssistant,
   type NaiaConversationMessage,
@@ -75,14 +79,14 @@ export async function POST(request: Request) {
     });
   }
 
-  const actor = await resolveWebActor();
-  if (!actor) {
+  const webContext = await resolveWebContext();
+  if (!webContext) {
     return Response.json({ error: "Authentication required" }, { status: 401 });
   }
 
   const crmLeads = await fetchLeadsAction({ backfill: false });
   const { mode, result } = await planNaiaAssistant({
-    actor,
+    actor: webContext.actor,
     command,
     crmLeads,
     history: parseHistory(payload.history),
@@ -96,7 +100,7 @@ export async function POST(request: Request) {
   return Response.json({
     ...hydratedResult,
     actions: hydratedResult.actions.map((action) =>
-      signAction(action, command),
+      signAction(action, command, webContext.binding),
     ),
     crmSnapshot: {
       leadCount: crmLeads.length,
@@ -108,18 +112,69 @@ export async function POST(request: Request) {
   });
 }
 
-async function resolveWebActor() {
+async function resolveWebContext() {
   try {
     const session = await getAppSession();
     return {
-      email: session.user.email,
-      name: session.user.name,
-      organizationName: session.organization.name,
-      role: session.user.role,
+      actor: {
+        email: session.user.email,
+        name: session.user.name,
+        organizationName: session.organization.name,
+        role: session.user.role,
+      },
+      binding: {
+        actorProfileId: session.user.id,
+        organizationId: session.organization.id,
+      } satisfies NaiaActionApprovalBinding,
     };
   } catch {
     return undefined;
   }
+}
+
+async function claimWebApprovalToken(
+  approvalToken: string,
+  binding: NaiaActionApprovalBinding,
+): Promise<
+  { claimed: true } | { claimed: false; error: string; status: 403 | 409 | 503 }
+> {
+  if (
+    process.env.NODE_ENV === "development" &&
+    binding.actorProfileId === "development-user" &&
+    binding.organizationId === "development-organization"
+  ) {
+    return { claimed: true };
+  }
+
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) {
+    return {
+      claimed: false,
+      error: "Approval ledger unavailable",
+      status: 503,
+    };
+  }
+
+  const { error } = await supabase.rpc("claim_naia_web_action", {
+    requested_actor_profile_id: binding.actorProfileId,
+    requested_organization_id: binding.organizationId,
+    requested_token_hash: hashApprovalToken(approvalToken),
+  });
+
+  if (!error) return { claimed: true };
+  if (error.code === "23505") {
+    return { claimed: false, error: "Action already approved", status: 409 };
+  }
+  if (error.code === "42501") {
+    return { claimed: false, error: "Approval actor changed", status: 403 };
+  }
+
+  console.error("NAIA web approval claim failed:", error);
+  return {
+    claimed: false,
+    error: "Approval ledger unavailable",
+    status: 503,
+  };
 }
 
 async function executeAction({
@@ -147,12 +202,27 @@ async function executeAction({
   // keeps validation idempotent even when the CRM state, the clock, or the AI
   // extraction changed between plan and execute, so we never re-derive the
   // action list server-side here.
-  const action = verifyApprovalToken(approvalToken, actionId, command);
+  const webContext = await resolveWebContext();
+  if (!webContext) {
+    return Response.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  const action = verifyApprovalToken(
+    approvalToken,
+    actionId,
+    command,
+    webContext.binding,
+  );
   if (!action) {
     return Response.json(
       { error: "Invalid or expired approval token" },
       { status: 403 },
     );
+  }
+
+  const claim = await claimWebApprovalToken(approvalToken, webContext.binding);
+  if (!claim.claimed) {
+    return Response.json({ error: claim.error }, { status: claim.status });
   }
 
   if (action.kind === "crm.updateLeadStatus") {
@@ -212,6 +282,7 @@ async function executeAction({
 
     // Map tag names to database tag IDs
     const tagIds: string[] = [];
+    const tagNames: string[] = [];
     if (leadDraft.tags && leadDraft.tags.length > 0) {
       const existingTags = await fetchTagsAction();
       for (const tagName of leadDraft.tags) {
@@ -226,22 +297,10 @@ async function executeAction({
         if (found) {
           tagIds.push(found.id);
         } else {
-          // Create new tag with a random color
-          const colors = [
-            "teal",
-            "blue",
-            "indigo",
-            "rose",
-            "amber",
-            "emerald",
-            "stone",
-            "orange",
-          ];
-          const randomColor = colors[Math.floor(Math.random() * colors.length)];
-          const createRes = await createTagAction(trimmed, randomColor);
-          if (createRes.success && createRes.tag) {
-            tagIds.push(createRes.tag.id);
-          }
+          // Missing tags are created by create_crm_lead_atomic in the same
+          // transaction as the lead. A rejected lead must not leave an orphan
+          // tag behind.
+          tagNames.push(trimmed);
         }
       }
     }
@@ -262,6 +321,7 @@ async function executeAction({
       skipGoogleCalendarSync: !shouldCreateCalendar,
       skipGoogleDriveCreate: !shouldCreateDrive,
       tagIds,
+      tagNames,
     });
     const calendarSuccess = Boolean(response.calendarSynced);
     let calendarMessage = "";

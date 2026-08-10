@@ -28,11 +28,7 @@ import {
   FolderOpen,
 } from "lucide-react";
 
-import {
-  fetchLeadsAction,
-  fetchCompaniesAction,
-  fetchLeadsForTodoAction,
-} from "@/features/crm/actions";
+import { fetchCrmNavigationSummaryAction } from "@/features/crm/pipeline-actions";
 import { NotificationBell } from "./notification-bell";
 import Image from "next/image";
 import Link from "next/link";
@@ -96,27 +92,14 @@ export function AppShell({
     let isMounted = true;
     async function loadCounts() {
       try {
-        const [leads, companies, todoLeads] = await Promise.all([
-          fetchLeadsAction(),
-          fetchCompaniesAction(),
-          fetchLeadsForTodoAction(),
-        ]);
+        const summary = await fetchCrmNavigationSummaryAction();
 
         if (isMounted) {
-          const activeLeads = leads.filter(
-            (l) => l.status !== "won" && l.status !== "dead-end",
-          );
-          setPipelineCount(activeLeads.length);
-
-          const drives = [
-            ...leads.filter((l) => getLeadDriveFolderUrl(l)),
-            ...companies.filter((c) => c.driveFolderUrl),
-          ];
-          setDrivesCount(drives.length);
-
-          setFollowUpsCount(activeLeads.length);
-          setTodoCount(todoLeads.length);
-          setClientsCount(companies.length);
+          setPipelineCount(summary.pipelineCount);
+          setDrivesCount(summary.drivesCount);
+          setFollowUpsCount(summary.followUpsCount);
+          setTodoCount(summary.todoCount);
+          setClientsCount(summary.clientsCount);
         }
       } catch (err) {
         console.error("Failed to load crm navigation counts:", err);
@@ -737,21 +720,6 @@ function ShellSidebar({
       )}
     </div>
   );
-}
-
-function getLeadDriveFolderUrl(lead: {
-  driveFolderUrl?: string;
-  notes?: string;
-}) {
-  return lead.driveFolderUrl ?? extractDriveLinkFromNotes(lead.notes);
-}
-
-function extractDriveLinkFromNotes(notes?: string) {
-  const match = (notes ?? "").match(
-    /\[Google Drive Folder:[^\]]*\]\((https:\/\/[^)]+)\)/,
-  );
-
-  return match?.[1] ?? undefined;
 }
 
 function Brand({ isCollapsed }: { isCollapsed: boolean }) {

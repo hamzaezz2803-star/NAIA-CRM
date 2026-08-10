@@ -4,6 +4,7 @@ const mocks = vi.hoisted(() => ({
   createGoogleCalendarReminder: vi.fn(),
   createLeadAction: vi.fn(),
   createTagAction: vi.fn(),
+  createServerSupabaseClient: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
   fetchLeadsAction: vi.fn(),
   fetchTagsAction: vi.fn(),
@@ -25,7 +26,7 @@ vi.mock("@/features/crm/actions", () => ({
 }));
 
 vi.mock("@/platform/auth/supabase-server", () => ({
-  createServerSupabaseClient: vi.fn(),
+  createServerSupabaseClient: mocks.createServerSupabaseClient,
 }));
 
 vi.mock("@/platform/auth/session", () => ({
@@ -49,17 +50,26 @@ import { signAction } from "@/platform/naia/action-tokens";
 
 import { POST } from "./route";
 
+const webApprovalBinding = {
+  actorProfileId: "user-1",
+  organizationId: "org-1",
+};
+
 describe("NAIA orchestrate route", () => {
   beforeEach(() => {
     vi.stubEnv("GROQ_API_KEY", "");
     vi.stubEnv("NAIA_ACTION_APPROVAL_SECRET", "test-secret");
     mocks.fetchLeadsAction.mockResolvedValue([]);
+    mocks.createServerSupabaseClient.mockResolvedValue({
+      rpc: vi.fn().mockResolvedValue({ data: "owner", error: null }),
+    });
     mocks.getAppSession.mockResolvedValue({
       authMode: "supabase",
       isSupabaseConfigured: true,
-      organization: { name: "Qarizmi", slug: "qarizmi" },
+      organization: { id: "org-1", name: "Qarizmi", slug: "qarizmi" },
       user: {
         email: "ali@qarizmi.com",
+        id: "user-1",
         name: "Ali EL ABBASSY",
         role: "owner",
       },
@@ -289,8 +299,6 @@ describe("NAIA orchestrate route", () => {
     expect(body.response).toContain("modele de langage");
     expect(systemPrompt).toContain("question générale");
     expect(systemPrompt).toContain("Ne prétends jamais avoir exécuté");
-    expect(systemPrompt).toContain("realGoogleCalendar");
-    expect(systemPrompt).toContain("prime");
     expect(userPrompt.operatingContext.cashFlow).toContain("Oct.");
     expect(userPrompt.operatingContext.pipeline).toContain("Atlas Process");
     expect(userPrompt.operatingContext.projects).toContain("Sahara Logistics");
@@ -299,7 +307,9 @@ describe("NAIA orchestrate route", () => {
     );
     expect(userPrompt.operatingContext.followUps).toContain("Medina Health");
     expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
-    expect(userPrompt.contextSources.googleCalendar).toBe("not loaded");
+    expect(userPrompt.contextSources.googleCalendar).toContain(
+      "Calendar stays local-only",
+    );
     expect(userPrompt.realGoogleCalendar).toBeUndefined();
   });
 
@@ -466,7 +476,8 @@ describe("NAIA orchestrate route", () => {
 
     expect(mocks.createLeadAction).toHaveBeenCalledWith(
       expect.objectContaining({
-        tagIds: ["tag-crm", "tag-ia"],
+        tagIds: ["tag-crm"],
+        tagNames: ["IA"],
       }),
     );
   });
@@ -614,7 +625,11 @@ describe("NAIA orchestrate route", () => {
 
   it("rejects an approval token replayed with a different command", async () => {
     const command = "NAIA lis mes emails Gmail non lus";
-    const gmailAction = signAction(gmailReadAction, command);
+    const gmailAction = signAction(
+      gmailReadAction,
+      command,
+      webApprovalBinding,
+    );
 
     const executeResponse = await POST(
       new Request("http://localhost/api/naia/orchestrate", {
@@ -636,7 +651,11 @@ describe("NAIA orchestrate route", () => {
 
   it("rejects a tampered approval token", async () => {
     const command = "NAIA lis mes emails Gmail non lus";
-    const gmailAction = signAction(gmailReadAction, command);
+    const gmailAction = signAction(
+      gmailReadAction,
+      command,
+      webApprovalBinding,
+    );
     const [encodedPayload, signature] = gmailAction.approvalToken.split(".");
     const decoded = JSON.parse(
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
@@ -660,6 +679,53 @@ describe("NAIA orchestrate route", () => {
     expect(executeResponse.status).toBe(403);
     expect(executeBody.error).toBe("Invalid or expired approval token");
     expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+  });
+
+  it("claims a web approval once before creating an external event", async () => {
+    const claimedHashes = new Set<string>();
+    const claimRpc = vi.fn(
+      async (
+        _functionName: string,
+        payload: { requested_token_hash: string },
+      ) => {
+        if (claimedHashes.has(payload.requested_token_hash)) {
+          return { data: null, error: { code: "23505" } };
+        }
+        claimedHashes.add(payload.requested_token_hash);
+        return { data: "owner", error: null };
+      },
+    );
+    mocks.createServerSupabaseClient.mockResolvedValue({ rpc: claimRpc });
+    mocks.createGoogleCalendarReminder.mockResolvedValue({
+      htmlLink: "https://calendar.google.com/event?eid=once",
+    });
+
+    const command = "Rappelle-moi le point client demain à 9h";
+    const signed = signAction(
+      calendarReminderAction,
+      command,
+      webApprovalBinding,
+    );
+    const execute = () =>
+      POST(
+        new Request("http://localhost/api/naia/orchestrate", {
+          body: JSON.stringify({
+            actionId: signed.id,
+            approvalToken: signed.approvalToken,
+            command,
+            execute: true,
+          }),
+          method: "POST",
+        }),
+      );
+
+    const first = await execute();
+    const second = await execute();
+
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(409);
+    expect(mocks.createGoogleCalendarReminder).toHaveBeenCalledTimes(1);
+    expect(claimRpc).toHaveBeenCalledTimes(2);
   });
 
   it("executes an approved Maya pitch draft action", async () => {
@@ -720,4 +786,21 @@ const gmailReadAction = {
   label: "Lire Gmail",
   payload: { maxResults: 10, unreadOnly: true },
   risk: "low",
+} satisfies NaiaActionDraft;
+
+const calendarReminderAction = {
+  agentId: "meetings",
+  approvalRequired: true,
+  description: "Créer un rappel Calendar",
+  id: "calendar-reminder-test",
+  kind: "calendar.createReminder",
+  label: "Créer le rappel",
+  payload: {
+    notes: "Point client",
+    scheduledAt: "2026-08-11T09:00:00+01:00",
+    timeWasInferred: false,
+    timeZone: "Africa/Casablanca",
+    title: "Point client",
+  },
+  risk: "medium",
 } satisfies NaiaActionDraft;

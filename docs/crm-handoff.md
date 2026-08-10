@@ -289,10 +289,9 @@ lead" or "son pitch", but a different unmatched company/contact name must
 produce a clarification instead of silently targeting the selected lead.
 
 The official NAIA voice is configured only through the server-side
-`ELEVENLABS_VOICE_ID`. The browser cannot override it. The optional
-`ELEVENLABS_FALLBACK_VOICE_ID` is a distinct rescue voice; browser speech
-synthesis remains the final explicit fallback when provider audio is
-unavailable.
+`ELEVENLABS_VOICE_ID`. The browser cannot override it. The POST-only route
+makes at most one paid provider call; browser speech synthesis is the explicit
+fallback when that voice is unavailable.
 
 ## NAIA Daily Brief Integration
 

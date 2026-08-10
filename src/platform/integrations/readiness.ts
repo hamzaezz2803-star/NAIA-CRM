@@ -8,12 +8,13 @@ import {
   plannedIntegrationProviders,
 } from "./contracts";
 import {
+  attestGoogleScopes,
+  GOOGLE_MEETING_NOTE_SCOPE,
   GOOGLE_USER_REQUIRED_SCOPES,
   hasForbiddenGoogleDriveScope,
 } from "./google-workspace-scopes";
 
 type IntegrationConnectionRow = {
-  encrypted_token_reference: string | null;
   external_account_label: string | null;
   provider: string;
   scopes: string[] | null;
@@ -37,6 +38,12 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
         : [];
     const legacyDrivePermission =
       provider.provider === "google" && hasForbiddenGoogleDriveScope(scopes);
+    const invalidGoogleAttestation =
+      provider.provider === "google" &&
+      !attestGoogleScopes(
+        scopes,
+        scopes.includes(GOOGLE_MEETING_NOTE_SCOPE) ? "meeting-notes" : "user",
+      ).ok;
 
     if (!provider.isImplemented) {
       return {
@@ -60,7 +67,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
     if (
       connection &&
       connection.status !== "revoked" &&
-      legacyDrivePermission
+      (legacyDrivePermission || invalidGoogleAttestation)
     ) {
       return {
         capabilities: [...provider.capabilities],
@@ -80,13 +87,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
     }
 
     if (connection?.status === "connected") {
-      const hasTokenReference = Boolean(connection.encrypted_token_reference);
-
-      if (
-        missingEnvVars.length === 0 &&
-        hasTokenReference &&
-        missingRequiredScopes.length === 0
-      ) {
+      if (missingEnvVars.length === 0 && missingRequiredScopes.length === 0) {
         return {
           capabilities: [...provider.capabilities],
           detail: `Compte connecte${connection.external_account_label ? `: ${connection.external_account_label}` : ""}.`,
@@ -107,7 +108,7 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
         detail:
           missingRequiredScopes.length > 0
             ? "Une connexion existe, mais elle n'a pas encore tous les scopes Calendar et Gmail requis. Reconnecte Google Workspace."
-            : "Une connexion existe, mais il manque une variable serveur ou une reference token. Reconnecte le provider.",
+            : "Une connexion existe, mais il manque une variable serveur. Reconnecte le provider.",
         envVars: [...provider.envVars],
         externalAccountLabel: connection.external_account_label ?? undefined,
         isImplemented: true,
@@ -179,9 +180,7 @@ async function getConnectionRows(): Promise<IntegrationConnectionRow[]> {
   // variables because the bridge is installed once for the organization.
   const { data, error } = await supabase
     .from("integration_connections")
-    .select(
-      "provider,status,external_account_label,scopes,encrypted_token_reference",
-    )
+    .select("provider,status,external_account_label,scopes")
     .eq("organization_id", membership.organization_id)
     .eq("connected_by_profile_id", user.id);
 

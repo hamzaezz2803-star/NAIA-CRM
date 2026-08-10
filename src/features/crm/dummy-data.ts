@@ -98,6 +98,7 @@ export const dummyCrmContacts: CrmContactSummary[] = [
 
 export const dummyCrmLeads: CrmLeadSummary[] = [
   {
+    accessScope: "organization",
     companyId: "demo-company-atlas-process",
     contactId: "demo-contact-yassine-berrada",
     createdAt: "2026-06-28T09:30:00.000Z",
@@ -113,6 +114,7 @@ export const dummyCrmLeads: CrmLeadSummary[] = [
     updatedAt: "2026-07-01T09:00:00.000Z",
   },
   {
+    accessScope: "organization",
     companyId: "demo-company-medina-health",
     contactId: "demo-contact-nawal-mansouri",
     createdAt: "2026-06-27T14:15:00.000Z",
@@ -128,6 +130,7 @@ export const dummyCrmLeads: CrmLeadSummary[] = [
     updatedAt: "2026-07-01T09:05:00.000Z",
   },
   {
+    accessScope: "organization",
     companyId: "demo-company-sahara-logistics",
     contactId: "demo-contact-karim-tazi",
     createdAt: "2026-06-26T16:45:00.000Z",
@@ -144,6 +147,7 @@ export const dummyCrmLeads: CrmLeadSummary[] = [
     updatedAt: "2026-07-01T09:10:00.000Z",
   },
   {
+    accessScope: "organization",
     companyId: "demo-company-argan-retail",
     contactId: "demo-contact-sara-amrani",
     createdAt: "2026-06-25T12:10:00.000Z",
@@ -158,6 +162,7 @@ export const dummyCrmLeads: CrmLeadSummary[] = [
     updatedAt: "2026-07-01T09:15:00.000Z",
   },
   {
+    accessScope: "organization",
     companyId: "demo-company-nova-agri",
     contactId: "demo-contact-hicham-elalami",
     createdAt: "2026-06-24T10:20:00.000Z",
@@ -173,6 +178,7 @@ export const dummyCrmLeads: CrmLeadSummary[] = [
     updatedAt: "2026-07-01T09:20:00.000Z",
   },
   {
+    accessScope: "organization",
     companyId: "demo-company-casa-tech",
     contactId: "demo-contact-ines-bennis",
     createdAt: "2026-06-22T08:50:00.000Z",

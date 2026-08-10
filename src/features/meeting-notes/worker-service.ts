@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+
 import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 
 import {
@@ -317,6 +319,7 @@ export async function completeMeetingJob(jobId: string, rawPayload: unknown) {
     );
   }
 
+  const reservationStartedAt = new Date().toISOString();
   const completionLeaseExpiresAt = new Date(
     Date.now() + 10 * 60 * 1000,
   ).toISOString();
@@ -331,6 +334,7 @@ export async function completeMeetingJob(jobId: string, rawPayload: unknown) {
     .eq("id", jobId)
     .eq("worker_id", payload.workerId)
     .eq("lease_token", payload.leaseToken)
+    .gt("lease_expires_at", reservationStartedAt)
     .in("status", ["claimed", "transcribing", "analyzing", "uploading"])
     .select("id")
     .maybeSingle();
@@ -394,76 +398,151 @@ export async function completeMeetingJob(jobId: string, rawPayload: unknown) {
     if (!output)
       throw new Error("Le résultat du meeting n'a pas pu être créé.");
 
-    const context = await loadMeetingContext(supabase, meeting as MeetingRow);
-    const notesMarkdown = output.notes_markdown as string;
-    const structuredOutput = output.structured_output;
-    const transcriptSrt = output.transcript_srt as string;
-    const transcriptText = output.transcript_text as string;
     const warnings = uniqueStrings([
       ...payload.warnings,
       ...((output.warnings as string[] | null) ?? []).filter(Boolean),
     ]);
     try {
-      if (!context.companyName) {
+      const context = await loadMeetingContext(supabase, meeting as MeetingRow);
+      const companyId = meeting.company_id as string | null;
+      if (!companyId || !context.companyName) {
         throw new Error(
           "Renseigne l'entreprise du lead CRM avant l'archivage privé.",
         );
       }
+      const outputVersion = Number(output.version);
+      const reviewRevision = Number(output.review_revision ?? 0);
+      if (reviewRevision !== 0) {
+        throw new Error(
+          "Le companion ne peut archiver que le brouillon initial non relu.",
+        );
+      }
+      const authorizationPayload = {
+        expected_output_version: outputVersion,
+        expected_review_revision: reviewRevision,
+        requested_company_id: companyId,
+        requested_company_name: context.companyName,
+        requested_job_id: jobId,
+        requested_lease_token: payload.leaseToken,
+        requested_meeting_id: job.meeting_id,
+        requested_organization_id: job.organization_id,
+        requested_output_id: output.id,
+        requested_worker_id: payload.workerId,
+      };
+      const authorizeMutation = async () => {
+        const { data: authorized, error: authorizationError } =
+          await supabase.rpc(
+            "authorize_worker_meeting_drive_archive",
+            authorizationPayload,
+          );
+        if (authorizationError) throw authorizationError;
+        if (authorized !== true) {
+          throw new Error(
+            "Le bail, le créateur owner ou la révision du meeting a changé.",
+          );
+        }
+      };
       const archive = await archiveMeetingOutput({
+        authorizeMutation,
         companyName: context.companyName,
         meetingDate: meeting.starts_at,
         meetingId: job.meeting_id,
         meetingTitle: meeting.title,
-        notesMarkdown,
-        outputVersion: Number(output.version),
-        structuredOutput,
-        transcriptSrt,
-        transcriptText,
+        notesMarkdown: output.notes_markdown as string,
+        outputVersion,
+        structuredOutput: output.structured_output,
+        transcriptSrt: output.transcript_srt as string,
+        transcriptText: output.transcript_text as string,
       });
-
-      const { error: meetingArchiveError } = await supabase
-        .from("meetings")
-        .update({
-          drive_folder_id: archive.folderId,
-          drive_folder_url: archive.folderUrl,
-        })
-        .eq("id", job.meeting_id)
-        .eq("organization_id", job.organization_id);
-      if (meetingArchiveError) throw meetingArchiveError;
-
-      const externalIds = archive.files
-        .map((file) => file.externalId)
-        .filter((id): id is string => Boolean(id));
-      const { data: existingAssets, error: existingAssetsError } =
-        externalIds.length
-          ? await supabase
-              .from("meeting_assets")
-              .select("external_id")
-              .eq("meeting_id", job.meeting_id)
-              .eq("organization_id", job.organization_id)
-              .in("external_id", externalIds)
-          : { data: [], error: null };
-      if (existingAssetsError) throw existingAssetsError;
-      const archivedIds = new Set(
-        (existingAssets ?? []).map((asset) => asset.external_id as string),
+      const archiveFiles = archive.files.map((file) => ({
+        externalId: file.externalId,
+        kind: file.kind,
+        mimeType: file.mimeType,
+        name: file.name,
+        parentFolderId: file.parentFolderId,
+        sha256: file.sha256,
+        sizeBytes: file.sizeBytes,
+        url: file.url,
+      }));
+      if (archiveFiles.some((file) => !file.externalId)) {
+        throw new Error(
+          "Drive n'a pas retourné tous les identifiants attendus.",
+        );
+      }
+      const archiveManifestSha256 = meetingArchiveManifestSha256(archiveFiles);
+      const { data: finalized, error: finalizeError } = await supabase.rpc(
+        "finalize_worker_meeting_drive_archive",
+        {
+          ...authorizationPayload,
+          requested_approval_warnings:
+            (output.approval_warnings as string[] | null) ?? [],
+          archive_files: archiveFiles,
+          archive_manifest_sha256: archiveManifestSha256,
+          requested_output_warnings: warnings,
+          requested_drive_folder_id: archive.folderId,
+          requested_drive_folder_url: archive.folderUrl,
+        },
       );
-      const assetRows = archive.files
-        .filter((file) => !file.externalId || !archivedIds.has(file.externalId))
-        .map((file) => ({
-          display_name: file.name,
-          external_id: file.externalId,
-          kind: file.kind,
-          meeting_id: job.meeting_id,
-          mime_type: file.mimeType,
-          organization_id: job.organization_id,
-          provider: "google-drive",
-          url: file.url,
-        }));
-      if (assetRows.length) {
-        const { error: assetInsertError } = await supabase
+      if (finalizeError) throw finalizeError;
+      if (finalized !== true) {
+        throw new Error(
+          "Drive a répondu, mais la finalisation CAS du job a été refusée.",
+        );
+      }
+
+      const externalIds = archiveFiles.map((file) => file.externalId as string);
+      const [finalMeeting, finalOutput, finalAssets] = await Promise.all([
+        supabase
+          .from("meetings")
+          .select("id,company_id,drive_folder_id,drive_folder_url")
+          .eq("id", job.meeting_id)
+          .eq("organization_id", job.organization_id)
+          .maybeSingle(),
+        supabase
+          .from("meeting_outputs")
+          .select("id,job_id,version,review_revision")
+          .eq("id", output.id)
+          .eq("job_id", jobId)
+          .eq("organization_id", job.organization_id)
+          .maybeSingle(),
+        supabase
           .from("meeting_assets")
-          .insert(assetRows);
-        if (assetInsertError) throw assetInsertError;
+          .select("external_id,display_name,metadata")
+          .eq("meeting_id", job.meeting_id)
+          .eq("organization_id", job.organization_id)
+          .eq("provider", "google-drive")
+          .in("external_id", externalIds),
+      ]);
+      if (finalMeeting.error) throw finalMeeting.error;
+      if (finalOutput.error) throw finalOutput.error;
+      if (finalAssets.error) throw finalAssets.error;
+      const assetsById = new Map(
+        (finalAssets.data ?? []).map((asset) => [
+          asset.external_id as string,
+          asset,
+        ]),
+      );
+      const rereadMatches =
+        finalMeeting.data?.company_id === companyId &&
+        finalMeeting.data?.drive_folder_id === archive.folderId &&
+        finalMeeting.data?.drive_folder_url === archive.folderUrl &&
+        finalOutput.data?.job_id === jobId &&
+        finalOutput.data?.version === outputVersion &&
+        finalOutput.data?.review_revision === 0 &&
+        archiveFiles.every((file) => {
+          const asset = assetsById.get(file.externalId as string);
+          const metadata = asset?.metadata as
+            { parentFolderId?: string; sha256?: string } | null | undefined;
+          return (
+            asset?.display_name === file.name &&
+            metadata?.parentFolderId === file.parentFolderId &&
+            metadata?.sha256 === file.sha256
+          );
+        });
+      if (!rereadMatches) {
+        throw new Error(
+          "La relecture finale du job ne correspond pas au manifeste Drive attesté.",
+        );
       }
     } catch (error) {
       warnings.push(
@@ -478,7 +557,9 @@ export async function completeMeetingJob(jobId: string, rawPayload: unknown) {
       .from("meeting_outputs")
       .update({ warnings: normalizedWarnings })
       .eq("id", output.id)
-      .eq("organization_id", job.organization_id);
+      .eq("organization_id", job.organization_id)
+      .eq("version", Number(output.version))
+      .eq("review_revision", 0);
     if (warningUpdateError) throw warningUpdateError;
 
     const completedAt = new Date().toISOString();
@@ -649,6 +730,40 @@ function requireServiceRoleClient() {
     throw new Error("Supabase service role is not configured.");
   }
   return supabase;
+}
+
+function meetingArchiveManifestSha256(
+  files: Array<{
+    externalId?: string;
+    kind: string;
+    mimeType: string;
+    name: string;
+    parentFolderId: string;
+    sha256: string;
+    sizeBytes: number;
+    url?: string;
+  }>,
+) {
+  const canonical = [...files]
+    .sort((left, right) => {
+      const leftId = left.externalId ?? "";
+      const rightId = right.externalId ?? "";
+      return leftId < rightId ? -1 : leftId > rightId ? 1 : 0;
+    })
+    .map((file) =>
+      [
+        file.externalId ?? "",
+        file.kind,
+        file.mimeType,
+        file.name,
+        file.parentFolderId,
+        file.sha256,
+        String(file.sizeBytes),
+        file.url ?? "",
+      ].join("\u001f"),
+    )
+    .join("\u001e");
+  return createHash("sha256").update(canonical, "utf8").digest("hex");
 }
 
 function uniqueStrings(values: string[]) {

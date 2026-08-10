@@ -51,7 +51,6 @@ export async function GET(request?: NextRequest) {
     ).join(" "),
   );
   googleAuthUrl.searchParams.set("access_type", "offline");
-  googleAuthUrl.searchParams.set("include_granted_scopes", "true");
   googleAuthUrl.searchParams.set("prompt", "consent");
   googleAuthUrl.searchParams.set("state", state);
 

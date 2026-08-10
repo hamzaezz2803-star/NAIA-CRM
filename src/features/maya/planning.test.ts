@@ -95,6 +95,7 @@ describe("Maya pitch planning", () => {
 
 function makeLead(overrides: Partial<CrmLeadSummary>): CrmLeadSummary {
   return {
+    accessScope: "organization",
     createdAt: "2026-07-08T00:00:00.000Z",
     id: "lead-1",
     organizationId: "org-1",

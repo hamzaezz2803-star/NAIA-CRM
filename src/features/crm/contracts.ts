@@ -67,6 +67,7 @@ export type CrmLeadNote = {
 };
 
 export type CrmLeadSummary = {
+  accessScope: "cofounders" | "organization";
   id: string;
   organizationId: string;
   companyId?: string;

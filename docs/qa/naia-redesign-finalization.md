@@ -78,7 +78,8 @@ Priorité appliquée :
 - Instruction explicite prioritaire sur l'entité sélectionnée.
 - Entité et filtres périmés supprimés au changement de route.
 - Contexte privé protégé par authentification et non transmis aux canaux Slack partagés.
-- Identifiant de voix client ignoré ; voix officielle et fallback uniquement côté serveur.
+- Identifiant de voix client ignoré ; une seule voix officielle côté serveur,
+  puis synthèse vocale du navigateur en cas d'indisponibilité.
 - Contrôles visuels en 1440 x 900 et 390 x 844, sans overflow ni overlap.
 - `npm run ci` : 58 fichiers, 478 tests, lint, types et build Next.js verts.
 

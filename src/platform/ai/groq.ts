@@ -2,9 +2,20 @@ import "server-only";
 
 import type { ZodType } from "zod";
 
+import {
+  isExternalAiProviderEnabled,
+  type ExternalAiSurface,
+} from "@/platform/ai/external-provider-security";
+
 const GROQ_CHAT_COMPLETIONS_URL =
   "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
+export const GROQ_REQUEST_LIMITS = {
+  maxMessageCharacters: 16_000,
+  maxMessages: 24,
+  maxRequestCharacters: 32_000,
+  maxTokens: 1_200,
+} as const;
 
 export const defaultGroqModels = {
   fast: "openai/gpt-oss-20b",
@@ -49,6 +60,7 @@ type JsonSchema = Record<string, unknown>;
 type GroqBaseRequest = {
   maxTokens: number;
   messages: GroqMessage[];
+  providerSurface?: ExternalAiSurface;
   temperature: number;
   workload?: GroqWorkload;
 };
@@ -83,7 +95,8 @@ type GroqRequestBody = {
   temperature: number;
 };
 
-export function getGroqApiKey() {
+export function getGroqApiKey(surface: ExternalAiSurface = "internal") {
+  if (!isExternalAiProviderEnabled("groq", surface)) return undefined;
   return (
     process.env.GROQ_API_KEY?.trim() ||
     process.env.GROQ_KEY?.trim() ||
@@ -117,8 +130,10 @@ export async function completeGroqJson<T>({
   schemaName,
   temperature,
   workload = "orchestrator",
+  providerSurface,
 }: GroqJsonRequest<T>): Promise<GroqCompletion<T> | null> {
-  const apiKey = getGroqApiKey();
+  if (!isBoundedGroqRequest({ maxTokens, messages })) return null;
+  const apiKey = getGroqApiKey(providerSurface);
   if (!apiKey) return null;
 
   const models = getRequestModels(workload);
@@ -167,8 +182,10 @@ export async function completeGroqText({
   messages,
   temperature,
   workload = "orchestrator",
+  providerSurface,
 }: GroqTextRequest): Promise<GroqCompletion<string> | null> {
-  const apiKey = getGroqApiKey();
+  if (!isBoundedGroqRequest({ maxTokens, messages })) return null;
+  const apiKey = getGroqApiKey(providerSurface);
   if (!apiKey) return null;
 
   const models = getRequestModels(workload);
@@ -200,6 +217,36 @@ function activeModel(value: string | undefined) {
   const model = value?.trim();
   if (!model || retiringGroqModels.has(model)) return undefined;
   return model;
+}
+
+function isBoundedGroqRequest({
+  maxTokens,
+  messages,
+}: Pick<GroqBaseRequest, "maxTokens" | "messages">) {
+  if (
+    !Number.isInteger(maxTokens) ||
+    maxTokens < 1 ||
+    maxTokens > GROQ_REQUEST_LIMITS.maxTokens ||
+    messages.length < 1 ||
+    messages.length > GROQ_REQUEST_LIMITS.maxMessages
+  ) {
+    return false;
+  }
+
+  let totalCharacters = 0;
+  for (const message of messages) {
+    if (
+      !message.content ||
+      message.content.length > GROQ_REQUEST_LIMITS.maxMessageCharacters
+    ) {
+      return false;
+    }
+    totalCharacters += message.content.length;
+    if (totalCharacters > GROQ_REQUEST_LIMITS.maxRequestCharacters) {
+      return false;
+    }
+  }
+  return true;
 }
 
 function readGroqEnvironment(): GroqEnvironment {

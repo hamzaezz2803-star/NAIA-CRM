@@ -1,22 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  consumedInsert: vi.fn(),
-  consumedPurge: vi.fn(),
+  claimBridgeAction: vi.fn(),
   createGoogleCalendarReminder: vi.fn(),
   createLeadAction: vi.fn(),
+  createServerSupabaseClient: vi.fn(),
   createServiceRoleSupabaseClient: vi.fn(),
+  executeCrmBridgeLeadStatusAction: vi.fn(),
   extractLeadFromNaturalTextAction: vi.fn(),
   inspectGoogleWorkspaceCapabilities: vi.fn(),
   listGmailMessages: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
-  updateLeadStatusAction: vi.fn(),
 }));
 
 vi.mock("@/features/crm/actions", () => ({
   createLeadAction: mocks.createLeadAction,
   extractLeadFromNaturalTextAction: mocks.extractLeadFromNaturalTextAction,
-  updateLeadStatusAction: mocks.updateLeadStatusAction,
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
@@ -27,6 +26,7 @@ vi.mock("@/platform/integrations/google-workspace", () => ({
 }));
 
 vi.mock("@/platform/auth/supabase-server", () => ({
+  createServerSupabaseClient: mocks.createServerSupabaseClient,
   createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
 }));
 
@@ -36,6 +36,7 @@ import { signAction } from "@/platform/naia/action-tokens";
 
 import {
   executeBridgeAction,
+  executeEditedBridgeLeadAction,
   planBridgeCommand,
   type NaiaBridgeUser,
 } from "./bridge";
@@ -46,6 +47,11 @@ const bridgeUser: NaiaBridgeUser = {
   organizationId: "org-1",
   profileId: "profile-ali",
   role: "owner",
+};
+
+const bridgeBinding = {
+  actorProfileId: bridgeUser.profileId,
+  organizationId: bridgeUser.organizationId,
 };
 
 const gmailAction: NaiaActionDraft = {
@@ -97,31 +103,44 @@ const hydratedCrmCreateAction: NaiaActionDraft = {
 };
 
 function fakeServiceRoleClient({
+  cofounderError = null,
+  isCofounder = true,
   leads = [],
 }: {
+  cofounderError?: unknown;
+  isCofounder?: boolean;
   leads?: unknown[];
 } = {}) {
+  const crmEq = vi.fn(() => crmQuery);
+  const crmQuery = {
+    eq: crmEq,
+    is: () => crmQuery,
+    limit: vi.fn().mockResolvedValue({ data: leads, error: null }),
+    order: () => crmQuery,
+    select: () => crmQuery,
+  };
+
   return {
+    crmEq,
+    rpc: vi.fn((functionName: string, args: unknown) => {
+      if (functionName === "claim_crm_bridge_action") {
+        return mocks.claimBridgeAction(args);
+      }
+      if (functionName === "execute_crm_bridge_lead_status_action") {
+        return mocks.executeCrmBridgeLeadStatusAction(args);
+      }
+      if (functionName === "crm_bridge_actor_is_cofounder") {
+        return Promise.resolve({
+          data: isCofounder,
+          error: cofounderError,
+        });
+      }
+      throw new Error(`Unexpected RPC in test: ${functionName}`);
+    }),
     from: vi.fn((table: string) => {
       if (table === "crm_leads") {
-        return {
-          select: () => ({
-            eq: () => ({
-              order: () => ({
-                limit: vi.fn().mockResolvedValue({ data: leads, error: null }),
-              }),
-            }),
-          }),
-        };
+        return crmQuery;
       }
-
-      if (table === "naia_consumed_action_tokens") {
-        return {
-          delete: () => ({ lt: mocks.consumedPurge }),
-          insert: mocks.consumedInsert,
-        };
-      }
-
       throw new Error(`Unexpected table in test: ${table}`);
     }),
   };
@@ -130,8 +149,19 @@ function fakeServiceRoleClient({
 describe("executeBridgeAction single-use approval tokens", () => {
   beforeEach(() => {
     vi.stubEnv("NAIA_ACTION_APPROVAL_SECRET", "test-secret");
-    mocks.consumedPurge.mockResolvedValue({ error: null });
-    mocks.consumedInsert.mockResolvedValue({ error: null });
+    mocks.claimBridgeAction.mockResolvedValue({
+      data: [{ actor_is_cofounder: true, actor_role: "owner" }],
+      error: null,
+    });
+    mocks.executeCrmBridgeLeadStatusAction.mockResolvedValue({
+      data: {
+        access_scope: "organization",
+        actor_role: "owner",
+        lead_id: "lead-1",
+        status: "contacted",
+      },
+      error: null,
+    });
     mocks.createServiceRoleSupabaseClient.mockReturnValue(
       fakeServiceRoleClient(),
     );
@@ -167,7 +197,7 @@ describe("executeBridgeAction single-use approval tokens", () => {
 
   it("executes once, then rejects the second claim of the same token", async () => {
     const command = "NAIA lis mes emails gmail non lus";
-    const signed = signAction(gmailAction, command);
+    const signed = signAction(gmailAction, command, bridgeBinding);
     const draft = {
       actionId: gmailAction.id,
       approvalToken: signed.approvalToken,
@@ -177,16 +207,20 @@ describe("executeBridgeAction single-use approval tokens", () => {
     const first = await executeBridgeAction(bridgeUser, draft);
 
     expect(first.success).toBe(true);
-    expect(mocks.consumedInsert).toHaveBeenCalledWith(
+    expect(mocks.claimBridgeAction).toHaveBeenCalledWith(
       expect.objectContaining({
-        organization_id: "org-1",
-        token_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        requested_actor_profile_id: "profile-ali",
+        requested_organization_id: "org-1",
+        requested_token_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
       }),
     );
     expect(mocks.listGmailMessages).toHaveBeenCalledTimes(1);
 
     // The second claim hits the primary key: no side effect may run.
-    mocks.consumedInsert.mockResolvedValue({ error: { code: "23505" } });
+    mocks.claimBridgeAction.mockResolvedValue({
+      data: null,
+      error: { code: "23505" },
+    });
 
     const second = await executeBridgeAction(bridgeUser, draft);
 
@@ -195,13 +229,63 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(mocks.listGmailMessages).toHaveBeenCalledTimes(1);
   });
 
+  it("makes concurrent edited-modal submissions consume the same original token", async () => {
+    const command = "crée le lead HPS";
+    const signed = signAction(sparseCrmCreateAction, command, bridgeBinding);
+    const originalDraft = {
+      actionId: signed.id,
+      approvalToken: signed.approvalToken,
+      command,
+    };
+    const claimHashes: string[] = [];
+    let consumed = false;
+    mocks.claimBridgeAction.mockImplementation(
+      (args: { requested_token_hash: string }) => {
+        claimHashes.push(args.requested_token_hash);
+        if (consumed) {
+          return Promise.resolve({ data: null, error: { code: "23505" } });
+        }
+        consumed = true;
+        return Promise.resolve({
+          data: [{ actor_is_cofounder: true, actor_role: "owner" }],
+          error: null,
+        });
+      },
+    );
+    mocks.createLeadAction.mockResolvedValue({
+      lead: { id: "lead-hps" },
+      success: true,
+    });
+    const editedDraft: CrmLeadDraft = {
+      companyName: "HPS",
+      contactName: "Abdeslam",
+      source: "Slack",
+      status: "contacted",
+      topic: "HPS edited once",
+    };
+
+    const results = await Promise.all([
+      executeEditedBridgeLeadAction(bridgeUser, originalDraft, editedDraft),
+      executeEditedBridgeLeadAction(bridgeUser, originalDraft, editedDraft),
+    ]);
+
+    expect(results.filter(({ success }) => success)).toHaveLength(1);
+    expect(results.find(({ success }) => !success)?.message).toBe(
+      "Cette action a déjà été validée.",
+    );
+    expect(mocks.createLeadAction).toHaveBeenCalledTimes(1);
+    expect(claimHashes).toHaveLength(2);
+    expect(new Set(claimHashes)).toHaveProperty("size", 1);
+  });
+
   it("fails closed when the claim cannot be registered", async () => {
-    mocks.consumedInsert.mockResolvedValue({
+    mocks.claimBridgeAction.mockResolvedValue({
+      data: null,
       error: { code: "42P01", message: "missing table" },
     });
 
     const command = "NAIA lis mes emails gmail non lus";
-    const signed = signAction(gmailAction, command);
+    const signed = signAction(gmailAction, command, bridgeBinding);
 
     const result = await executeBridgeAction(bridgeUser, {
       actionId: gmailAction.id,
@@ -222,8 +306,95 @@ describe("executeBridgeAction single-use approval tokens", () => {
 
     expect(result.success).toBe(false);
     expect(result.message).toContain("invalide ou expiré");
-    expect(mocks.consumedInsert).not.toHaveBeenCalled();
+    expect(mocks.claimBridgeAction).not.toHaveBeenCalled();
     expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+  });
+
+  it("rejects a token stolen by another actor or organization before claim", async () => {
+    const command = "NAIA lis mes emails gmail non lus";
+    const signed = signAction(gmailAction, command, bridgeBinding);
+    const result = await executeBridgeAction(
+      { ...bridgeUser, organizationId: "org-2", profileId: "profile-other" },
+      {
+        actionId: gmailAction.id,
+        approvalToken: signed.approvalToken,
+        command,
+      },
+    );
+
+    expect(result.success).toBe(false);
+    expect(mocks.claimBridgeAction).not.toHaveBeenCalled();
+    expect(mocks.listGmailMessages).not.toHaveBeenCalled();
+  });
+
+  it("claims and updates CRM status in one actor/scope/archive-checked RPC", async () => {
+    const command = "passe le lead HPS en contacted";
+    const action: NaiaActionDraft = {
+      agentId: "crm",
+      approvalRequired: true,
+      description: "Mettre à jour le statut",
+      id: "crm-status-hps",
+      kind: "crm.updateLeadStatus",
+      label: "Passer HPS en contacted",
+      payload: {
+        leadId: "lead-hps",
+        leadLabel: "HPS",
+        status: "contacted",
+      },
+      risk: "medium",
+    };
+    const signed = signAction(action, command, bridgeBinding);
+
+    const result = await executeBridgeAction(bridgeUser, {
+      actionId: action.id,
+      approvalToken: signed.approvalToken,
+      command,
+    });
+
+    expect(result.success).toBe(true);
+    expect(mocks.executeCrmBridgeLeadStatusAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requested_actor_profile_id: "profile-ali",
+        requested_crm_lead_id: "lead-hps",
+        requested_organization_id: "org-1",
+        requested_status: "contacted",
+        requested_token_hash: expect.stringMatching(/^[0-9a-f]{64}$/),
+      }),
+    );
+    expect(mocks.claimBridgeAction).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the atomic CRM status RPC detects stale access", async () => {
+    mocks.executeCrmBridgeLeadStatusAction.mockResolvedValue({
+      data: null,
+      error: { code: "42501", message: "archived or confidential" },
+    });
+    const command = "passe le lead HPS en contacted";
+    const action: NaiaActionDraft = {
+      agentId: "crm",
+      approvalRequired: true,
+      description: "Mettre à jour le statut",
+      id: "crm-status-hps",
+      kind: "crm.updateLeadStatus",
+      label: "Passer HPS en contacted",
+      payload: {
+        leadId: "lead-hps",
+        leadLabel: "HPS",
+        status: "contacted",
+      },
+      risk: "medium",
+    };
+    const signed = signAction(action, command, bridgeBinding);
+
+    const result = await executeBridgeAction(bridgeUser, {
+      actionId: action.id,
+      approvalToken: signed.approvalToken,
+      command,
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.message).toContain("refusée");
+    expect(mocks.claimBridgeAction).not.toHaveBeenCalled();
   });
 
   it("hydrates sparse Slack CRM lead drafts before signing approval tokens", async () => {
@@ -310,6 +481,61 @@ describe("executeBridgeAction single-use approval tokens", () => {
     expect(plan.response).toContain("Ali");
     expect(plan.response).toContain("ali@qarizmi.com");
     expect(plan.response).toContain("propriétaire");
+  });
+
+  it("fails closed before a service-role CRM read when founder validation errors", async () => {
+    const client = fakeServiceRoleClient({
+      cofounderError: { message: "RPC unavailable" },
+    });
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(client);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+
+    await planBridgeCommand(bridgeUser, "qui suis-je ?");
+
+    expect(client.rpc).toHaveBeenCalledWith(
+      "crm_bridge_actor_is_cofounder",
+      expect.objectContaining({
+        target_organization_id: bridgeUser.organizationId,
+        target_profile_id: bridgeUser.profileId,
+      }),
+    );
+    expect(client.from).not.toHaveBeenCalledWith("crm_leads");
+    consoleError.mockRestore();
+  });
+
+  it("restricts non-cofounder service-role reads to organization rows", async () => {
+    const client = fakeServiceRoleClient({ isCofounder: false });
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(client);
+
+    await planBridgeCommand(
+      {
+        ...bridgeUser,
+        email: "member@example.test",
+        profileId: "profile-member",
+        role: "member",
+      },
+      "qui suis-je ?",
+    );
+
+    expect(client.crmEq).toHaveBeenCalledWith("access_scope", "organization");
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "company.organization_id",
+      "org-1",
+    );
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "contact.organization_id",
+      "org-1",
+    );
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "company.access_scope",
+      "organization",
+    );
+    expect(client.crmEq).toHaveBeenCalledWith(
+      "contact.access_scope",
+      "organization",
+    );
   });
 
   it("reads the acting user's Calendar directly from Slack", async () => {
@@ -501,7 +727,7 @@ describe("executeBridgeAction single-use approval tokens", () => {
 
     const command =
       "crée un lead pour HPS avec Abdeslam, meeting vendredi à 11h";
-    const signed = signAction(hydratedCrmCreateAction, command);
+    const signed = signAction(hydratedCrmCreateAction, command, bridgeBinding);
 
     const result = await executeBridgeAction(bridgeUser, {
       actionId: hydratedCrmCreateAction.id,
@@ -547,7 +773,7 @@ describe("executeBridgeAction single-use approval tokens", () => {
       },
       risk: "medium",
     };
-    const signed = signAction(action, command);
+    const signed = signAction(action, command, bridgeBinding);
 
     const result = await executeBridgeAction(bridgeUser, {
       actionId: signed.id,

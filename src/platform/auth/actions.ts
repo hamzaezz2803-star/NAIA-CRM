@@ -72,7 +72,6 @@ export async function signInWithGoogleAction(formData: FormData) {
       queryParams: {
         access_type: "offline",
         hd: getAllowedAuthDomain(),
-        include_granted_scopes: "true",
         prompt: "consent",
       },
       redirectTo: callbackUrl.toString(),

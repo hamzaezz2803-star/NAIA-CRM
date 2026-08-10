@@ -1,5 +1,6 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -9,8 +10,11 @@ import {
   downloadDriveFile,
   ensureClientDriveFolder,
   ensureDriveChildFolder,
+  generateDriveFileId,
+  getDriveFileMetadata,
   isDriveServiceConfigured,
   listDriveFolderFiles,
+  listDriveFolderFilesByName,
   uploadDriveFile,
   type DriveFileSummary,
 } from "@/platform/integrations/google-drive-service";
@@ -37,8 +41,13 @@ export type MeetingArchiveFile = {
     | "transcript-text";
   mimeType: string;
   name: string;
+  parentFolderId: string;
+  sha256: string;
+  sizeBytes: number;
   url?: string;
 };
+
+export type MeetingArchiveMutationAuthorizer = () => Promise<void>;
 
 export async function loadMeetingSupportContext({
   companyName,
@@ -119,22 +128,29 @@ export async function loadMeetingSupportContext({
 }
 
 export async function archiveMeetingOutput({
+  authorizeMutation,
   companyName,
   meetingDate,
   meetingId,
   meetingTitle,
   notesMarkdown,
   outputVersion,
+  reviewedNotes,
   structuredOutput,
   transcriptSrt,
   transcriptText,
 }: {
+  authorizeMutation: MeetingArchiveMutationAuthorizer;
   companyName: string;
   meetingDate?: string | null;
   meetingId: string;
   meetingTitle: string;
   notesMarkdown: string;
   outputVersion: number;
+  reviewedNotes?: {
+    notesMarkdown: string;
+    reviewRevision: number;
+  };
   structuredOutput: unknown;
   transcriptSrt: string;
   transcriptText: string;
@@ -143,10 +159,13 @@ export async function archiveMeetingOutput({
     throw new Error("Le Drive privé Qarizmi n'est pas configuré.");
   }
 
-  const clientFolder = await ensureClientDriveFolder(companyName);
+  const clientFolder = await ensureClientDriveFolder(companyName, {
+    beforeMutation: authorizeMutation,
+  });
   const notesRootId = await findStandardSubfolder(
     clientFolder.folderId,
     "02_Meeting Notes",
+    authorizeMutation,
   );
   const datePrefix = meetingDate
     ? new Date(meetingDate).toISOString().slice(0, 10)
@@ -155,11 +174,17 @@ export async function archiveMeetingOutput({
   const meetingFolderId = await ensureDriveChildFolder(
     notesRootId,
     meetingFolderName,
+    { beforeMutation: authorizeMutation },
   );
 
   const baseName = `${datePrefix}_${sanitizeFileStem(companyName)}_meeting_v${outputVersion}`;
   const uploads: MeetingArchiveFile[] = [];
-  const definitions = [
+  const definitions: Array<{
+    content: string;
+    kind: MeetingArchiveFile["kind"];
+    mimeType: string;
+    name: string;
+  }> = [
     {
       content: notesMarkdown,
       kind: "meeting-notes" as const,
@@ -185,43 +210,83 @@ export async function archiveMeetingOutput({
       name: `${baseName}_analysis.json`,
     },
   ];
-
-  const existingFiles = await listDriveFolderFiles(meetingFolderId, {
-    maxResults: 1000,
-  });
+  if (reviewedNotes) {
+    definitions.push({
+      content: reviewedNotes.notesMarkdown,
+      kind: "meeting-notes",
+      mimeType: "text/markdown",
+      name: `meeting_notes_v${outputVersion}_review_r${reviewedNotes.reviewRevision}.md`,
+    });
+  }
 
   for (const definition of definitions) {
-    const existing = existingFiles.find(
-      (candidate) => candidate.name === definition.name,
+    const content = Buffer.from(definition.content, "utf8");
+    const expectedSha256 = sha256(content);
+    const exactMatches = await listDriveFolderFilesByName(
+      meetingFolderId,
+      definition.name,
+      { maxResults: 2 },
     );
+    if (exactMatches.length > 1) {
+      throw new Error(
+        `Plusieurs fichiers Drive portent le nom exact ${definition.name}; la reprise est ambiguë.`,
+      );
+    }
+    const existing = exactMatches[0];
     if (existing?.id) {
+      const verified = await verifyMeetingArchiveFile({
+        expectedContent: content,
+        expectedFileName: definition.name,
+        expectedMimeType: definition.mimeType,
+        expectedParentFolderId: meetingFolderId,
+        expectedSha256,
+        fileId: existing.id,
+      });
       uploads.push({
-        externalId: existing.id,
+        externalId: verified.id,
         kind: definition.kind,
         mimeType: definition.mimeType,
         name: definition.name,
+        parentFolderId: meetingFolderId,
+        sha256: expectedSha256,
+        sizeBytes: content.byteLength,
         url:
-          existing.webViewLink ??
-          `https://drive.google.com/file/d/${existing.id}/view`,
+          verified.webViewLink ??
+          `https://drive.google.com/file/d/${verified.id}/view`,
       });
       continue;
     }
 
+    await authorizeMutation();
+    const reservedFileId = await generateDriveFileId();
+    await authorizeMutation();
     const uploaded = await uploadDriveFile({
-      content: Buffer.from(definition.content, "utf8"),
+      content,
+      fileId: reservedFileId,
       mimeType: definition.mimeType,
       name: definition.name,
       parentFolderId: meetingFolderId,
     });
+    const verified = await verifyMeetingArchiveFile({
+      expectedContent: content,
+      expectedFileName: definition.name,
+      expectedMimeType: definition.mimeType,
+      expectedParentFolderId: meetingFolderId,
+      expectedSha256,
+      fileId: uploaded.id,
+    });
     uploads.push({
-      externalId: uploaded.id,
+      externalId: verified.id,
       kind: definition.kind,
       mimeType: definition.mimeType,
       name: definition.name,
+      parentFolderId: meetingFolderId,
+      sha256: expectedSha256,
+      sizeBytes: content.byteLength,
       url:
-        uploaded.webViewLink ??
-        (uploaded.id
-          ? `https://drive.google.com/file/d/${uploaded.id}/view`
+        verified.webViewLink ??
+        (verified.id
+          ? `https://drive.google.com/file/d/${verified.id}/view`
           : undefined),
     });
   }
@@ -233,7 +298,11 @@ export async function archiveMeetingOutput({
   };
 }
 
-async function findStandardSubfolder(parentFolderId: string, name: string) {
+async function findStandardSubfolder(
+  parentFolderId: string,
+  name: string,
+  authorizeMutation?: MeetingArchiveMutationAuthorizer,
+) {
   const files = await listDriveFolderFiles(parentFolderId, {
     maxResults: 1000,
   });
@@ -241,9 +310,66 @@ async function findStandardSubfolder(parentFolderId: string, name: string) {
     (file) => file.mimeType === FOLDER_MIME_TYPE && file.name === name,
   );
   if (!folder?.id) {
-    return ensureDriveChildFolder(parentFolderId, name);
+    return ensureDriveChildFolder(parentFolderId, name, {
+      beforeMutation: authorizeMutation,
+    });
   }
   return folder.id;
+}
+
+async function verifyMeetingArchiveFile({
+  expectedContent,
+  expectedFileName,
+  expectedMimeType,
+  expectedParentFolderId,
+  expectedSha256,
+  fileId,
+}: {
+  expectedContent: Buffer;
+  expectedFileName: string;
+  expectedMimeType: string;
+  expectedParentFolderId: string;
+  expectedSha256: string;
+  fileId: string;
+}) {
+  const metadata = await getDriveFileMetadata(fileId);
+  if (
+    metadata.id !== fileId ||
+    metadata.name !== expectedFileName ||
+    metadata.mimeType !== expectedMimeType ||
+    metadata.trashed ||
+    !metadata.parents?.includes(expectedParentFolderId)
+  ) {
+    throw new Error(
+      `Le fichier Drive ${expectedFileName} ne correspond pas à la destination attendue.`,
+    );
+  }
+  if (
+    metadata.size &&
+    Number.isSafeInteger(Number(metadata.size)) &&
+    Number(metadata.size) !== expectedContent.byteLength
+  ) {
+    throw new Error(
+      `Le fichier Drive ${expectedFileName} existe avec un contenu différent.`,
+    );
+  }
+  const downloaded = Buffer.from(
+    await downloadDriveFile(fileId, { mimeType: expectedMimeType }),
+  );
+  if (
+    downloaded.byteLength !== expectedContent.byteLength ||
+    sha256(downloaded) !== expectedSha256 ||
+    !downloaded.equals(expectedContent)
+  ) {
+    throw new Error(
+      `Le fichier Drive ${expectedFileName} existe avec un contenu différent.`,
+    );
+  }
+  return metadata;
+}
+
+function sha256(content: Buffer) {
+  return createHash("sha256").update(content).digest("hex");
 }
 
 function isPresentation(file: DriveFileSummary) {

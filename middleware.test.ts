@@ -114,4 +114,14 @@ describe("authentication middleware", () => {
     expect(response.headers.get("x-middleware-next")).toBe("1");
     expect(mocks.createServerClient).not.toHaveBeenCalled();
   });
+
+  it("lets the cookie-less Vercel cron reach its bearer-protected route", async () => {
+    const response = await middleware(
+      new NextRequest("https://os.qarizmi.com/api/cron/naia-daily-brief"),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(mocks.createServerClient).not.toHaveBeenCalled();
+  });
 });

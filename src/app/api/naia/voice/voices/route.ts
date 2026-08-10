@@ -1,3 +1,5 @@
+import { isExternalAiProviderEnabled } from "@/platform/ai/external-provider-security";
+
 type ElevenLabsVoice = {
   category?: string;
   description?: string;
@@ -24,25 +26,20 @@ type VoiceOption = {
 export async function GET() {
   const apiKey = process.env.ELEVENLABS_API_KEY?.trim();
   const configuredVoiceId = sanitizeVoiceId(process.env.ELEVENLABS_VOICE_ID);
-  const fallbackVoiceId = sanitizeVoiceId(
-    process.env.ELEVENLABS_FALLBACK_VOICE_ID,
-  );
-  const fallbackConfigured =
-    fallbackVoiceId !== null && fallbackVoiceId !== configuredVoiceId;
 
   if (!configuredVoiceId) {
     return createCatalogResponse({
-      fallbackConfigured,
       mode: "browser-fallback-missing-primary",
     });
   }
 
   const configuredVoice = createConfiguredVoice(configuredVoiceId);
 
-  if (!apiKey) {
+  if (!apiKey || !isExternalAiProviderEnabled("elevenlabs")) {
     return createCatalogResponse({
-      fallbackConfigured,
-      mode: "configured-without-provider-catalog",
+      mode: apiKey
+        ? "external-provider-disabled"
+        : "configured-without-provider-catalog",
       voice: configuredVoice,
     });
   }
@@ -57,7 +54,6 @@ export async function GET() {
 
     if (!response.ok) {
       return createCatalogResponse({
-        fallbackConfigured,
         mode: "configured-provider-error",
         voice: configuredVoice,
       });
@@ -72,13 +68,11 @@ export async function GET() {
       : configuredVoice;
 
     return createCatalogResponse({
-      fallbackConfigured,
       mode: providerVoice ? "elevenlabs" : "configured-voice-not-listed",
       voice: activeVoice,
     });
   } catch {
     return createCatalogResponse({
-      fallbackConfigured,
       mode: "configured-provider-unavailable",
       voice: configuredVoice,
     });
@@ -86,18 +80,15 @@ export async function GET() {
 }
 
 function createCatalogResponse({
-  fallbackConfigured,
   mode,
   voice,
 }: {
-  fallbackConfigured: boolean;
   mode: string;
   voice?: VoiceOption;
 }) {
   return Response.json({
     ...(voice ? { activeVoice: voice } : {}),
     configuredVoiceId: voice?.voiceId ?? "",
-    fallbackConfigured,
     mode,
     recommendedVoiceId: voice?.voiceId ?? "",
     voices: voice ? [voice] : [],

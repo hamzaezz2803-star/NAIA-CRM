@@ -29,7 +29,11 @@ vi.mock("@/platform/naia/bridge", () => ({
   resolveBridgeUser: mocks.resolveBridgeUser,
 }));
 
-import { dispatchDailyBrief, runConfiguredDailyBriefs } from "./daily-brief";
+import {
+  dispatchDailyBrief,
+  loadDailyBriefData,
+  runConfiguredDailyBriefs,
+} from "./daily-brief";
 
 const NOW = new Date("2026-08-10T08:30:00.000Z");
 const TIME_ZONE = "Africa/Casablanca";
@@ -38,7 +42,7 @@ const OWNER = {
   fullName: "Ali EL ABBASSY",
   organizationId: "org-1",
   profileId: "profile-ali",
-  role: "owner",
+  role: "owner" as const,
 };
 
 function createSupabaseMock({
@@ -172,6 +176,40 @@ describe("NAIA daily brief dispatch", () => {
     );
   });
 
+  it("starts both founder dispatches concurrently under one cron budget", async () => {
+    vi.stubEnv(
+      "NAIA_DAILY_BRIEF_RECIPIENTS",
+      "ali@qarizmi.com,nabil@qarizmi.com",
+    );
+    const supabase = createSupabaseMock();
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
+    let releaseAli: ((user: typeof OWNER) => void) | undefined;
+    const pendingAli = new Promise<typeof OWNER>((resolve) => {
+      releaseAli = resolve;
+    });
+    mocks.resolveBridgeUser.mockImplementation((email: string) =>
+      email === "ali@qarizmi.com"
+        ? pendingAli
+        : Promise.resolve({
+            ...OWNER,
+            email: "nabil@qarizmi.com",
+            fullName: "Nabil",
+            profileId: "profile-nabil",
+          }),
+    );
+
+    const running = runConfiguredDailyBriefs({ now: NOW });
+    await vi.waitFor(() =>
+      expect(mocks.resolveBridgeUser).toHaveBeenCalledTimes(2),
+    );
+    releaseAli?.(OWNER);
+
+    await expect(running).resolves.toEqual([
+      { email: "ali@qarizmi.com", status: "sent" },
+      { email: "nabil@qarizmi.com", status: "sent" },
+    ]);
+  });
+
   it("claims once and sends a founder-only Slack DM", async () => {
     const supabase = createSupabaseMock();
     mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
@@ -195,6 +233,39 @@ describe("NAIA daily brief dispatch", () => {
       "organization_id",
       "org-1",
     );
+    expect(supabase.update).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({
+        delivery_started_at: expect.any(String),
+      }),
+    );
+    expect(supabase.update.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.postSlackMessage.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("bounds a stalled Google read and continues with an explicit warning", async () => {
+    vi.useFakeTimers();
+    try {
+      const supabase = createSupabaseMock();
+      mocks.listGoogleCalendarEvents.mockReturnValue(new Promise(() => {}));
+
+      const loading = loadDailyBriefData({
+        now: NOW,
+        supabase: supabase.client as never,
+        user: OWNER,
+      });
+      await vi.advanceTimersByTimeAsync(12_000);
+
+      await expect(loading).resolves.toEqual(
+        expect.objectContaining({
+          calendarEvents: [],
+          warnings: expect.arrayContaining(["calendar_unavailable"]),
+        }),
+      );
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("treats a 23505 conflict as an active duplicate when no failed row can be reclaimed", async () => {
@@ -233,7 +304,7 @@ describe("NAIA daily brief dispatch", () => {
 
   it("reports a sent-ledger update failure instead of silently succeeding", async () => {
     const supabase = createSupabaseMock({
-      updateErrors: [{ message: "database unavailable" }],
+      updateErrors: [null, { message: "database unavailable" }],
     });
     mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
     const consoleError = vi

@@ -281,25 +281,7 @@ export function MeetingsDashboard({
     setIsGeneratingBriefing(true);
 
     try {
-      const noteLines = (meeting.notes ?? "").split("\n");
-      const companyName =
-        noteLines
-          .find((l) => l.startsWith("Entreprise:"))
-          ?.replace("Entreprise:", "")
-          .trim() || meeting.companyName;
-      const contactName =
-        noteLines
-          .find((l) => l.startsWith("Contact:"))
-          ?.replace("Contact:", "")
-          .trim() || meeting.contactName;
-
-      const res = await generateFollowUpDraftAction({
-        topic: meeting.topic,
-        companyName,
-        contactName,
-        notes: meeting.notes,
-        nextAction: meeting.nextAction,
-      });
+      const res = await generateFollowUpDraftAction(meeting.id);
 
       if (res.success && res.drafts) {
         setBriefingDrafts(res.drafts);

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { createHmac, timingSafeEqual } from "node:crypto";
+import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 
 import type { NaiaActionDraft } from "@/features/naia/orchestrator";
 
@@ -18,12 +18,19 @@ export type SignedNaiaAction = NaiaActionDraft & {
   approvalToken: string;
 };
 
+export type NaiaActionApprovalBinding = {
+  actorProfileId: string;
+  organizationId: string;
+};
+
 export function signAction(
   action: NaiaActionDraft,
   command: string,
+  binding?: NaiaActionApprovalBinding,
 ): SignedNaiaAction {
   const payload = {
     action,
+    binding,
     commandHash: hashValue(command),
     expiresAt: Date.now() + NAIA_ACTION_APPROVAL_TTL_MS,
   };
@@ -42,6 +49,7 @@ export function verifyApprovalToken(
   approvalToken: string,
   actionId: string,
   command: string,
+  binding?: NaiaActionApprovalBinding,
 ): NaiaActionDraft | null {
   const [encodedPayload, signature] = approvalToken.split(".");
   if (!encodedPayload || !signature) return null;
@@ -54,6 +62,7 @@ export function verifyApprovalToken(
       Buffer.from(encodedPayload, "base64url").toString("utf8"),
     ) as {
       action?: NaiaActionDraft;
+      binding?: NaiaActionApprovalBinding;
       commandHash?: string;
       expiresAt?: number;
     };
@@ -68,6 +77,9 @@ export function verifyApprovalToken(
       action.payload === null ||
       action.id !== actionId ||
       payload.commandHash !== hashValue(command) ||
+      (binding !== undefined &&
+        (payload.binding?.actorProfileId !== binding.actorProfileId ||
+          payload.binding?.organizationId !== binding.organizationId)) ||
       typeof payload.expiresAt !== "number" ||
       payload.expiresAt < Date.now()
     ) {
@@ -78,6 +90,10 @@ export function verifyApprovalToken(
   } catch {
     return null;
   }
+}
+
+export function hashApprovalToken(approvalToken: string) {
+  return createHash("sha256").update(approvalToken).digest("hex");
 }
 
 function hashValue(value: string) {

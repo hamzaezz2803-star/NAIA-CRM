@@ -3,17 +3,27 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  afterTasks: [] as Promise<unknown>[],
+  afterRegistrationError: null as Error | null,
+  afterTasks: [] as Array<() => Promise<void>>,
+  createServiceRoleSupabaseClient: vi.fn(),
   fetchSlackConversationHistory: vi.fn(),
   fetchSlackUserProfile: vi.fn(),
+  leaseDecisions: [] as boolean[],
+  leaseStates: new Map<string, { state: string; token: string }>(),
   planBridgeCommand: vi.fn(),
   postSlackMessage: vi.fn(),
   resolveBridgeUser: vi.fn(),
+  supabaseRpc: vi.fn(),
+}));
+
+vi.mock("@/platform/auth/supabase-server", () => ({
+  createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
 }));
 
 vi.mock("next/server", () => ({
   after: (task: () => Promise<void>) => {
-    mocks.afterTasks.push(Promise.resolve().then(task));
+    if (mocks.afterRegistrationError) throw mocks.afterRegistrationError;
+    mocks.afterTasks.push(task);
   },
 }));
 
@@ -35,6 +45,7 @@ vi.mock("@/platform/integrations/slack", async (importOriginal) => {
 });
 
 import { decodeSlackApprovalValue } from "@/platform/naia/slack-approval";
+import { SlackMessageRejectedError } from "@/platform/integrations/slack";
 
 import { POST } from "./route";
 
@@ -100,19 +111,63 @@ function messageImEvent(text: string) {
       type: "message",
       user: "U0123456789",
     },
+    event_id: "Ev0123456789",
     type: "event_callback",
   });
 }
 
 async function flushAfterTasks() {
-  await Promise.all(mocks.afterTasks);
+  await Promise.all(mocks.afterTasks.map((task) => task()));
+}
+
+function rpcCalls(name: string) {
+  return mocks.supabaseRpc.mock.calls.filter(
+    ([calledName]) => calledName === name,
+  );
 }
 
 describe("Slack events route", () => {
   beforeEach(() => {
     vi.stubEnv("SLACK_SIGNING_SECRET", SIGNING_SECRET);
     vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
+    mocks.afterRegistrationError = null;
     mocks.afterTasks = [];
+    mocks.leaseDecisions = [];
+    mocks.leaseStates.clear();
+    mocks.supabaseRpc.mockImplementation(
+      async (name: string, args: Record<string, string>) => {
+        const eventId = args.requested_event_id;
+        if (name === "lease_slack_event") {
+          const acquired = mocks.leaseDecisions.shift() ?? true;
+          if (acquired) {
+            mocks.leaseStates.set(eventId, {
+              state: "processing",
+              token: args.requested_lease_token,
+            });
+          }
+          return { data: acquired, error: null };
+        }
+        const lease = mocks.leaseStates.get(eventId);
+        if (name === "begin_slack_event_publish") {
+          const acquired =
+            lease?.state === "processing" &&
+            lease.token === args.requested_lease_token;
+          if (acquired) lease.state = "publishing";
+          return { data: acquired, error: null };
+        }
+        if (name === "complete_slack_event_publish") {
+          const completed =
+            lease?.state === "publishing" &&
+            lease.token === args.requested_lease_token;
+          if (completed) lease.state = "completed";
+          return { data: completed, error: null };
+        }
+        return { data: null, error: { message: "unexpected RPC" } };
+      },
+    );
+    mocks.createServiceRoleSupabaseClient.mockReturnValue({
+      rpc: mocks.supabaseRpc,
+    });
     mocks.fetchSlackUserProfile.mockResolvedValue({
       displayName: "Ali",
       email: "ali@qarizmi.com",
@@ -132,6 +187,7 @@ describe("Slack events route", () => {
   afterEach(() => {
     vi.unstubAllEnvs();
     vi.clearAllMocks();
+    vi.restoreAllMocks();
   });
 
   it("answers the url_verification challenge", async () => {
@@ -169,17 +225,86 @@ describe("Slack events route", () => {
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
   });
 
-  it("acknowledges http_timeout retries without reprocessing", async () => {
+  it("processes the first http_timeout retry and deduplicates its replay", async () => {
+    mocks.leaseDecisions = [true, false];
     const body = messageImEvent("lis mes emails gmail non lus");
-    const response = await POST(
+    const firstRetry = await POST(
       slackRequest(body, { retryNum: "1", retryReason: "http_timeout" }),
+    );
+    const replay = await POST(
+      slackRequest(body, { retryNum: "2", retryReason: "http_timeout" }),
     );
 
     await flushAfterTasks();
 
-    expect(response.status).toBe(200);
-    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(firstRetry.status).toBe(200);
+    expect(await replay.json()).toEqual({ ignored: "duplicate", ok: true });
+    expect(rpcCalls("lease_slack_event")).toHaveLength(2);
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
   });
+
+  it("recovers a crash after leasing but before after() registration", async () => {
+    mocks.leaseDecisions = [true, true];
+    mocks.afterRegistrationError = new Error("process crashed");
+    const body = messageImEvent("lis mes emails gmail non lus");
+
+    await expect(POST(slackRequest(body))).rejects.toThrow("process crashed");
+    expect(mocks.afterTasks).toHaveLength(0);
+
+    mocks.afterRegistrationError = null;
+    const retry = await POST(
+      slackRequest(body, { retryNum: "1", retryReason: "connection_failed" }),
+    );
+    await flushAfterTasks();
+
+    expect(retry.status).toBe(200);
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
+    const leaseCalls = rpcCalls("lease_slack_event");
+    expect(leaseCalls).toHaveLength(2);
+    expect(leaseCalls[0][1]).toEqual(
+      expect.objectContaining({ requested_force_takeover: false }),
+    );
+    expect(leaseCalls[1][1]).toEqual(
+      expect.objectContaining({ requested_force_takeover: true }),
+    );
+  });
+
+  it("fences an older worker when a retry takes over its processing lease", async () => {
+    mocks.leaseDecisions = [true, true];
+    const body = messageImEvent("lis mes emails gmail non lus");
+
+    await POST(slackRequest(body));
+    await POST(
+      slackRequest(body, { retryNum: "1", retryReason: "http_timeout" }),
+    );
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(2);
+    expect(rpcCalls("begin_slack_event_publish")).toHaveLength(2);
+    expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
+    expect(rpcCalls("complete_slack_event_publish")).toHaveLength(1);
+  });
+
+  it.each([
+    ["ambiguous", new Error("network timeout")],
+    ["definitive", new SlackMessageRejectedError("invalid_blocks")],
+  ])(
+    "keeps publishing terminal after a %s fenced Slack failure",
+    async (_classification, failure) => {
+      mocks.postSlackMessage.mockRejectedValue(failure);
+      vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+      await POST(slackRequest(messageImEvent("lis mes emails gmail non lus")));
+      await flushAfterTasks();
+
+      expect(rpcCalls("begin_slack_event_publish")).toHaveLength(2);
+      expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
+      expect(rpcCalls("complete_slack_event_publish")).toHaveLength(0);
+      expect(mocks.leaseStates.get("Ev0123456789")?.state).toBe("publishing");
+    },
+  );
 
   it("processes retries whose reason is not http_timeout", async () => {
     const body = messageImEvent("lis mes emails gmail non lus");
@@ -201,6 +326,21 @@ describe("Slack events route", () => {
     );
   });
 
+  it("claims event_id durably and never republishes a replay", async () => {
+    mocks.leaseDecisions = [true, false];
+    const body = messageImEvent("lis mes emails gmail non lus");
+
+    const first = await POST(slackRequest(body));
+    const replay = await POST(slackRequest(body));
+    await flushAfterTasks();
+
+    expect(first.status).toBe(200);
+    expect(await replay.json()).toEqual({ ignored: "duplicate", ok: true });
+    expect(rpcCalls("lease_slack_event")).toHaveLength(2);
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores bot messages", async () => {
     const body = JSON.stringify({
       event: {
@@ -211,6 +351,7 @@ describe("Slack events route", () => {
         type: "message",
         user: "U0123456789",
       },
+      event_id: "EvMentionStatus123",
       type: "event_callback",
     });
     const response = await POST(slackRequest(body));
@@ -242,6 +383,18 @@ describe("Slack events route", () => {
     const message = mocks.postSlackMessage.mock.calls[0][0];
     expect(message.channel).toBe("D0123456789");
     expect(message.text).toBe("Lina prend le relais integrations.");
+    const beginIndex = mocks.supabaseRpc.mock.calls.findIndex(
+      ([name]) => name === "begin_slack_event_publish",
+    );
+    const completeIndex = mocks.supabaseRpc.mock.calls.findIndex(
+      ([name]) => name === "complete_slack_event_publish",
+    );
+    expect(mocks.supabaseRpc.mock.invocationCallOrder[beginIndex]).toBeLessThan(
+      mocks.postSlackMessage.mock.invocationCallOrder[0],
+    );
+    expect(mocks.postSlackMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.supabaseRpc.mock.invocationCallOrder[completeIndex],
+    );
 
     const approveButton = message.blocks
       .filter((block: { type: string }) => block.type === "actions")
@@ -354,6 +507,7 @@ describe("Slack events route", () => {
         type: "app_mention",
         user: "U0123456789",
       },
+      event_id: "EvMentionPrivate123",
       type: "event_callback",
     });
     const response = await POST(slackRequest(body));
@@ -386,6 +540,7 @@ describe("Slack events route", () => {
         type: "app_mention",
         user: "U0123456789",
       },
+      event_id: "EvMentionPrivate456",
       type: "event_callback",
     });
 

@@ -10,6 +10,7 @@ import {
 
 const crmLeads: CrmLeadSummary[] = [
   {
+    accessScope: "organization",
     createdAt: "2026-07-01T10:00:00.000Z",
     id: "lead-atlas",
     notes: "CEO/CFO interested in operating system",
@@ -23,6 +24,7 @@ const crmLeads: CrmLeadSummary[] = [
 const crmPipelineLeads: CrmLeadSummary[] = [
   ...crmLeads,
   {
+    accessScope: "organization",
     companyName: "Beta",
     contactName: "Achraf",
     createdAt: "2026-07-02T10:00:00.000Z",
@@ -34,6 +36,7 @@ const crmPipelineLeads: CrmLeadSummary[] = [
     updatedAt: "2026-07-02T10:00:00.000Z",
   },
   {
+    accessScope: "organization",
     companyName: "HPS",
     contactName: "Abdeslam",
     createdAt: "2026-07-03T10:00:00.000Z",
@@ -205,6 +208,7 @@ describe("NAIA orchestrator", () => {
       crmLeads: [
         ...crmLeads,
         {
+          accessScope: "organization",
           companyName: "HPS",
           contactName: "Abdeslam El-Alawi",
           createdAt: "2026-07-02T10:00:00.000Z",
@@ -483,6 +487,7 @@ describe("NAIA orchestrator", () => {
       crmLeads: [
         ...crmLeads,
         {
+          accessScope: "organization",
           createdAt: "2026-07-02T10:00:00.000Z",
           id: "lead-unrelated-crm",
           notes: "Prospects CRM automatisation commerciale",
@@ -623,6 +628,7 @@ describe("NAIA orchestrator", () => {
       crmLeads: [
         ...crmLeads,
         {
+          accessScope: "organization",
           createdAt: "2026-07-01T10:00:00.000Z",
           id: "lead-ahmed",
           notes: "Contact: Ahmed\nEntreprise: exemple",

@@ -5,6 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "crm:trello-import": "tsx scripts/crm-trello-import.ts",
+    "google:oauth-reattest": "tsx scripts/google-oauth-reattest.ts",
     "start": "next start",
     "lint": "eslint",
     "typecheck": "next typegen && tsc --noEmit",
@@ -45,6 +47,7 @@
     "jsdom": "^30.0.1",
     "prettier": "^3.9.6",
     "tailwindcss": "^4",
+    "tsx": "4.23.11",
     "typescript": "^6",
     "vitest": "^4.1.10"
   }

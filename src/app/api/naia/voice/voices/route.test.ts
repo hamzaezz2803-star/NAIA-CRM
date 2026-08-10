@@ -6,7 +6,6 @@ describe("NAIA voice catalog route", () => {
   beforeEach(() => {
     vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
     vi.stubEnv("ELEVENLABS_VOICE_ID", "officialVoice123");
-    vi.stubEnv("ELEVENLABS_FALLBACK_VOICE_ID", "rescueVoice456");
   });
 
   afterEach(() => {
@@ -46,7 +45,6 @@ describe("NAIA voice catalog route", () => {
     const body = (await response.json()) as {
       activeVoice?: { name?: string; voiceId?: string };
       configuredVoiceId?: string;
-      fallbackConfigured?: boolean;
       mode?: string;
       recommendedVoiceId?: string;
       voices?: { voiceId?: string }[];
@@ -60,7 +58,6 @@ describe("NAIA voice catalog route", () => {
       name: "NAIA Official",
       voiceId: "officialVoice123",
     });
-    expect(body.fallbackConfigured).toBe(true);
     expect(body.voices).toEqual([
       expect.objectContaining({ voiceId: "officialVoice123" }),
     ]);
@@ -123,22 +120,20 @@ describe("NAIA voice catalog route", () => {
     ]);
   });
 
-  it("does not expose the rescue voice as a selectable or recommended voice", async () => {
+  it("exposes only the official voice without a paid fallback contract", async () => {
     vi.stubEnv("ELEVENLABS_API_KEY", "");
 
     const response = await GET();
     const body = (await response.json()) as {
-      fallbackConfigured?: boolean;
       recommendedVoiceId?: string;
       voices?: { voiceId?: string }[];
     };
 
     expect(response.status).toBe(200);
-    expect(body.fallbackConfigured).toBe(true);
     expect(body.recommendedVoiceId).toBe("officialVoice123");
     expect(body.voices).toEqual([
       expect.objectContaining({ voiceId: "officialVoice123" }),
     ]);
-    expect(JSON.stringify(body)).not.toContain("rescueVoice456");
+    expect(JSON.stringify(body)).not.toContain("fallbackConfigured");
   });
 });

@@ -11,7 +11,8 @@ import {
 // Slack, WhatsApp, and the local meeting companion are called without a
 // Supabase browser session. Every route authenticates its own request: Slack
 // and WhatsApp verify signed webhook payloads, while the local companion uses
-// a server-only bearer token and only claims jobs queued by a cofounder.
+// a server-only bearer token and only claims jobs queued by a cofounder. Vercel
+// Cron has no browser cookie; its route verifies CRON_SECRET itself.
 const PUBLIC_PATH_PREFIXES = [
   "/login",
   "/auth",
@@ -19,6 +20,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/api/slack/interactions",
   "/api/whatsapp/webhook",
   "/api/meeting-notes/worker",
+  "/api/cron/naia-daily-brief",
 ];
 
 export async function middleware(request: NextRequest) {

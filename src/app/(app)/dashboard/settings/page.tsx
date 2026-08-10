@@ -50,8 +50,6 @@ function getSystemIntegrations(
   const groqModels = getGroqModelConfiguration();
   const elevenLabsKey = process.env.ELEVENLABS_API_KEY?.trim();
   const elevenLabsVoiceId = process.env.ELEVENLABS_VOICE_ID?.trim();
-  const elevenLabsFallbackVoiceId =
-    process.env.ELEVENLABS_FALLBACK_VOICE_ID?.trim();
   const google = providerReadiness.find(
     (integration) => integration.provider === "google",
   );
@@ -99,11 +97,7 @@ function getSystemIntegrations(
       icon: <Volume2 className="h-5 w-5" />,
       detail:
         elevenLabsKey && elevenLabsVoiceId
-          ? `Voix officielle: ${maskIdentifier(elevenLabsVoiceId)} · fallback: ${
-              elevenLabsFallbackVoiceId
-                ? maskIdentifier(elevenLabsFallbackVoiceId)
-                : "navigateur uniquement"
-            }`
+          ? `Voix officielle: ${maskIdentifier(elevenLabsVoiceId)} · repli navigateur uniquement`
           : "ELEVENLABS_API_KEY et ELEVENLABS_VOICE_ID sont tous les deux requis.",
     },
     {
@@ -515,11 +509,6 @@ export default async function SettingsPage() {
                 {
                   name: "ELEVENLABS_VOICE_ID",
                   usage: "Voix officielle NAIA",
-                  visibility: "Serveur uniquement",
-                },
-                {
-                  name: "ELEVENLABS_FALLBACK_VOICE_ID",
-                  usage: "Voix de secours explicite (optionnelle)",
                   visibility: "Serveur uniquement",
                 },
                 {

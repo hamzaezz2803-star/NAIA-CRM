@@ -38,6 +38,7 @@ const googleContext = {
 
 const crmLeads: CrmLeadSummary[] = [
   {
+    accessScope: "organization",
     companyName: "HPS",
     contactName: "Abdeslam",
     createdAt: "2026-07-01T10:00:00.000Z",
@@ -503,6 +504,50 @@ describe("NAIA personal context answers", () => {
     expect(result.response).not.toContain("Abdeslam");
   });
 
+  it("does not expose or prepare CRM lead creation in a shared channel", async () => {
+    const { result } = await planNaiaAssistant({
+      actor,
+      allowPersonalData: false,
+      command:
+        "crée un lead candidat pour Jane Doe, jane.doe@example.com, 0600000000",
+      crmLeads,
+      googleContext,
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("message privé");
+    expect(result.response).not.toContain("Jane Doe");
+    expect(result.response).not.toContain("jane.doe@example.com");
+    expect(result.response).not.toContain("0600000000");
+  });
+
+  it("does not expose or prepare a confidential CRM status update in a shared channel", async () => {
+    const confidentialLead: CrmLeadSummary = {
+      accessScope: "cofounders",
+      companyName: "Private Candidate Pool",
+      contactName: "Jane Doe",
+      createdAt: "2026-08-10T08:00:00.000Z",
+      id: "lead-private-candidate",
+      organizationId: "org-1",
+      status: "lead-to-contact",
+      topic: "Candidat Jane Doe - RH",
+      updatedAt: "2026-08-10T08:00:00.000Z",
+    };
+    const { result } = await planNaiaAssistant({
+      actor,
+      allowPersonalData: false,
+      command: "passe le lead Candidat Jane Doe - RH en contacted",
+      crmLeads: [...crmLeads, confidentialLead],
+      googleContext,
+    });
+
+    expect(result.actions).toHaveLength(0);
+    expect(result.response).toContain("message privé");
+    expect(result.response).not.toContain("Jane Doe");
+    expect(result.response).not.toContain("Private Candidate Pool");
+    expect(result.response).not.toContain("lead-private-candidate");
+  });
+
   it("does not send CRM or Calendar context to Groq from a shared channel", async () => {
     vi.stubEnv("GROQ_API_KEY", "test-groq-key");
     const fetchMock = vi.fn().mockResolvedValue({
@@ -661,6 +706,117 @@ describe("NAIA personal context answers", () => {
     });
 
     expect(mocks.loadNaiaPrivateKnowledge).not.toHaveBeenCalled();
+  });
+
+  it("excludes confidential and unscoped CRM rows from every Groq payload", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    mocks.listGoogleCalendarEvents.mockResolvedValue([
+      {
+        id: "private-calendar-event",
+        start: "2026-08-11T09:00:00+01:00",
+        title: "Entretien Ahmed",
+      },
+    ]);
+    const confidentialLead: CrmLeadSummary = {
+      accessScope: "cofounders",
+      companyName: "Secret Company",
+      contactName: "Secret Person",
+      createdAt: "2026-08-10T08:00:00.000Z",
+      id: "lead-confidential",
+      notes: "Private commercial note",
+      organizationId: "org-1",
+      status: "contacted",
+      topic: "Project Delta",
+      updatedAt: "2026-08-10T08:00:00.000Z",
+    };
+    const malformedLegacyLead = {
+      ...confidentialLead,
+      companyName: "Legacy Secret Company",
+      id: "lead-unscoped",
+      topic: "Legacy private project",
+    } as unknown as CrmLeadSummary;
+    delete (malformedLegacyLead as { accessScope?: string }).accessScope;
+    const fetchMock = vi.fn().mockResolvedValue({
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                agentId: "naia",
+                confidence: 0.9,
+                response: "Paris est la capitale de la France.",
+              }),
+            },
+          },
+        ],
+      }),
+      ok: true,
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    try {
+      await planNaiaAssistant({
+        actor,
+        command: "Quelle est la capitale de la France ?",
+        crmLeads: [...crmLeads, confidentialLead, malformedLegacyLead],
+        googleContext,
+        history: [
+          {
+            content: "Secret Person, secret.person@example.com, +212600000000",
+            role: "assistant",
+          },
+        ],
+      });
+
+      const requestBody = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+      const userContext = JSON.parse(requestBody.messages[1].content);
+      expect(userContext.crmSnapshot).toHaveLength(1);
+      expect(userContext.crmSnapshot[0].id).toBe("lead-hps");
+      expect(userContext.conversationHistory).toEqual([]);
+      expect(JSON.stringify(userContext)).not.toContain("Secret Company");
+      expect(JSON.stringify(userContext)).not.toContain("Legacy Secret");
+      expect(JSON.stringify(userContext)).not.toContain("secret.person");
+      expect(JSON.stringify(userContext)).not.toContain("Entretien Ahmed");
+      expect(userContext.realGoogleCalendar).toBeUndefined();
+      expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("never calls Groq when a command names a confidential CRM entity", async () => {
+    vi.stubEnv("GROQ_API_KEY", "test-groq-key");
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const confidentialLead: CrmLeadSummary = {
+      accessScope: "cofounders",
+      companyName: "Private Pool",
+      contactName: "Secret Person",
+      createdAt: "2026-08-10T08:00:00.000Z",
+      id: "lead-private-project",
+      organizationId: "org-1",
+      status: "contacted",
+      topic: "Project Delta",
+      updatedAt: "2026-08-10T08:00:00.000Z",
+    };
+
+    try {
+      const answer = await planNaiaAssistant({
+        actor,
+        command: "Écris une histoire qui mentionne Delta",
+        crmLeads: [...crmLeads, confidentialLead],
+        googleContext,
+        pageContext: mergeNaiaPageContext("/dashboard/leads", {
+          filters: { status: "meeting-booked" },
+          view: "list",
+        }),
+      });
+
+      expect(answer.mode).toBe("local-orchestrated");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("sends only bounded private-deck snippets to Groq in an owner DM", async () => {

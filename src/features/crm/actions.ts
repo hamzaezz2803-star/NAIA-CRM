@@ -2,6 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
+import { createHash } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { after } from "next/server";
 import { getGroqApiKey } from "@/platform/ai/groq";
@@ -11,7 +12,11 @@ import {
   ensureClientDriveFolder,
   isDriveServiceConfigured,
 } from "@/platform/integrations/google-drive-service";
-import { hasForbiddenGoogleDriveScope } from "@/platform/integrations/google-workspace-scopes";
+import { getGoogleWorkspaceAccessToken } from "@/platform/integrations/google-workspace";
+import {
+  attestGoogleScopes,
+  GOOGLE_MEETING_NOTE_SCOPE,
+} from "@/platform/integrations/google-workspace-scopes";
 import { createSystemNotification } from "@/platform/notifications/actions";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
@@ -33,12 +38,24 @@ import {
 } from "./dummy-data";
 import { extractCrmLeadWithGroq, generateCrmFollowUpWithGroq } from "./ai";
 import { normalizeCrmDateTimeForStorage } from "./date-time";
+import {
+  allowsCrmProviderSideEffects,
+  classifyCrmAccessScope,
+  containsSensitiveCrmText,
+  type CrmAccessScope,
+} from "./confidentiality";
+import { CRM_PIPELINE_LEAD_COLUMNS, mapCrmPipelineLead } from "./pipeline-data";
+import {
+  hasPermission,
+  type OrganizationRole,
+} from "@/platform/core/permissions";
 
 // ────────────────────────────────────────────────────────────
 // Types for DB rows (aligned with 20260624120000_crm_tables.sql)
 // ────────────────────────────────────────────────────────────
 
 type DbLead = {
+  access_scope: CrmAccessScope;
   id: string;
   organization_id: string;
   company_id: string | null;
@@ -200,94 +217,6 @@ function parseContactInfoFromNotes(notes?: string | null) {
   return { company, contact };
 }
 
-async function backfillLeads(
-  supabase: SupabaseClient,
-  orgId: string,
-  leads: DbLead[],
-  userId: string | null,
-) {
-  const leadsToUpdate = leads.filter(
-    (row) => !row.company_id && row.notes && row.notes.includes("Entreprise:"),
-  );
-  if (leadsToUpdate.length === 0) return;
-
-  for (const lead of leadsToUpdate) {
-    const { company, contact } = parseContactInfoFromNotes(lead.notes);
-    if (!company) continue;
-
-    let companyId: string | null = null;
-    let contactId: string | null = null;
-
-    // Find or create company
-    const { data: existingComp } = await supabase
-      .from("crm_companies")
-      .select("id")
-      .eq("organization_id", orgId)
-      .eq("name", company)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingComp) {
-      companyId = existingComp.id;
-    } else {
-      const { data: newComp } = await supabase
-        .from("crm_companies")
-        .insert({
-          organization_id: orgId,
-          name: company,
-          created_by_profile_id: userId,
-        })
-        .select("id")
-        .single();
-      if (newComp) companyId = newComp.id;
-    }
-
-    if (companyId && contact) {
-      // Find or create contact
-      const { data: existingCont } = await supabase
-        .from("crm_contacts")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("company_id", companyId)
-        .eq("name", contact)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingCont) {
-        contactId = existingCont.id;
-      } else {
-        const { data: newCont } = await supabase
-          .from("crm_contacts")
-          .insert({
-            organization_id: orgId,
-            company_id: companyId,
-            name: contact,
-            job_title: lead.contact_job_title,
-            linkedin_url: lead.contact_linkedin_url,
-            created_by_profile_id: userId,
-          })
-          .select("id")
-          .single();
-        if (newCont) contactId = newCont.id;
-      }
-    }
-
-    if (companyId) {
-      await supabase
-        .from("crm_leads")
-        .update({
-          company_id: companyId,
-          contact_id: contactId,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", lead.id);
-
-      lead.company_id = companyId;
-      lead.contact_id = contactId;
-    }
-  }
-}
-
 async function syncLeadTask(
   supabase: any,
   orgId: string,
@@ -357,8 +286,11 @@ async function syncLeadTask(
 // ────────────────────────────────────────────────────────────
 
 export async function fetchLeadsAction(
-  options: { backfill?: boolean } = {},
+  _options: { backfill?: boolean } = {},
 ): Promise<CrmLeadSummary[]> {
+  // Kept temporarily for callers that still pass { backfill: false }.
+  // Reads are now always side-effect-free regardless of this legacy option.
+  void _options;
   const supabase = await createServerSupabaseClient();
   if (!supabase) return fallbackLeads();
 
@@ -367,19 +299,9 @@ export async function fetchLeadsAction(
 
   const { data, error } = await supabase
     .from("crm_leads")
-    .select(
-      `
-      *,
-      assigned_to:assigned_to_profile_id(id, full_name, email),
-      last_updated_by:last_updated_by_profile_id(id, full_name, email),
-      company:company_id(id, name),
-      contact:contact_id(id, name, email, phone),
-      crm_lead_tags(
-        crm_tags(id, name, color)
-      )
-    `,
-    )
+    .select(CRM_PIPELINE_LEAD_COLUMNS)
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("created_at", { ascending: false });
 
   if (error || !data) {
@@ -390,55 +312,7 @@ export async function fetchLeadsAction(
   const rows = data as any[];
   if (rows.length === 0) return fallbackLeads();
 
-  if (options.backfill !== false) {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-    await backfillLeads(supabase, orgId, rows as DbLead[], user?.id ?? null);
-  }
-
-  return rows.map((row) => ({
-    id: row.id,
-    organizationId: row.organization_id,
-    companyId: row.company_id ?? undefined,
-    companyName: row.company?.name ?? undefined,
-    contactId: row.contact_id ?? undefined,
-    contactName: row.contact?.name ?? undefined,
-    contactEmail: row.contact?.email ?? undefined,
-    contactPhone: row.contact?.phone ?? undefined,
-    topic: row.topic,
-    source: row.source ?? undefined,
-    status: row.status,
-    notes: row.notes ?? undefined,
-    nextAction: row.next_action ?? undefined,
-    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
-    contactJobTitle: row.contact_job_title ?? undefined,
-    contactLinkedinUrl: row.contact_linkedin_url ?? undefined,
-    assignedToProfileId: row.assigned_to_profile_id ?? undefined,
-    assignedToName:
-      row.assigned_to?.full_name ||
-      row.assigned_to?.email?.split("@")[0] ||
-      undefined,
-    lastUpdatedByProfileId: row.last_updated_by_profile_id ?? undefined,
-    lastUpdatedByName:
-      row.last_updated_by?.full_name ||
-      row.last_updated_by?.email?.split("@")[0] ||
-      undefined,
-    lastUpdatedAt: row.last_updated_at ?? undefined,
-    lastContactedAt: row.last_contacted_at ?? undefined,
-    driveFolderUrl: row.drive_folder_url ?? undefined,
-    tags: (row.crm_lead_tags ?? [])
-      .map((lt: any) => lt.crm_tags)
-      .filter(Boolean)
-      .map((t: any) => ({
-        id: t.id,
-        organizationId: t.organization_id,
-        name: t.name,
-        color: t.color,
-      })),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-  }));
+  return rows.map(mapCrmPipelineLead);
 }
 
 export type LeadTodoCard = {
@@ -480,6 +354,7 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
     `,
     )
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("lead_date", { ascending: true, nullsFirst: false });
 
   if (error || !data) {
@@ -519,6 +394,7 @@ export async function fetchLeadsForTodoAction(): Promise<LeadTodoCard[]> {
 }
 
 type CreateLeadActionResult = {
+  accessScope?: CrmAccessScope;
   calendarError?: string;
   calendarLink?: string;
   calendarSynced?: boolean;
@@ -545,6 +421,7 @@ export async function createLeadAction(
     contactLinkedinUrl?: string;
     assignedToProfileId?: string;
     tagIds?: string[];
+    tagNames?: string[];
     skipGoogleCalendarSync?: boolean;
     skipGoogleDriveCreate?: boolean;
   },
@@ -578,139 +455,94 @@ export async function createLeadAction(
     ? trustedContext.actorProfileId
     : ((await supabase.auth.getUser()).data.user?.id ?? null);
 
-  let companyId = input.companyId ?? null;
-  let contactId = input.contactId ?? null;
+  if (!actorProfileId) {
+    return { success: false, error: "Not authenticated" };
+  }
 
   const parsedContactInfo = parseContactInfoFromNotes(input.notes);
   const company = input.companyName?.trim() || parsedContactInfo.company;
   const contact = input.contactName?.trim() || parsedContactInfo.contact;
-  if (!companyId && company) {
-    // Find or create company
-    const { data: existingComp } = await supabase
-      .from("crm_companies")
-      .select("id")
-      .eq("organization_id", orgId)
-      .eq("name", company)
-      .limit(1)
-      .maybeSingle();
+  // Company/contact enrichment, confidentiality classification, lead creation
+  // and tag associations are one PostgreSQL transaction. A non-founder
+  // sensitive attempt fails before the first write, so no partially visible
+  // company or contact can survive a rejected lead.
+  const { data: atomicResult, error: atomicError } = await supabase.rpc(
+    "create_crm_lead_atomic",
+    {
+      requested_actor_profile_id: actorProfileId,
+      requested_assigned_to_profile_id: input.assignedToProfileId ?? null,
+      requested_company_id: input.companyId ?? null,
+      requested_company_name: company || null,
+      requested_contact_email: input.contactEmail ?? null,
+      requested_contact_id: input.contactId ?? null,
+      requested_contact_job_title: input.contactJobTitle ?? null,
+      requested_contact_linkedin_url: input.contactLinkedinUrl ?? null,
+      requested_contact_name: contact || null,
+      requested_contact_phone: input.contactPhone ?? null,
+      requested_lead_date: input.leadDate ?? null,
+      requested_next_action: input.nextAction ?? null,
+      requested_notes: input.notes ?? null,
+      requested_organization_id: orgId,
+      requested_source: input.source ?? null,
+      requested_status: resolveLeadInsertStatus(input),
+      requested_tag_ids: input.tagIds ?? [],
+      requested_tag_names: input.tagNames ?? [],
+      requested_topic: input.topic,
+    },
+  );
 
-    if (existingComp) {
-      companyId = existingComp.id;
-    } else {
-      const { data: newComp } = await supabase
-        .from("crm_companies")
-        .insert({
-          organization_id: orgId,
-          name: company,
-          created_by_profile_id: actorProfileId,
-        })
-        .select("id")
-        .single();
-      if (newComp) companyId = newComp.id;
-    }
+  type AtomicLeadResult = {
+    access_scope: CrmAccessScope;
+    company_id: string | null;
+    contact_id: string | null;
+    lead_id: string;
+  };
+  const created = atomicResult as AtomicLeadResult | null;
+
+  if (atomicError || !created?.lead_id) {
+    return {
+      success: false,
+      error: atomicError?.message ?? "Atomic lead creation failed",
+    };
   }
 
-  if (companyId && !contactId && contact) {
-    // Find or create contact
-    const { data: existingCont } = await supabase
-      .from("crm_contacts")
-      .select("id, email, phone, job_title, linkedin_url")
-      .eq("organization_id", orgId)
-      .eq("company_id", companyId)
-      .eq("name", contact)
-      .limit(1)
-      .maybeSingle();
-
-    if (existingCont) {
-      contactId = existingCont.id;
-      const contactUpdates = {
-        ...(!existingCont.email && input.contactEmail
-          ? { email: input.contactEmail }
-          : {}),
-        ...(!existingCont.phone && input.contactPhone
-          ? { phone: input.contactPhone }
-          : {}),
-        ...(!existingCont.job_title && input.contactJobTitle
-          ? { job_title: input.contactJobTitle }
-          : {}),
-        ...(!existingCont.linkedin_url && input.contactLinkedinUrl
-          ? { linkedin_url: input.contactLinkedinUrl }
-          : {}),
-      };
-
-      if (Object.keys(contactUpdates).length > 0) {
-        await supabase
-          .from("crm_contacts")
-          .update(contactUpdates)
-          .eq("organization_id", orgId)
-          .eq("id", existingCont.id);
-      }
-    } else {
-      const { data: newCont } = await supabase
-        .from("crm_contacts")
-        .insert({
-          organization_id: orgId,
-          company_id: companyId,
-          name: contact,
-          email: input.contactEmail ?? null,
-          phone: input.contactPhone ?? null,
-          job_title: input.contactJobTitle ?? null,
-          linkedin_url: input.contactLinkedinUrl ?? null,
-          created_by_profile_id: actorProfileId,
-        })
-        .select("id")
-        .single();
-      if (newCont) contactId = newCont.id;
-    }
-  }
-
+  const companyId = created.company_id;
   const { data, error } = await supabase
     .from("crm_leads")
-    .insert({
-      organization_id: orgId,
-      topic: input.topic,
-      company_id: companyId,
-      contact_id: contactId,
-      source: input.source ?? null,
-      status: resolveLeadInsertStatus(input),
-      notes: input.notes ?? null,
-      next_action: input.nextAction ?? null,
-      lead_date: input.leadDate ?? null,
-      contact_job_title: input.contactJobTitle ?? null,
-      contact_linkedin_url: input.contactLinkedinUrl ?? null,
-      assigned_to_profile_id: input.assignedToProfileId ?? null,
-      last_updated_by_profile_id: actorProfileId,
-      last_updated_at: new Date().toISOString(),
-      created_by_profile_id: actorProfileId,
-    })
     .select()
+    .eq("id", created.lead_id)
+    .eq("organization_id", orgId)
     .single();
 
   if (error || !data) {
-    return { success: false, error: error?.message ?? "Insert failed" };
+    return {
+      success: false,
+      error: error?.message ?? "Created lead could not be read back",
+    };
   }
 
   const row = data as DbLead;
 
-  // Insert tag associations
-  if (input.tagIds && input.tagIds.length > 0) {
-    const tagInserts = input.tagIds.map((tagId) => ({
-      lead_id: row.id,
-      tag_id: tagId,
-    }));
-    await supabase.from("crm_lead_tags").insert(tagInserts);
-  }
-
   let calendarSyncResult: { error?: string; success: boolean } | null = null;
 
   // Sync to Google Calendar if leadDate is set and not skipped
-  if (input.leadDate && !input.skipGoogleCalendarSync) {
+  if (
+    input.leadDate &&
+    !input.skipGoogleCalendarSync &&
+    allowsCrmProviderSideEffects(created.access_scope)
+  ) {
     calendarSyncResult = await syncLeadToGoogleCalendar(
       supabase,
       orgId,
       row.id,
       actorProfileId,
     );
+  } else if (input.leadDate && created.access_scope === "cofounders") {
+    calendarSyncResult = {
+      error:
+        "Synchronisation Calendar désactivée pour les leads confidentiels.",
+      success: false,
+    };
   }
 
   // Sync Todo task
@@ -720,7 +552,10 @@ export async function createLeadAction(
   // skipped. Folders are named after the client company: without a resolved
   // company there is nothing to create (a topic-named folder is never a
   // client folder).
-  if (!input.skipGoogleDriveCreate) {
+  if (
+    !input.skipGoogleDriveCreate &&
+    allowsCrmProviderSideEffects(created.access_scope)
+  ) {
     try {
       const companyName =
         company ||
@@ -771,10 +606,12 @@ export async function createLeadAction(
 
   if (popErr || !populated) {
     return {
+      accessScope: created.access_scope,
       success: true,
       calendarError: calendarSyncResult?.error,
       calendarSynced: calendarSyncResult?.success,
       lead: {
+        accessScope: created.access_scope,
         id: row.id,
         organizationId: row.organization_id,
         companyId: row.company_id ?? undefined,
@@ -800,11 +637,13 @@ export async function createLeadAction(
 
   const popRow = populated as any;
   return {
+    accessScope: created.access_scope,
     success: true,
     calendarError: calendarSyncResult?.error,
     calendarLink: extractGoogleCalendarEventLink(popRow.notes),
     calendarSynced: calendarSyncResult?.success,
     lead: {
+      accessScope: popRow.access_scope,
       id: popRow.id,
       organizationId: popRow.organization_id,
       companyId: popRow.company_id ?? undefined,
@@ -870,6 +709,12 @@ function createDummyLead(input: {
   const suffix = Math.random().toString(36).slice(2, 9);
   const { company, contact } = parseContactInfoFromNotes(input.notes);
   const lead: CrmLeadSummary = {
+    accessScope: classifyCrmAccessScope(
+      input.topic,
+      input.notes,
+      input.companyName,
+      input.contactName,
+    ),
     assignedToProfileId: input.assignedToProfileId,
     companyId: input.companyId,
     companyName: input.companyName ?? company ?? undefined,
@@ -1033,73 +878,36 @@ export async function updateLeadAction(
   const {
     data: { user },
   } = await supabase.auth.getUser();
+  if (!user?.id) return { success: false, error: "Not authenticated" };
 
-  let companyId =
-    updates.companyId !== undefined ? updates.companyId : undefined;
-  let contactId =
-    updates.contactId !== undefined ? updates.contactId : undefined;
-
-  // Auto-create and link company/contact if notes are updated
-  if (
-    (companyId === undefined || contactId === undefined) &&
+  // Notes can suggest a company/contact, but resolving or creating those
+  // records must happen inside the same database transaction as the lead
+  // update. A rejected confidential update must never leave visible orphans.
+  const parsedContactInfo =
     updates.notes !== undefined
-  ) {
-    const { company, contact } = parseContactInfoFromNotes(updates.notes);
+      ? parseContactInfoFromNotes(updates.notes)
+      : { company: undefined, contact: undefined };
 
-    if (companyId === undefined && company) {
-      const { data: existingComp } = await supabase
-        .from("crm_companies")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("name", company)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingComp) {
-        companyId = existingComp.id;
-      } else {
-        const { data: newComp } = await supabase
-          .from("crm_companies")
-          .insert({
-            organization_id: orgId,
-            name: company,
-            created_by_profile_id: user?.id ?? null,
-          })
-          .select("id")
-          .single();
-        if (newComp) companyId = newComp.id;
-      }
-    }
-
-    if (companyId && contactId === undefined && contact) {
-      const { data: existingCont } = await supabase
-        .from("crm_contacts")
-        .select("id")
-        .eq("organization_id", orgId)
-        .eq("company_id", companyId)
-        .eq("name", contact)
-        .limit(1)
-        .maybeSingle();
-
-      if (existingCont) {
-        contactId = existingCont.id;
-      } else {
-        const { data: newCont } = await supabase
-          .from("crm_contacts")
-          .insert({
-            organization_id: orgId,
-            company_id: companyId,
-            name: contact,
-            job_title: updates.contactJobTitle ?? null,
-            linkedin_url: updates.contactLinkedinUrl ?? null,
-            created_by_profile_id: user?.id ?? null,
-          })
-          .select("id")
-          .single();
-        if (newCont) contactId = newCont.id;
-      }
-    }
-  }
+  const requestedUpdates: Record<string, unknown> = {};
+  if (updates.topic !== undefined) requestedUpdates.topic = updates.topic;
+  if (updates.status !== undefined) requestedUpdates.status = updates.status;
+  if (updates.notes !== undefined) requestedUpdates.notes = updates.notes;
+  if (updates.nextAction !== undefined)
+    requestedUpdates.next_action = updates.nextAction;
+  if (updates.leadDate !== undefined)
+    requestedUpdates.lead_date = updates.leadDate || null;
+  if (updates.source !== undefined) requestedUpdates.source = updates.source;
+  if (updates.companyId !== undefined)
+    requestedUpdates.company_id = updates.companyId || null;
+  if (updates.contactId !== undefined)
+    requestedUpdates.contact_id = updates.contactId || null;
+  if (updates.contactJobTitle !== undefined)
+    requestedUpdates.contact_job_title = updates.contactJobTitle || null;
+  if (updates.contactLinkedinUrl !== undefined)
+    requestedUpdates.contact_linkedin_url = updates.contactLinkedinUrl || null;
+  if (updates.assignedToProfileId !== undefined)
+    requestedUpdates.assigned_to_profile_id = updates.assignedToProfileId;
+  if (updates.tagIds !== undefined) requestedUpdates.tag_ids = updates.tagIds;
 
   const shouldCreateDriveFolder =
     updates.status === "meeting-booked" && !updates.skipGoogleDriveCreate;
@@ -1107,58 +915,33 @@ export async function updateLeadAction(
     ? await fetchLeadStatus(supabase, orgId, leadId)
     : null;
 
-  const { error } = await supabase
-    .from("crm_leads")
-    .update({
-      ...(updates.topic !== undefined && { topic: updates.topic }),
-      ...(updates.status !== undefined && { status: updates.status }),
-      ...(updates.notes !== undefined && { notes: updates.notes }),
-      ...(updates.nextAction !== undefined && {
-        next_action: updates.nextAction,
-      }),
-      ...(updates.leadDate !== undefined && {
-        lead_date: updates.leadDate || null,
-      }),
-      ...(updates.source !== undefined && { source: updates.source }),
-      ...(companyId !== undefined && { company_id: companyId }),
-      ...(contactId !== undefined && { contact_id: contactId }),
-      ...(updates.contactJobTitle !== undefined && {
-        contact_job_title: updates.contactJobTitle || null,
-      }),
-      ...(updates.contactLinkedinUrl !== undefined && {
-        contact_linkedin_url: updates.contactLinkedinUrl || null,
-      }),
-      ...(updates.assignedToProfileId !== undefined && {
-        assigned_to_profile_id: updates.assignedToProfileId,
-      }),
-      last_updated_by_profile_id: user?.id ?? null,
-      last_updated_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", leadId)
-    .eq("organization_id", orgId);
+  const { data: atomicUpdate, error } = await supabase.rpc(
+    "update_crm_lead_atomic",
+    {
+      requested_actor_profile_id: user.id,
+      requested_auto_company_name:
+        updates.companyId === undefined
+          ? (parsedContactInfo.company ?? null)
+          : null,
+      requested_auto_contact_name:
+        updates.contactId === undefined
+          ? (parsedContactInfo.contact ?? null)
+          : null,
+      requested_lead_id: leadId,
+      requested_organization_id: orgId,
+      requested_updates: requestedUpdates,
+    },
+  );
 
   if (error) return { success: false, error: error.message };
+  if (!atomicUpdate) {
+    return { success: false, error: "Lead introuvable" };
+  }
 
   if (shouldCreateDriveFolder && previousStatus !== "meeting-booked") {
     // Deferred after the response: up to a dozen sequential Drive calls must
     // not block the update.
     after(() => createMeetingBookedLeadDriveFolder(supabase, leadId));
-  }
-
-  // Sync tags if provided
-  if (updates.tagIds !== undefined) {
-    // Delete existing associations
-    await supabase.from("crm_lead_tags").delete().eq("lead_id", leadId);
-
-    // Insert new associations
-    if (updates.tagIds.length > 0) {
-      const tagInserts = updates.tagIds.map((tagId) => ({
-        lead_id: leadId,
-        tag_id: tagId,
-      }));
-      await supabase.from("crm_lead_tags").insert(tagInserts);
-    }
   }
 
   await syncLeadToGoogleCalendar(supabase, orgId, leadId);
@@ -1192,6 +975,7 @@ export async function updateLeadAction(
   if (updatedData) {
     const row = updatedData as any;
     updatedLead = {
+      accessScope: row.access_scope,
       id: row.id,
       organizationId: row.organization_id,
       companyId: row.company_id ?? undefined,
@@ -1246,92 +1030,160 @@ export async function deleteLeadAction(
   const orgId = await getOrgId();
   if (!orgId) return { success: false, error: "Not authenticated" };
 
-  // Fetch lead to get the event ID first for deletion from Google Calendar
-  const { data: lead } = await supabase
+  const {
+    data: { user: actingUser },
+  } = await supabase.auth.getUser();
+  if (!actingUser?.id) {
+    return { success: false, error: "Not authenticated" };
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("role")
+    .eq("organization_id", orgId)
+    .eq("profile_id", actingUser.id)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !role ||
+    !hasPermission(role, { action: "delete", module: "crm" })
+  ) {
+    return {
+      success: false,
+      error: "Tu n'as pas la permission de supprimer ce lead.",
+    };
+  }
+
+  const { data: lead, error: leadError } = await supabase
     .from("crm_leads")
-    .select("notes")
+    .select("id,notes,access_scope,updated_at")
     .eq("id", leadId)
     .eq("organization_id", orgId)
-    .single();
+    .is("archived_at", null)
+    .maybeSingle();
+  if (leadError || !lead) {
+    return {
+      success: false,
+      error: leadError?.message ?? "Lead introuvable",
+    };
+  }
 
-  if (lead && lead.notes) {
-    const eventIdMatch = lead.notes.match(
-      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
-    );
-    const eventId = eventIdMatch ? eventIdMatch[1].trim() : null;
+  let expectedRevision = lead.updated_at as string;
+  const initialAccessScope = lead.access_scope as CrmAccessScope;
 
-    if (eventId) {
-      const eventOwnerMatch = lead.notes.match(
-        /\[Google Calendar Event Owner:\s*([^\]]+)\]/,
-      );
-      const eventOwner = eventOwnerMatch ? eventOwnerMatch[1].trim() : null;
+  if (lead.notes && allowsCrmProviderSideEffects(initialAccessScope)) {
+    const initialEvent = readCalendarEventMetadata(lead.notes);
 
-      const {
-        data: { user: actingUser },
-      } = await supabase.auth.getUser();
-
-      // Per-user RLS only exposes the caller's own connection; an event
-      // created by another member stays on their calendar (logged below).
-      const { data: connection } =
-        actingUser && (!eventOwner || eventOwner === actingUser.id)
-          ? await supabase
-              .from("integration_connections")
-              .select("*")
-              .eq("organization_id", orgId)
-              .eq("provider", "google")
-              .eq("connected_by_profile_id", actingUser.id)
-              .limit(1)
-              .maybeSingle()
-          : { data: null };
-
-      if (!connection) {
-        console.warn(
-          "Calendar event not removed during lead deletion (owned by another member or no connection):",
-          eventId,
-        );
+    if (initialEvent.eventId) {
+      if (
+        initialEvent.eventOwner &&
+        initialEvent.eventOwner !== actingUser.id
+      ) {
+        return {
+          success: false,
+          error:
+            "L'événement Calendar appartient à un autre membre; il doit d'abord supprimer le lead depuis son compte.",
+        };
       }
 
-      if (connection && connection.status === "connected") {
-        const accessToken = await getOrRefreshGoogleToken(
+      let authorized = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUser.id,
+        expectedRevision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!authorized.ok) {
+        return { error: authorized.error, success: false };
+      }
+      const accessToken = await getGoogleWorkspaceAccessToken(
+        {
+          expectedConnectionId: authorized.connection.id,
+          requiredScopes: ["https://www.googleapis.com/auth/calendar.events"],
+        },
+        {
+          organizationId: orgId,
+          profileId: actingUser.id,
           supabase,
-          orgId,
-          connection,
-        );
-        if (accessToken) {
-          try {
-            const delRes = await fetch(
-              `https://www.googleapis.com/calendar/v3/calendars/primary/events/${eventId}`,
-              {
-                method: "DELETE",
-                headers: {
-                  Authorization: `Bearer ${accessToken}`,
-                },
-              },
-            );
-            if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
-              console.error(
-                "Google Calendar event delete failed during lead deletion:",
-                await delRes.text(),
-              );
-            }
-          } catch (err) {
-            console.error(
-              "Failed to delete Google Calendar event during lead deletion:",
-              err,
-            );
-          }
-        }
+        },
+      ).catch(() => null);
+      if (!accessToken) {
+        return {
+          success: false,
+          error:
+            "Impossible de supprimer l'événement Calendar sans une connexion Google valide.",
+        };
       }
+
+      authorized = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUser.id,
+        expectedRevision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!authorized.ok) {
+        return { error: authorized.error, success: false };
+      }
+      const currentEvent = readCalendarEventMetadata(authorized.lead.notes);
+      if (
+        currentEvent.eventId !== initialEvent.eventId ||
+        (currentEvent.eventOwner && currentEvent.eventOwner !== actingUser.id)
+      ) {
+        return {
+          success: false,
+          error: "La liaison Calendar a changé. Recharge la fiche.",
+        };
+      }
+
+      const delRes = await fetch(
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(currentEvent.eventId)}?sendUpdates=none`,
+        {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          method: "DELETE",
+        },
+      );
+      if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
+        return {
+          success: false,
+          error: parseGoogleError(await delRes.text()),
+        };
+      }
+
+      const postDelete = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUser.id,
+        expectedRevision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!postDelete.ok) {
+        return { error: postDelete.error, success: false };
+      }
+      expectedRevision = postDelete.lead.updated_at;
     }
   }
 
-  const { error } = await supabase
+  const { data: deletedLead, error } = await supabase
     .from("crm_leads")
     .delete()
     .eq("id", leadId)
-    .eq("organization_id", orgId);
+    .eq("organization_id", orgId)
+    .eq("access_scope", initialAccessScope)
+    .eq("updated_at", expectedRevision)
+    .is("archived_at", null)
+    .select("id")
+    .maybeSingle();
 
   if (error) return { success: false, error: error.message };
+  if (!deletedLead) {
+    return {
+      success: false,
+      error:
+        "Le lead a changé pendant la suppression; aucune suppression CRM n'a été confirmée.",
+    };
+  }
 
   revalidatePath("/crm");
   revalidatePath("/dashboard/leads");
@@ -1356,31 +1208,11 @@ export async function fetchCompaniesAction(): Promise<CrmCompanySummary[]> {
   const orgId = await getOrgId();
   if (!orgId) return fallbackCompanies();
 
-  // Run the backfill first to ensure any text-only companies from leads are created & linked
-  try {
-    const { data: leadsData } = await supabase
-      .from("crm_leads")
-      .select("*")
-      .eq("organization_id", orgId);
-    if (leadsData) {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      await backfillLeads(
-        supabase,
-        orgId,
-        leadsData as DbLead[],
-        user?.id ?? null,
-      );
-    }
-  } catch (e) {
-    console.error("Backfill failed in fetchCompaniesAction:", e);
-  }
-
   const { data, error } = await supabase
     .from("crm_companies")
     .select("id, organization_id, name, drive_folder_url")
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("name");
 
   if (error || !data || data.length === 0) return fallbackCompanies();
@@ -1584,6 +1416,7 @@ export async function fetchCompanyDetailAction(companyId: string): Promise<{
   const leads: import("./contracts").CrmLeadSummary[] = (
     (leadsRes.data ?? []) as DbLead[]
   ).map((l) => ({
+    accessScope: l.access_scope,
     id: l.id,
     organizationId: l.organization_id,
     companyId: l.company_id ?? undefined,
@@ -1862,6 +1695,53 @@ export async function deleteContactAction(
 // GROQ — Lead extraction from natural language
 // ────────────────────────────────────────────────────────────
 
+const CRM_AI_MAX_INPUT_CHARACTERS = 4_000;
+const CRM_AI_MAX_NOTES_CHARACTERS = 8_000;
+
+async function resolveCrmAiActor(action: "create" | "read"): Promise<
+  | {
+      actorProfileId: string;
+      organizationId: string;
+      supabase: SupabaseClient;
+      ok: true;
+    }
+  | { error: string; ok: false }
+> {
+  const supabase = await createServerSupabaseClient();
+  if (!supabase) return { error: "Not configured", ok: false };
+  const {
+    data: { user },
+    error: userError,
+  } = await supabase.auth.getUser();
+  if (userError || !user?.id) {
+    return { error: "Not authenticated", ok: false };
+  }
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("organization_id,role")
+    .eq("profile_id", user.id)
+    .limit(1)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !membership?.organization_id ||
+    !role ||
+    !hasPermission(role, { action, module: "crm" })
+  ) {
+    return {
+      error: "Tu n'as pas la permission d'utiliser l'IA CRM.",
+      ok: false,
+    };
+  }
+  return {
+    actorProfileId: user.id,
+    organizationId: membership.organization_id,
+    ok: true,
+    supabase,
+  };
+}
+
 export async function extractLeadFromNaturalTextAction(text: string): Promise<{
   success: boolean;
   extracted?: {
@@ -1881,13 +1761,31 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
   };
   error?: string;
 }> {
+  const actor = await resolveCrmAiActor("create");
+  if (!actor.ok) return { error: actor.error, success: false };
+
+  const normalizedText = typeof text === "string" ? text.trim() : "";
+  if (!normalizedText || normalizedText.length > CRM_AI_MAX_INPUT_CHARACTERS) {
+    return {
+      success: false,
+      error: `Le texte doit contenir entre 1 et ${CRM_AI_MAX_INPUT_CHARACTERS} caractères.`,
+    };
+  }
+  if (containsSensitiveCrmText(normalizedText)) {
+    return {
+      success: false,
+      error:
+        "Les données de recrutement et de stagiaires restent dans NAIA et ne sont pas envoyées à un fournisseur IA externe.",
+    };
+  }
+
   const apiKey = getGroqApiKey();
   if (!apiKey) {
     return { success: false, error: "GROQ_API_KEY not configured" };
   }
 
   try {
-    const extracted = await extractCrmLeadWithGroq(text);
+    const extracted = await extractCrmLeadWithGroq(normalizedText);
     if (!extracted) {
       return { success: false, error: "Could not parse AI response" };
     }
@@ -1902,17 +1800,76 @@ export async function extractLeadFromNaturalTextAction(text: string): Promise<{
 // GROQ — Follow-up draft generation
 // ────────────────────────────────────────────────────────────
 
-export async function generateFollowUpDraftAction(lead: {
-  topic: string;
-  contactName?: string;
-  companyName?: string;
-  notes?: string;
-  nextAction?: string;
-}): Promise<{
+export async function generateFollowUpDraftAction(leadId: string): Promise<{
   success: boolean;
   drafts?: { email: string; whatsapp: string };
   error?: string;
 }> {
+  const actor = await resolveCrmAiActor("read");
+  if (!actor.ok) return { error: actor.error, success: false };
+  if (typeof leadId !== "string" || !leadId.trim() || leadId.length > 128) {
+    return { success: false, error: "Identifiant de lead invalide." };
+  }
+
+  const { data: canonicalLead, error: leadError } = await actor.supabase
+    .from("crm_leads")
+    .select(
+      "id,organization_id,topic,notes,next_action,access_scope,company:company_id(name,access_scope,archived_at),contact:contact_id(name,access_scope,archived_at)",
+    )
+    .eq("id", leadId)
+    .eq("organization_id", actor.organizationId)
+    .eq("access_scope", "organization")
+    .is("archived_at", null)
+    .maybeSingle();
+  const company = Array.isArray(canonicalLead?.company)
+    ? canonicalLead.company[0]
+    : canonicalLead?.company;
+  const contact = Array.isArray(canonicalLead?.contact)
+    ? canonicalLead.contact[0]
+    : canonicalLead?.contact;
+  if (
+    leadError ||
+    !canonicalLead ||
+    canonicalLead.access_scope !== "organization" ||
+    company?.access_scope === "cofounders" ||
+    company?.archived_at ||
+    contact?.access_scope === "cofounders" ||
+    contact?.archived_at
+  ) {
+    return {
+      success: false,
+      error:
+        leadError?.message ??
+        "Lead introuvable ou confidentiel; aucune donnée n'a été envoyée à l'IA.",
+    };
+  }
+
+  const lead = {
+    companyName: company?.name?.trim() || undefined,
+    contactName: contact?.name?.trim() || undefined,
+    nextAction: canonicalLead.next_action?.trim() || undefined,
+    notes: canonicalLead.notes?.trim() || undefined,
+    topic: canonicalLead.topic?.trim(),
+  };
+  if (
+    !lead.topic ||
+    lead.topic.length > 500 ||
+    (lead.notes?.length ?? 0) > CRM_AI_MAX_NOTES_CHARACTERS ||
+    containsSensitiveCrmText(
+      lead.topic,
+      lead.notes,
+      lead.companyName,
+      lead.contactName,
+      lead.nextAction,
+    )
+  ) {
+    return {
+      success: false,
+      error:
+        "Ce lead dépasse les limites IA ou contient des données confidentielles; aucune donnée n'a été envoyée.",
+    };
+  }
+
   const apiKey = getGroqApiKey();
   if (!apiKey) {
     return { success: false, error: "GROQ_API_KEY not configured" };
@@ -1966,9 +1923,13 @@ export async function checkGoogleAuthAction(): Promise<boolean> {
 
   return (
     data.status === "connected" &&
-    !hasForbiddenGoogleDriveScope(
+    attestGoogleScopes(
       Array.isArray(data.scopes) ? (data.scopes as string[]) : [],
-    )
+      Array.isArray(data.scopes) &&
+        data.scopes.includes(GOOGLE_MEETING_NOTE_SCOPE)
+        ? "meeting-notes"
+        : "user",
+    ).ok
   );
 }
 
@@ -1976,6 +1937,18 @@ export async function disconnectGoogleAuthAction(): Promise<{
   success: boolean;
   error?: string;
 }> {
+  // Fail closed for stale clients. Remote OAuth revocation requires the
+  // same-origin, explicitly confirmed `/api/integrations/google/revoke` flow;
+  // deleting only the local row would leave Google's grant active.
+  return {
+    success: false,
+    error: "Déconnexion Google sécurisée requise depuis le flux de révocation.",
+  };
+}
+
+export async function createGoogleDriveFolderAction(
+  leadId: string,
+): Promise<{ success: boolean; folderLink?: string; error?: string }> {
   const supabase = await createServerSupabaseClient();
   if (!supabase) return { success: false, error: "Not configured" };
 
@@ -1985,103 +1958,152 @@ export async function disconnectGoogleAuthAction(): Promise<{
   const {
     data: { user },
   } = await supabase.auth.getUser();
-  if (!user) return { success: false, error: "Not authenticated" };
-
-  // Only the caller's own connection: one click must never disconnect a
-  // colleague's Google account.
-  const { error } = await supabase
-    .from("integration_connections")
-    .delete()
-    .eq("organization_id", orgId)
-    .eq("provider", "google")
-    .eq("connected_by_profile_id", user.id);
-
-  if (error) return { success: false, error: error.message };
-
-  await createSystemNotification({
-    title: "Google déconnecté",
-    description: `Votre intégration Google a été supprimée le ${new Date().toLocaleString("fr-FR")}.`,
-    type: "alert",
-  });
-
-  revalidatePath("/crm");
-  revalidatePath("/dashboard/leads");
-  revalidatePath("/dashboard/settings");
-  revalidatePath("/dashboard/documents");
-
-  return { success: true };
-}
-
-export async function createGoogleDriveFolderAction(
-  leadId: string,
-  companyName: string,
-): Promise<{ success: boolean; folderLink?: string; error?: string }> {
-  const supabase = await createServerSupabaseClient();
-  if (!supabase) return { success: false, error: "Not configured" };
-
-  const orgId = await getOrgId();
-  if (!orgId) return { success: false, error: "Not authenticated" };
-
-  if (!isDriveServiceConfigured()) {
-    return {
-      success: false,
-      error:
-        "Drive service account non configuré (GOOGLE_SERVICE_ACCOUNT_KEY / MAYA_DRIVE_OUTPUT_FOLDER_ID).",
-    };
-  }
+  if (!user?.id) return { success: false, error: "Not authenticated" };
 
   try {
-    const { data: leadRow } = await supabase
-      .from("crm_leads")
-      .select("company_id, drive_folder_url")
-      .eq("id", leadId)
-      .single();
+    let authorized = await resolveAuthorizedDriveLead({
+      actorProfileId: user.id,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { success: false, error: authorized.error };
+    }
 
     // If already has a folder, return it
-    if (leadRow?.drive_folder_url) {
-      return { success: true, folderLink: leadRow.drive_folder_url };
+    if (authorized.leadFolderUrl) {
+      return { success: true, folderLink: authorized.leadFolderUrl };
     }
 
     // The company's stored folder wins over a name lookup (client renames
     // must not spawn a second folder).
-    let folderLink: string | null = null;
-    let folderReused = false;
-    if (leadRow?.company_id) {
-      const { data: companyRow } = await supabase
-        .from("crm_companies")
-        .select("drive_folder_url")
-        .eq("id", leadRow.company_id)
-        .maybeSingle();
-      if (companyRow?.drive_folder_url) {
-        folderLink = companyRow.drive_folder_url;
-        folderReused = true;
-      }
-    }
+    let folderLink = authorized.companyFolderUrl;
+    let folderReused = Boolean(folderLink);
+    const providerCompanyId = authorized.companyId;
 
     // One folder per client (not per lead), created by the org service
     // account inside the cofounders-only "clients" shared-drive folder.
     if (!folderLink) {
-      const clientFolder = await ensureClientDriveFolder(companyName);
+      if (!isDriveServiceConfigured()) {
+        return {
+          success: false,
+          error:
+            "Drive service account non configuré (GOOGLE_SERVICE_ACCOUNT_KEY / MAYA_DRIVE_OUTPUT_FOLDER_ID).",
+        };
+      }
+
+      // Re-read membership, tenant, archive state, scope and the canonical
+      // company immediately before the provider call. The browser-provided
+      // company label is never accepted by this action.
+      authorized = await resolveAuthorizedDriveLead({
+        actorProfileId: user.id,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!authorized.ok) {
+        return { success: false, error: authorized.error };
+      }
+      if (authorized.leadFolderUrl) {
+        return { success: true, folderLink: authorized.leadFolderUrl };
+      }
+      if (authorized.companyId !== providerCompanyId) {
+        return {
+          success: false,
+          error:
+            "Le client lié au lead a changé. Recharge la fiche et réessaie.",
+        };
+      }
+      if (authorized.companyFolderUrl) {
+        folderLink = authorized.companyFolderUrl;
+        folderReused = true;
+      }
+    }
+
+    if (!folderLink) {
+      const clientFolder = await ensureClientDriveFolder(
+        authorized.companyName,
+      );
       folderLink = clientFolder.folderUrl;
       folderReused = !clientFolder.created;
     }
 
-    await supabase
-      .from("crm_leads")
-      .update({
-        drive_folder_url: folderLink,
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", leadId);
+    // The provider call can outlive an authorization change. Revalidate once
+    // more and require checked update results; zero-row writes never become a
+    // false success.
+    authorized = await resolveAuthorizedDriveLead({
+      actorProfileId: user.id,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { success: false, error: authorized.error };
+    }
+    if (authorized.leadFolderUrl) {
+      return { success: true, folderLink: authorized.leadFolderUrl };
+    }
+    if (authorized.companyId !== providerCompanyId) {
+      return {
+        success: false,
+        error: "Le client lié au lead a changé. Recharge la fiche et réessaie.",
+      };
+    }
 
-    if (leadRow?.company_id) {
-      await supabase
-        .from("crm_companies")
-        .update({
-          drive_folder_url: folderLink,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadRow.company_id);
+    folderLink = authorized.companyFolderUrl ?? folderLink;
+    const now = new Date().toISOString();
+    const { data: updatedCompany, error: companyUpdateError } = await supabase
+      .from("crm_companies")
+      .update({ drive_folder_url: folderLink, updated_at: now })
+      .eq("id", authorized.companyId)
+      .eq("organization_id", orgId)
+      .eq("access_scope", "organization")
+      .is("archived_at", null)
+      .select("id")
+      .maybeSingle();
+    if (companyUpdateError || !updatedCompany) {
+      return {
+        success: false,
+        error:
+          companyUpdateError?.message ??
+          "Le client n'est plus modifiable dans ce périmètre.",
+      };
+    }
+
+    const { data: updatedLead, error: leadUpdateError } = await supabase
+      .from("crm_leads")
+      .update({ drive_folder_url: folderLink, updated_at: now })
+      .eq("id", leadId)
+      .eq("organization_id", orgId)
+      .eq("company_id", authorized.companyId)
+      .eq("access_scope", "organization")
+      .is("archived_at", null)
+      .select("id")
+      .maybeSingle();
+    if (leadUpdateError || !updatedLead) {
+      return {
+        success: false,
+        error:
+          leadUpdateError?.message ??
+          "Le lead n'est plus modifiable dans ce périmètre.",
+      };
+    }
+
+    const finalAuthorization = await resolveAuthorizedDriveLead({
+      actorProfileId: user.id,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!finalAuthorization.ok) {
+      return { success: false, error: finalAuthorization.error };
+    }
+    if (finalAuthorization.leadFolderUrl !== folderLink) {
+      return {
+        success: false,
+        error: "Le lien Drive n'a pas été confirmé sur le lead.",
+      };
     }
 
     revalidatePath("/crm");
@@ -2092,7 +2114,7 @@ export async function createGoogleDriveFolderAction(
       title: folderReused
         ? "Dossier client Drive retrouvé"
         : "Dossier client Drive créé",
-      description: `Le dossier client "${companyName.trim()}" est disponible dans le Drive partagé Qarizmi (clients) depuis le ${new Date().toLocaleString("fr-FR")}.`,
+      description: `Le dossier client "${finalAuthorization.companyName}" est disponible dans le Drive partagé Qarizmi (clients) depuis le ${new Date().toLocaleString("fr-FR")}.`,
       type: "success",
       link_url: folderLink,
     });
@@ -2102,6 +2124,95 @@ export async function createGoogleDriveFolderAction(
     const message = err instanceof Error ? err.message : "Unknown error";
     return { success: false, error: message };
   }
+}
+
+type AuthorizedDriveLead = {
+  companyFolderUrl: string | null;
+  companyId: string;
+  companyName: string;
+  leadFolderUrl: string | null;
+  ok: true;
+};
+
+async function resolveAuthorizedDriveLead({
+  actorProfileId,
+  leadId,
+  organizationId,
+  supabase,
+}: {
+  actorProfileId: string;
+  leadId: string;
+  organizationId: string;
+  supabase: any;
+}): Promise<AuthorizedDriveLead | { error: string; ok: false }> {
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("role")
+    .eq("organization_id", organizationId)
+    .eq("profile_id", actorProfileId)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !role ||
+    !hasPermission(role, { action: "update", module: "crm" })
+  ) {
+    return {
+      error: "Tu n'as plus la permission de modifier ce lead.",
+      ok: false,
+    };
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from("crm_leads")
+    .select(
+      "id, company_id, drive_folder_url, access_scope, company:company_id(id, organization_id, name, drive_folder_url, access_scope, archived_at)",
+    )
+    .eq("id", leadId)
+    .eq("organization_id", organizationId)
+    .is("archived_at", null)
+    .maybeSingle();
+  if (leadError || !lead) {
+    return {
+      error: leadError?.message ?? "Lead introuvable dans cette organisation.",
+      ok: false,
+    };
+  }
+  if (!allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)) {
+    return {
+      error: "Les dossiers Drive sont désactivés pour les leads confidentiels.",
+      ok: false,
+    };
+  }
+
+  const relatedCompany = Array.isArray(lead.company)
+    ? lead.company[0]
+    : lead.company;
+  if (
+    !lead.company_id ||
+    !relatedCompany ||
+    relatedCompany.id !== lead.company_id ||
+    relatedCompany.organization_id !== organizationId ||
+    relatedCompany.archived_at ||
+    !allowsCrmProviderSideEffects(
+      relatedCompany.access_scope as CrmAccessScope,
+    ) ||
+    !relatedCompany.name?.trim()
+  ) {
+    return {
+      error:
+        "Le lead n'a pas de client actif et autorisé dans cette organisation.",
+      ok: false,
+    };
+  }
+
+  return {
+    companyFolderUrl: relatedCompany.drive_folder_url ?? null,
+    companyId: relatedCompany.id,
+    companyName: relatedCompany.name.trim(),
+    leadFolderUrl: lead.drive_folder_url ?? null,
+    ok: true,
+  };
 }
 
 /**
@@ -2117,11 +2228,19 @@ async function createMeetingBookedLeadDriveFolder(
   try {
     const { data: lead } = await supabase
       .from("crm_leads")
-      .select("company_id, drive_folder_url, notes, company:company_id(name)")
+      .select(
+        "company_id, drive_folder_url, notes, access_scope, company:company_id(name)",
+      )
       .eq("id", leadId)
+      .is("archived_at", null)
       .maybeSingle();
 
-    if (!lead || lead.drive_folder_url) return;
+    if (
+      !lead ||
+      lead.drive_folder_url ||
+      !allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)
+    )
+      return;
 
     const companyName =
       lead.company?.name?.trim() ||
@@ -2155,9 +2274,17 @@ async function createLeadDriveFolderIfConfigured(
 
   const { data: lead } = await supabase
     .from("crm_leads")
-    .select("company_id")
+    .select("company_id, access_scope")
     .eq("id", leadId)
+    .is("archived_at", null)
     .single();
+
+  if (
+    !lead ||
+    !allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)
+  ) {
+    return;
+  }
 
   // The company's stored folder wins over a name lookup (client renames
   // must not spawn a second folder).
@@ -2193,73 +2320,6 @@ async function createLeadDriveFolderIfConfigured(
         updated_at: new Date().toISOString(),
       })
       .eq("id", lead.company_id);
-  }
-}
-
-async function getOrRefreshGoogleToken(
-  supabase: SupabaseClient,
-  orgId: string,
-  connection: {
-    encrypted_token_reference: string | null;
-    id: string;
-    scopes?: string[] | null;
-  },
-): Promise<string | null> {
-  if (hasForbiddenGoogleDriveScope(connection.scopes)) return null;
-
-  const tokenData = JSON.parse(connection.encrypted_token_reference || "{}");
-  const now = Date.now();
-
-  // If token is valid for more than 5 minutes, use it
-  if (tokenData.expiry_date && tokenData.expiry_date > now + 300000) {
-    return tokenData.access_token;
-  }
-
-  // Token is expired, refresh it
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-
-  if (!clientId || !clientSecret || !tokenData.refresh_token) {
-    return null;
-  }
-
-  try {
-    const res = await fetch("https://oauth2.googleapis.com/token", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: new URLSearchParams({
-        client_id: clientId,
-        client_secret: clientSecret,
-        refresh_token: tokenData.refresh_token,
-        grant_type: "refresh_token",
-      }),
-    });
-
-    if (!res.ok) {
-      return null;
-    }
-
-    const data = await res.json();
-    const updatedTokenData = {
-      access_token: data.access_token,
-      refresh_token: data.refresh_token || tokenData.refresh_token,
-      expiry_date: Date.now() + data.expires_in * 1000,
-    };
-
-    // Update connection credentials in DB
-    await supabase
-      .from("integration_connections")
-      .update({
-        encrypted_token_reference: JSON.stringify(updatedTokenData),
-        updated_at: new Date().toISOString(),
-      })
-      .eq("id", connection.id);
-
-    return data.access_token;
-  } catch {
-    return null;
   }
 }
 
@@ -2465,6 +2525,256 @@ function extractGoogleCalendarEventLink(notes?: string | null) {
   return eventLinkMatch ? eventLinkMatch[1].trim() : undefined;
 }
 
+type CalendarLeadRow = {
+  access_scope: CrmAccessScope;
+  id: string;
+  lead_date: string | null;
+  next_action_date: string | null;
+  notes: string | null;
+  organization_id: string;
+  topic: string;
+  updated_at: string;
+};
+
+type AuthorizedCalendarLead = {
+  actorProfileId: string;
+  connection: {
+    connected_by_profile_id: string | null;
+    id: string;
+    organization_id: string;
+    scopes: string[] | null;
+    status: string;
+  };
+  lead: CalendarLeadRow;
+  ok: true;
+};
+
+type CalendarAuthorizationResult =
+  AuthorizedCalendarLead | { error: string; ok: false };
+
+function readCalendarEventMetadata(notes?: string | null) {
+  const value = notes ?? "";
+  const read = (label: string) =>
+    value
+      .match(new RegExp(`\\[Google Calendar ${label}:\\s*([^\\]]+)\\]`))?.[1]
+      ?.trim() ?? null;
+
+  return {
+    eventId: read("Event ID"),
+    eventLink: read("Event Link"),
+    eventOwner: read("Event Owner"),
+  };
+}
+
+function stripCalendarEventMetadata(notes?: string | null) {
+  return (notes ?? "")
+    .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/g, "")
+    .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/g, "")
+    .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
+    .trim();
+}
+
+function deterministicCalendarEventId({
+  actorProfileId,
+  leadId,
+  organizationId,
+}: {
+  actorProfileId: string;
+  leadId: string;
+  organizationId: string;
+}) {
+  // Google event IDs accept lowercase base32hex characters. Hex is a strict
+  // subset, and a deterministic ID turns retries into reconciliation rather
+  // than duplicate calendar entries.
+  return `naia${createHash("sha256")
+    .update(`${organizationId}:${leadId}:${actorProfileId}`)
+    .digest("hex")
+    .slice(0, 48)}`;
+}
+
+async function resolveAuthorizedCalendarLead({
+  actorProfileId: requestedActorProfileId,
+  expectedRevision,
+  leadId,
+  organizationId,
+  supabase,
+}: {
+  actorProfileId?: string | null;
+  expectedRevision?: string;
+  leadId: string;
+  organizationId: string;
+  supabase: SupabaseClient;
+}): Promise<CalendarAuthorizationResult> {
+  const actorProfileId =
+    requestedActorProfileId ??
+    (await supabase.auth.getUser()).data.user?.id ??
+    null;
+  if (!actorProfileId) {
+    return { error: "Not authenticated", ok: false };
+  }
+
+  const { data: membership, error: membershipError } = await supabase
+    .from("organization_memberships")
+    .select("role")
+    .eq("organization_id", organizationId)
+    .eq("profile_id", actorProfileId)
+    .maybeSingle();
+  const role = membership?.role as OrganizationRole | undefined;
+  if (
+    membershipError ||
+    !role ||
+    !hasPermission(role, { action: "update", module: "crm" })
+  ) {
+    return {
+      error: "Tu n'as plus la permission de synchroniser ce lead.",
+      ok: false,
+    };
+  }
+
+  const { data: lead, error: leadError } = await supabase
+    .from("crm_leads")
+    .select(
+      "id,organization_id,topic,notes,lead_date,next_action_date,access_scope,updated_at",
+    )
+    .eq("id", leadId)
+    .eq("organization_id", organizationId)
+    .is("archived_at", null)
+    .maybeSingle();
+  if (leadError || !lead) {
+    return {
+      error: leadError?.message ?? "Lead introuvable dans cette organisation.",
+      ok: false,
+    };
+  }
+  if (!allowsCrmProviderSideEffects(lead.access_scope as CrmAccessScope)) {
+    return {
+      error:
+        "Synchronisation Calendar désactivée pour les leads confidentiels.",
+      ok: false,
+    };
+  }
+  if (expectedRevision && lead.updated_at !== expectedRevision) {
+    return {
+      error:
+        "Le lead a changé pendant la synchronisation. Recharge la fiche et réessaie.",
+      ok: false,
+    };
+  }
+
+  const { data: connection, error: connectionError } = await supabase
+    .from("integration_connections")
+    .select("id,organization_id,connected_by_profile_id,status,scopes")
+    .eq("organization_id", organizationId)
+    .eq("provider", "google")
+    .eq("connected_by_profile_id", actorProfileId)
+    .limit(1)
+    .maybeSingle();
+  if (
+    connectionError ||
+    !connection ||
+    connection.organization_id !== organizationId ||
+    connection.connected_by_profile_id !== actorProfileId ||
+    connection.status !== "connected" ||
+    !attestGoogleScopes(
+      connection.scopes,
+      connection.scopes?.includes(GOOGLE_MEETING_NOTE_SCOPE)
+        ? "meeting-notes"
+        : "user",
+    ).ok
+  ) {
+    return {
+      error:
+        "Google Workspace non connecté ou autorisations à revalider. Veuillez reconnecter votre compte Google.",
+      ok: false,
+    };
+  }
+
+  return {
+    actorProfileId,
+    connection,
+    lead: lead as CalendarLeadRow,
+    ok: true,
+  };
+}
+
+async function writeCalendarNotes({
+  expectedRevision,
+  leadId,
+  notes,
+  organizationId,
+  supabase,
+}: {
+  expectedRevision: string;
+  leadId: string;
+  notes: string | null;
+  organizationId: string;
+  supabase: SupabaseClient;
+}): Promise<
+  | { notes: string | null; ok: true; updatedAt: string }
+  | { error: string; ok: false }
+> {
+  const updatedAt = new Date().toISOString();
+  const { data, error } = await supabase
+    .from("crm_leads")
+    .update({ notes, updated_at: updatedAt })
+    .eq("id", leadId)
+    .eq("organization_id", organizationId)
+    .eq("access_scope", "organization")
+    .eq("updated_at", expectedRevision)
+    .is("archived_at", null)
+    .select("id,notes,updated_at")
+    .maybeSingle();
+
+  if (error || !data) {
+    return {
+      error:
+        error?.message ??
+        "Le lead a changé avant la confirmation Calendar; aucune liaison n'a été enregistrée.",
+      ok: false,
+    };
+  }
+
+  return {
+    notes: data.notes ?? null,
+    ok: true,
+    updatedAt: data.updated_at ?? updatedAt,
+  };
+}
+
+function buildCalendarEventPayload(lead: CalendarLeadRow) {
+  const leadDateStr = (lead.lead_date ?? lead.next_action_date) as string;
+  const cleanNotes = stripCalendarEventMetadata(lead.notes);
+  const description = `${cleanNotes ? `${cleanNotes}\n\n` : ""}Lien vers le lead dans l'application : ${getAppBaseUrl()}/dashboard/leads`;
+  const isMidnight =
+    !leadDateStr.includes("T") ||
+    leadDateStr.includes("T00:00:00") ||
+    leadDateStr.endsWith(" 00:00:00");
+
+  if (isMidnight) {
+    const startDate = leadDateStr.split("T")[0];
+    const nextDate = new Date(
+      new Date(startDate).getTime() + 24 * 60 * 60 * 1000,
+    )
+      .toISOString()
+      .split("T")[0];
+    return {
+      description,
+      end: { date: nextDate, timeZone: CALENDAR_TIME_ZONE },
+      start: { date: startDate, timeZone: CALENDAR_TIME_ZONE },
+      summary: lead.topic,
+    };
+  }
+
+  const startDate = new Date(leadDateStr);
+  const endDate = new Date(startDate.getTime() + DEFAULT_MEETING_DURATION_MS);
+  return {
+    description,
+    end: { dateTime: endDate.toISOString(), timeZone: CALENDAR_TIME_ZONE },
+    start: { dateTime: startDate.toISOString(), timeZone: CALENDAR_TIME_ZONE },
+    summary: lead.topic,
+  };
+}
+
 async function syncLeadToGoogleCalendar(
   supabase: SupabaseClient,
   orgId: string,
@@ -2472,53 +2782,39 @@ async function syncLeadToGoogleCalendar(
   actorProfileId?: string | null,
 ): Promise<{ success: boolean; error?: string }> {
   try {
-    const { data: lead, error: leadError } = await supabase
-      .from("crm_leads")
-      .select("*")
-      .eq("id", leadId)
-      .eq("organization_id", orgId)
-      .single();
-
-    if (leadError || !lead) {
-      return { success: false, error: "Lead introuvable" };
+    let authorized = await resolveAuthorizedCalendarLead({
+      actorProfileId,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { error: authorized.error, success: false };
     }
-
-    const notesStr = lead.notes || "";
-    const eventIdMatch = notesStr.match(
-      /\[Google Calendar Event ID:\s*([^\]]+)\]/,
-    );
-    const existingEventId = eventIdMatch ? eventIdMatch[1].trim() : null;
-
-    // Fetch the acting user's own google connection: calendar events are
-    // created on the calendar of whoever triggers the sync. Bridges without a
-    // cookie session (for example Slack) inject the acting profile id.
-    const actingUserId =
-      actorProfileId ?? (await supabase.auth.getUser()).data.user?.id ?? null;
-
-    const { data: connection } = actingUserId
-      ? await supabase
-          .from("integration_connections")
-          .select("*")
-          .eq("organization_id", orgId)
-          .eq("provider", "google")
-          .eq("connected_by_profile_id", actingUserId)
-          .limit(1)
-          .maybeSingle()
-      : { data: null };
-
-    if (!connection || connection.status !== "connected") {
+    // Keep the provider-side-effect boundary explicit at the mutation entry
+    // point as well as inside every authorization re-read below.
+    if (!allowsCrmProviderSideEffects(authorized.lead.access_scope)) {
       return {
-        success: false,
         error:
-          "Google Workspace non connecté. Veuillez connecter votre compte Google.",
+          "Synchronisation Calendar désactivée pour les leads confidentiels.",
+        success: false,
       };
     }
 
-    const accessToken = await getOrRefreshGoogleToken(
-      supabase,
-      orgId,
-      connection,
-    );
+    const accessToken = await getGoogleWorkspaceAccessToken(
+      {
+        expectedConnectionId: authorized.connection.id,
+        requiredScopes: [
+          "https://www.googleapis.com/auth/calendar.events",
+          "https://www.googleapis.com/auth/calendar.freebusy",
+        ],
+      },
+      {
+        organizationId: orgId,
+        profileId: authorized.actorProfileId,
+        supabase,
+      },
+    ).catch(() => null);
     if (!accessToken) {
       return {
         success: false,
@@ -2527,15 +2823,28 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
+    authorized = await resolveAuthorizedCalendarLead({
+      actorProfileId: authorized.actorProfileId,
+      expectedRevision: authorized.lead.updated_at,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!authorized.ok) {
+      return { error: authorized.error, success: false };
+    }
+
+    let lead = authorized.lead;
+    const revision = lead.updated_at;
+    let notesStr = lead.notes || "";
+    let eventMetadata = readCalendarEventMetadata(notesStr);
+    let existingEventId = eventMetadata.eventId;
+    const actingUserId = authorized.actorProfileId;
+
     // Calendar events are calendar-scoped: only the member who created the
     // event can update or delete it. Legacy events without an owner tag are
     // assumed to belong to the acting user; a 404 falls back to re-creation.
-    const eventOwnerMatch = notesStr.match(
-      /\[Google Calendar Event Owner:\s*([^\]]+)\]/,
-    );
-    const existingEventOwner = eventOwnerMatch
-      ? eventOwnerMatch[1].trim()
-      : null;
+    const existingEventOwner = eventMetadata.eventOwner;
     const actingUserOwnsEvent =
       !existingEventOwner || existingEventOwner === actingUserId;
 
@@ -2552,38 +2861,76 @@ async function syncLeadToGoogleCalendar(
               "L'événement Calendar de ce lead appartient à un autre membre : il doit le resynchroniser (ou le supprimer) depuis son compte.",
           };
         }
-        try {
-          const delRes = await fetch(
-            `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}`,
-            {
-              method: "DELETE",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-              },
-            },
-          );
+        const preDelete = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: revision,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!preDelete.ok) {
+          return { error: preDelete.error, success: false };
+        }
+        eventMetadata = readCalendarEventMetadata(preDelete.lead.notes);
+        existingEventId = eventMetadata.eventId;
+        if (!existingEventId || eventMetadata.eventOwner !== actingUserId) {
+          return {
+            error: "La liaison Calendar a changé. Recharge la fiche.",
+            success: false,
+          };
+        }
 
-          if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
-            const errText = await delRes.text();
-            console.error("Google Calendar delete failed:", errText);
-          }
+        const delRes = await fetch(
+          `https://www.googleapis.com/calendar/v3/calendars/primary/events/${encodeURIComponent(existingEventId)}?sendUpdates=none`,
+          {
+            headers: { Authorization: `Bearer ${accessToken}` },
+            method: "DELETE",
+          },
+        );
+        if (!delRes.ok && delRes.status !== 404 && delRes.status !== 410) {
+          return {
+            error: parseGoogleError(await delRes.text()),
+            success: false,
+          };
+        }
 
-          // Remove the event ID, owner, and link tags from notes
-          const updatedNotes = notesStr
-            .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/, "")
-            .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/, "")
-            .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/, "")
-            .trim();
-
-          await supabase
-            .from("crm_leads")
-            .update({
-              notes: updatedNotes || null,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", leadId);
-        } catch (err) {
-          console.error("Failed to delete cleared Calendar event:", err);
+        const postDelete = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: revision,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!postDelete.ok) {
+          return { error: postDelete.error, success: false };
+        }
+        const writeResult = await writeCalendarNotes({
+          expectedRevision: revision,
+          leadId,
+          notes: stripCalendarEventMetadata(postDelete.lead.notes) || null,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!writeResult.ok) {
+          return { error: writeResult.error, success: false };
+        }
+        const finalAuthorization = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: writeResult.updatedAt,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (
+          !finalAuthorization.ok ||
+          readCalendarEventMetadata(finalAuthorization.lead.notes).eventId
+        ) {
+          return {
+            error: finalAuthorization.ok
+              ? "La suppression de la liaison Calendar n'a pas été confirmée."
+              : finalAuthorization.error,
+            success: false,
+          };
         }
         return { success: true };
       }
@@ -2593,91 +2940,8 @@ async function syncLeadToGoogleCalendar(
       };
     }
 
-    // Otherwise, create or update the event
-    const leadDateStr = finalLeadDate as string;
-    const isMidnight =
-      !leadDateStr.includes("T") ||
-      leadDateStr.includes("T00:00:00") ||
-      leadDateStr.endsWith(" 00:00:00");
-    const cleanNotes = notesStr
-      .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]/g, "")
-      .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]/g, "")
-      .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]/g, "")
-      .trim();
-
-    const appLink = `${getAppBaseUrl()}/dashboard/leads`;
-    const description = `${cleanNotes ? cleanNotes + "\n\n" : ""}Lien vers le lead dans l'application : ${appLink}`;
-
-    // Fetch attendees (only internal creator/assignee emails to avoid auto-sending notifications to external clients)
-    const attendeeEmailsSet = new Set<string>();
-
-    const attendeeProfileIds = [
-      lead.created_by_profile_id,
-      lead.assigned_to_profile_id,
-    ].filter(Boolean) as string[];
-
-    if (attendeeProfileIds.length > 0) {
-      const { data: profiles } = await supabase
-        .from("profiles")
-        .select("email")
-        .in("id", attendeeProfileIds);
-      if (profiles) {
-        profiles.forEach((p) => {
-          if (p.email) {
-            attendeeEmailsSet.add(p.email.trim());
-          }
-        });
-      }
-    }
-
-    const attendees = Array.from(attendeeEmailsSet).map((email) => ({ email }));
-
-    let eventPayload: {
-      summary: string;
-      description: string;
-      start: { date?: string; dateTime?: string; timeZone?: string };
-      end: { date?: string; dateTime?: string; timeZone?: string };
-      attendees?: { email: string }[];
-    };
-    if (isMidnight) {
-      const startDateStr = leadDateStr.split("T")[0];
-      const startDay = new Date(startDateStr);
-      const nextDay = new Date(startDay.getTime() + 24 * 60 * 60 * 1000);
-      const endDateStr = nextDay.toISOString().split("T")[0];
-      eventPayload = {
-        summary: lead.topic,
-        description,
-        start: {
-          date: startDateStr,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-        end: {
-          date: endDateStr,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-        attendees: attendees.length > 0 ? attendees : undefined,
-      };
-    } else {
-      const startDate = new Date(leadDateStr);
-      const startIso = startDate.toISOString();
-      const endDate = new Date(
-        startDate.getTime() + DEFAULT_MEETING_DURATION_MS,
-      );
-      const endIso = endDate.toISOString();
-      eventPayload = {
-        summary: lead.topic,
-        description,
-        start: {
-          dateTime: startIso,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-        end: {
-          dateTime: endIso,
-          timeZone: CALENDAR_TIME_ZONE,
-        },
-        attendees: attendees.length > 0 ? attendees : undefined,
-      };
-    }
+    // Otherwise, create or update the event from the latest authorized row.
+    let eventPayload = buildCalendarEventPayload(lead);
 
     if (
       !existingEventId &&
@@ -2709,6 +2973,23 @@ async function syncLeadToGoogleCalendar(
       }
     }
 
+    const preMutation = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: revision,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!preMutation.ok) {
+      return { error: preMutation.error, success: false };
+    }
+    authorized = preMutation;
+    lead = authorized.lead;
+    notesStr = lead.notes ?? "";
+    eventMetadata = readCalendarEventMetadata(notesStr);
+    existingEventId = eventMetadata.eventId;
+    eventPayload = buildCalendarEventPayload(lead);
+
     if (existingEventId && !actingUserOwnsEvent) {
       // No-op instead of creating a duplicate event on this user's calendar:
       // the original stays valid on its owner's calendar and keeps its tags.
@@ -2721,9 +3002,12 @@ async function syncLeadToGoogleCalendar(
 
     if (existingEventId) {
       const updateRes = await fetch(
-        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}?sendUpdates=all`,
+        `https://www.googleapis.com/calendar/v3/calendars/primary/events/${existingEventId}?sendUpdates=none`,
         {
-          method: "PUT",
+          // PATCH changes only the fields NAIA manages. Using a full PUT with
+          // an attendee-free payload would silently remove pre-existing
+          // attendees from legacy events.
+          method: "PATCH",
           headers: {
             Authorization: `Bearer ${accessToken}`,
             "Content-Type": "application/json",
@@ -2734,23 +3018,63 @@ async function syncLeadToGoogleCalendar(
 
       if (updateRes.ok) {
         const event = await updateRes.json();
-        const htmlLink = event.htmlLink;
-        if (!notesStr.includes("[Google Calendar Event Link:")) {
-          const cleanLinkNotes = notesStr
-            .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
-            .trim();
+        const postUpdate = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: revision,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!postUpdate.ok) {
+          return { error: postUpdate.error, success: false };
+        }
 
-          const updatedNotes = cleanLinkNotes
-            ? `${cleanLinkNotes}\n[Google Calendar Event Link: ${htmlLink}]`
-            : `[Google Calendar Event Link: ${htmlLink}]`;
+        const htmlLink =
+          typeof event.htmlLink === "string" && event.htmlLink.trim()
+            ? event.htmlLink.trim()
+            : readCalendarEventMetadata(postUpdate.lead.notes).eventLink;
+        if (!htmlLink) {
+          return {
+            error: "Google Calendar n'a pas confirmé le lien de l'événement.",
+            success: false,
+          };
+        }
 
-          await supabase
-            .from("crm_leads")
-            .update({
-              notes: updatedNotes,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", leadId);
+        const cleanNotes = stripCalendarEventMetadata(postUpdate.lead.notes);
+        const eventTags = `[Google Calendar Event ID: ${existingEventId}]\n[Google Calendar Event Owner: ${actingUserId}]\n[Google Calendar Event Link: ${htmlLink}]`;
+        const writeResult = await writeCalendarNotes({
+          expectedRevision: revision,
+          leadId,
+          notes: cleanNotes ? `${cleanNotes}\n${eventTags}` : eventTags,
+          organizationId: orgId,
+          supabase,
+        });
+        if (!writeResult.ok) {
+          return { error: writeResult.error, success: false };
+        }
+
+        const finalAuthorization = await resolveAuthorizedCalendarLead({
+          actorProfileId: actingUserId,
+          expectedRevision: writeResult.updatedAt,
+          leadId,
+          organizationId: orgId,
+          supabase,
+        });
+        const finalMetadata = finalAuthorization.ok
+          ? readCalendarEventMetadata(finalAuthorization.lead.notes)
+          : null;
+        if (
+          !finalAuthorization.ok ||
+          finalMetadata?.eventId !== existingEventId ||
+          finalMetadata.eventOwner !== actingUserId ||
+          finalMetadata.eventLink !== htmlLink
+        ) {
+          return {
+            error: finalAuthorization.ok
+              ? "La liaison Calendar finale n'a pas été confirmée."
+              : finalAuthorization.error,
+            success: false,
+          };
         }
         return { success: true };
       }
@@ -2765,50 +3089,191 @@ async function syncLeadToGoogleCalendar(
       // The event vanished from this calendar: fall through and recreate it.
     }
 
-    const createRes = await fetch(
-      "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=all",
-      {
-        method: "POST",
+    const preCreate = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: revision,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!preCreate.ok) {
+      return { error: preCreate.error, success: false };
+    }
+    authorized = preCreate;
+    lead = authorized.lead;
+    notesStr = lead.notes ?? "";
+    eventPayload = buildCalendarEventPayload(lead);
+
+    const deterministicEventId = deterministicCalendarEventId({
+      actorProfileId: actingUserId,
+      leadId,
+      organizationId: orgId,
+    });
+    const eventUrl = `https://www.googleapis.com/calendar/v3/calendars/primary/events/${deterministicEventId}`;
+    const reconcileExistingDeterministicEvent = async (): Promise<
+      | { error: string; ok: false }
+      | { event: Record<string, unknown>; ok: true }
+    > => {
+      const reconciliationAuthorization = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUserId,
+        expectedRevision: revision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!reconciliationAuthorization.ok) {
+        return { error: reconciliationAuthorization.error, ok: false };
+      }
+      const patchRes = await fetch(`${eventUrl}?sendUpdates=none`, {
+        body: JSON.stringify(
+          buildCalendarEventPayload(reconciliationAuthorization.lead),
+        ),
         headers: {
           Authorization: `Bearer ${accessToken}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify(eventPayload),
-      },
-    );
-
-    if (createRes.ok) {
-      const event = await createRes.json();
-      const newEventId = event.id;
-      const htmlLink = event.htmlLink;
-
-      const cleanIdNotes = notesStr
-        .replace(/\[Google Calendar Event ID:\s*([^\]]+)\]\n?/g, "")
-        .replace(/\[Google Calendar Event Owner:\s*([^\]]+)\]\n?/g, "")
-        .replace(/\[Google Calendar Event Link:\s*([^\]]+)\]\n?/g, "")
-        .trim();
-
-      const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId ?? "unknown"}]\n[Google Calendar Event Link: ${htmlLink}]`;
-      const updatedNotes = cleanIdNotes
-        ? `${cleanIdNotes}\n${eventTags}`
-        : eventTags;
-
-      await supabase
-        .from("crm_leads")
-        .update({
-          notes: updatedNotes,
-          updated_at: new Date().toISOString(),
-        })
-        .eq("id", leadId);
-
-      return { success: true };
-    } else {
-      const errText = await createRes.text();
+        method: "PATCH",
+      });
+      if (!patchRes.ok) {
+        return { error: parseGoogleError(await patchRes.text()), ok: false };
+      }
       return {
+        event: (await patchRes.json()) as Record<string, unknown>,
+        ok: true,
+      };
+    };
+    const existingDeterministicEvent = await fetch(eventUrl, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+      method: "GET",
+    });
+
+    let event: Record<string, unknown>;
+    if (existingDeterministicEvent.ok) {
+      const reconciliation = await reconcileExistingDeterministicEvent();
+      if (!reconciliation.ok) {
+        return { error: reconciliation.error, success: false };
+      }
+      event = reconciliation.event;
+    } else if (
+      existingDeterministicEvent.status === 404 ||
+      existingDeterministicEvent.status === 410
+    ) {
+      const insertAuthorization = await resolveAuthorizedCalendarLead({
+        actorProfileId: actingUserId,
+        expectedRevision: revision,
+        leadId,
+        organizationId: orgId,
+        supabase,
+      });
+      if (!insertAuthorization.ok) {
+        return { error: insertAuthorization.error, success: false };
+      }
+      eventPayload = buildCalendarEventPayload(insertAuthorization.lead);
+      const createRes = await fetch(
+        "https://www.googleapis.com/calendar/v3/calendars/primary/events?sendUpdates=none",
+        {
+          body: JSON.stringify({ id: deterministicEventId, ...eventPayload }),
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            "Content-Type": "application/json",
+          },
+          method: "POST",
+        },
+      );
+      if (createRes.status === 409) {
+        const concurrentEvent = await fetch(eventUrl, {
+          headers: { Authorization: `Bearer ${accessToken}` },
+          method: "GET",
+        });
+        if (!concurrentEvent.ok) {
+          return {
+            error: parseGoogleError(await concurrentEvent.text()),
+            success: false,
+          };
+        }
+        const reconciliation = await reconcileExistingDeterministicEvent();
+        if (!reconciliation.ok) {
+          return { error: reconciliation.error, success: false };
+        }
+        event = reconciliation.event;
+      } else if (!createRes.ok) {
+        return {
+          error: parseGoogleError(await createRes.text()),
+          success: false,
+        };
+      } else {
+        event = (await createRes.json()) as Record<string, unknown>;
+      }
+    } else {
+      return {
+        error: parseGoogleError(await existingDeterministicEvent.text()),
         success: false,
-        error: parseGoogleError(errText),
       };
     }
+
+    const newEventId = typeof event.id === "string" ? event.id.trim() : "";
+    const htmlLink =
+      typeof event.htmlLink === "string" ? event.htmlLink.trim() : "";
+    if (newEventId !== deterministicEventId || !htmlLink) {
+      return {
+        error: "Google Calendar n'a pas confirmé l'événement déterministe.",
+        success: false,
+      };
+    }
+
+    const postCreate = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: revision,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!postCreate.ok) {
+      return { error: postCreate.error, success: false };
+    }
+
+    const cleanIdNotes = stripCalendarEventMetadata(postCreate.lead.notes);
+    const eventTags = `[Google Calendar Event ID: ${newEventId}]\n[Google Calendar Event Owner: ${actingUserId}]\n[Google Calendar Event Link: ${htmlLink}]`;
+    const updatedNotes = cleanIdNotes
+      ? `${cleanIdNotes}\n${eventTags}`
+      : eventTags;
+
+    const writeResult = await writeCalendarNotes({
+      expectedRevision: revision,
+      leadId,
+      notes: updatedNotes,
+      organizationId: orgId,
+      supabase,
+    });
+    if (!writeResult.ok) {
+      return { error: writeResult.error, success: false };
+    }
+
+    const finalAuthorization = await resolveAuthorizedCalendarLead({
+      actorProfileId: actingUserId,
+      expectedRevision: writeResult.updatedAt,
+      leadId,
+      organizationId: orgId,
+      supabase,
+    });
+    const finalMetadata = finalAuthorization.ok
+      ? readCalendarEventMetadata(finalAuthorization.lead.notes)
+      : null;
+    if (
+      !finalAuthorization.ok ||
+      finalMetadata?.eventId !== newEventId ||
+      finalMetadata?.eventOwner !== actingUserId ||
+      finalMetadata?.eventLink !== htmlLink
+    ) {
+      return {
+        error: finalAuthorization.ok
+          ? "La liaison Calendar finale n'a pas été confirmée."
+          : finalAuthorization.error,
+        success: false,
+      };
+    }
+
+    return { success: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Erreur inconnue";
     console.error("Error syncing to Google Calendar:", err);
@@ -2846,6 +3311,7 @@ export async function syncLeadToGoogleCalendarAction(leadId: string): Promise<{
   if (leadData) {
     const row = leadData as DbLead;
     updatedLead = {
+      accessScope: row.access_scope,
       id: row.id,
       organizationId: row.organization_id,
       companyId: row.company_id ?? undefined,
@@ -2881,76 +3347,14 @@ export async function fetchCategoriesAction(): Promise<CrmCategory[]> {
 
   const { data, error } = await supabase
     .from("crm_categories")
-    .select("*")
+    .select("id, organization_id, name, status_key, color, position")
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("position", { ascending: true });
 
   if (error) {
     console.error("Error fetching CRM categories:", error);
     return [];
-  }
-
-  if (data.length === 0) {
-    // Seed default categories
-    const defaults = [
-      {
-        name: "À contacter",
-        status_key: "lead-to-contact",
-        color: "blue",
-        position: 1,
-      },
-      { name: "Contacté", status_key: "contacted", color: "gray", position: 2 },
-      {
-        name: "À relancer",
-        status_key: "to-follow-up",
-        color: "yellow",
-        position: 3,
-      },
-      {
-        name: "Meeting fixé",
-        status_key: "meeting-booked",
-        color: "indigo",
-        position: 4,
-      },
-      {
-        name: "Propale envoyée",
-        status_key: "proposal-sent",
-        color: "emerald",
-        position: 5,
-      },
-      { name: "Gagné ✓", status_key: "won", color: "teal", position: 6 },
-      { name: "Dead end", status_key: "dead-end", color: "red", position: 7 },
-    ];
-
-    const toInsert = defaults.map((d) => ({
-      organization_id: orgId,
-      name: d.name,
-      status_key: d.status_key,
-      color: d.color,
-      position: d.position,
-    }));
-
-    const { data: insertedData, error: insertError } = await supabase
-      .from("crm_categories")
-      .upsert(toInsert, {
-        onConflict: "organization_id,status_key",
-        ignoreDuplicates: false,
-      })
-      .select();
-
-    if (insertError || !insertedData) {
-      console.error("Error seeding default categories:", insertError);
-      return [];
-    }
-
-    return insertedData.map((row) => ({
-      id: row.id,
-      organizationId: row.organization_id,
-      name: row.name,
-      statusKey: row.status_key,
-      color: row.color,
-      position: row.position,
-    }));
   }
 
   return data.map((row) => ({
@@ -3205,8 +3609,9 @@ export async function fetchTagsAction(): Promise<CrmTag[]> {
 
   const { data, error } = await supabase
     .from("crm_tags")
-    .select("*")
+    .select("id, organization_id, name, color")
     .eq("organization_id", orgId)
+    .is("archived_at", null)
     .order("name");
 
   if (error || !data) return [];

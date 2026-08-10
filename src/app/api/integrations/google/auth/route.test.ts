@@ -33,12 +33,11 @@ describe("Google integration auth route", () => {
     const authUrl = new URL(location ?? "");
     const scopes = authUrl.searchParams.get("scope")?.split(" ") ?? [];
 
-    expect(authUrl.searchParams.get("include_granted_scopes")).toBe("true");
+    expect(authUrl.searchParams.has("include_granted_scopes")).toBe(false);
     expect(scopes).toEqual([
       "https://www.googleapis.com/auth/calendar.events",
       "https://www.googleapis.com/auth/calendar.freebusy",
       "https://www.googleapis.com/auth/gmail.readonly",
-      "https://www.googleapis.com/auth/gmail.send",
     ]);
     expect(scopes).not.toContain(
       "https://www.googleapis.com/auth/drive.meet.readonly",

@@ -27,11 +27,16 @@ describe("NAIA daily brief cron route", () => {
     vi.clearAllMocks();
   });
 
-  it("rejects missing or invalid authorization without loading private data", async () => {
+  it("rejects missing authorization without loading private data", async () => {
     const missing = await GET(request());
-    const invalid = await GET(request("wrong-secret"));
 
     expect(missing.status).toBe(401);
+    expect(mocks.runConfiguredDailyBriefs).not.toHaveBeenCalled();
+  });
+
+  it("rejects a wrong Bearer secret without running the brief", async () => {
+    const invalid = await GET(request("wrong-secret"));
+
     expect(invalid.status).toBe(401);
     expect(mocks.runConfiguredDailyBriefs).not.toHaveBeenCalled();
   });

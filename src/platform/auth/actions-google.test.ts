@@ -45,7 +45,7 @@ describe("Google login scopes", () => {
     vi.unstubAllGlobals();
   });
 
-  it("asks Google to retain previously granted incremental scopes", async () => {
+  it("requests only the ordinary least-privilege scopes without merging grants", async () => {
     const formData = new FormData();
     formData.set("redirectedFrom", "/meetings");
 
@@ -53,13 +53,15 @@ describe("Google login scopes", () => {
       "REDIRECT:https://accounts.google.com/o/oauth2/v2/auth?state=test",
     );
 
-    expect(mocks.signInWithOAuth).toHaveBeenCalledWith({
-      options: expect.objectContaining({
-        queryParams: expect.objectContaining({
-          include_granted_scopes: "true",
-        }),
-      }),
-      provider: "google",
-    });
+    const options = mocks.signInWithOAuth.mock.calls[0]?.[0]?.options;
+    expect(options.queryParams).not.toHaveProperty("include_granted_scopes");
+    expect(options.scopes).toBe(
+      [
+        "https://www.googleapis.com/auth/calendar.events",
+        "https://www.googleapis.com/auth/calendar.freebusy",
+        "https://www.googleapis.com/auth/gmail.readonly",
+      ].join(" "),
+    );
+    expect(options.scopes).not.toContain("gmail.send");
   });
 });

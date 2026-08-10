@@ -7,7 +7,6 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   createLeadAction,
   extractLeadFromNaturalTextAction,
-  updateLeadStatusAction,
   type CrmActionContext,
 } from "@/features/crm/actions";
 import {
@@ -62,8 +61,6 @@ import {
 // and channels that store drafts server-side (WhatsApp) pass their own
 // maxLength to planBridgeCommand instead of inheriting the Slack constraint.
 export const SLACK_COMMAND_MAX_LENGTH = 500;
-
-const CONSUMED_TOKEN_RETENTION_MS = 10 * 60 * 1000;
 
 export type NaiaBridgeUser = {
   email: string;
@@ -150,7 +147,7 @@ export async function planBridgeCommand(
   // The commandHash inside the approval tokens is computed on this same
   // truncated string, so HMAC verification stays consistent per channel.
   const cleanCommand = normalizeBridgeCommand(command).slice(0, maxLength);
-  const crmLeads = await fetchBridgeLeads(user.organizationId);
+  const crmLeads = await fetchBridgeLeads(user);
   const supabase = createServiceRoleSupabaseClient();
   const { mode, result } = await planNaiaAssistant({
     actor: {
@@ -173,7 +170,12 @@ export async function planBridgeCommand(
   const actions = await prepareBridgeActions(cleanCommand, result.actions);
 
   return {
-    actions: actions.map((action) => signAction(action, cleanCommand)),
+    actions: actions.map((action) =>
+      signAction(action, cleanCommand, {
+        actorProfileId: user.profileId,
+        organizationId: user.organizationId,
+      }),
+    ),
     agentName: result.agent.name,
     command: cleanCommand,
     mode,
@@ -196,7 +198,10 @@ export async function executeBridgeAction(
 ): Promise<NaiaBridgeExecution> {
   // The token is the source of truth: it embeds the exact action the user
   // approved, so execution runs the decoded action, never a re-derived one.
-  const action = verifyApprovalToken(approvalToken, actionId, command);
+  const action = verifyApprovalToken(approvalToken, actionId, command, {
+    actorProfileId: user.profileId,
+    organizationId: user.organizationId,
+  });
   if (!action) {
     return {
       message:
@@ -213,25 +218,37 @@ export async function executeBridgeAction(
     };
   }
 
+  if (action.kind === "crm.updateLeadStatus") {
+    const status = coerceStatus(action.payload.status);
+    if (!status) {
+      return { message: "Statut CRM invalide.", success: false };
+    }
+
+    return executeBridgeLeadStatusAction({
+      action,
+      approvalToken,
+      status,
+      supabase,
+      user,
+    });
+  }
+
   // Single-use claim BEFORE any side effect: the first click inserts the
   // token hash, any concurrent or repeated click fails on the primary key.
-  const claim = await claimApprovalToken(
-    supabase,
-    approvalToken,
-    user.organizationId,
-  );
+  const claim = await claimApprovalToken(supabase, approvalToken, user);
   if (!claim.claimed) {
     return { message: claim.message, success: false };
   }
 
+  const executionUser = claim.user;
   const crmContext: CrmActionContext = {
-    actorProfileId: user.profileId,
-    organizationId: user.organizationId,
+    actorProfileId: executionUser.profileId,
+    organizationId: executionUser.organizationId,
     supabase,
   };
   const googleContext = {
-    organizationId: user.organizationId,
-    profileId: user.profileId,
+    organizationId: executionUser.organizationId,
+    profileId: executionUser.profileId,
     supabase,
   };
 
@@ -288,73 +305,12 @@ export async function executeBridgeAction(
     }
   }
 
-  if (action.kind === "crm.updateLeadStatus") {
-    const denied = requireCrmPermission(user, "update");
-    if (denied) return denied;
-
-    const status = coerceStatus(action.payload.status);
-    if (!status) {
-      return { message: "Statut CRM invalide.", success: false };
-    }
-
-    const response = await updateLeadStatusAction(
-      action.payload.leadId,
-      status,
-      crmContext,
-    );
-
-    return {
-      message: response.success
-        ? `Statut CRM appliqué pour "${action.payload.leadLabel}".`
-        : (response.error ?? "Action CRM impossible."),
-      success: response.success,
-    };
-  }
-
   if (action.kind === "crm.createLead") {
-    const denied = requireCrmPermission(user, "create");
-    if (denied) return denied;
-
-    const draft = action.payload;
-    const status = coerceStatus(draft.status) ?? "lead-to-contact";
-    const topic = (draft.topic ?? "").trim().slice(0, 160);
-    if (topic.length < 3) {
-      return { message: "Brouillon de lead CRM invalide.", success: false };
-    }
-
-    const response = await createLeadAction(
-      {
-        companyName: draft.companyName,
-        contactEmail: draft.contactEmail,
-        contactJobTitle: draft.contactJobTitle,
-        contactLinkedinUrl: draft.contactLinkedinUrl,
-        contactName: draft.contactName,
-        contactPhone: draft.contactPhone,
-        leadDate: draft.leadDate,
-        nextAction: draft.nextAction?.slice(0, 280),
-        notes: draft.notes,
-        source: draft.source || "NAIA",
-        status,
-        topic,
-      },
+    return executeClaimedCrmCreateAction({
+      action,
       crmContext,
-    );
-
-    const calendarNote =
-      response.success && draft.leadDate
-        ? response.calendarSynced
-          ? response.calendarLink
-            ? ` Adam a créé l'événement Calendar: ${response.calendarLink}`
-            : " Adam a vérifié Google Calendar."
-          : ` Adam n'a pas pu créer l'événement Calendar: ${response.calendarError ?? "connexion Google à vérifier"}`
-        : "";
-
-    return {
-      message: response.success
-        ? `Lead CRM créé: "${topic}".${calendarNote}`
-        : (response.error ?? "Création du lead impossible."),
-      success: response.success,
-    };
+      executionUser,
+    });
   }
 
   if (action.kind === "calendar.scheduleMeeting") {
@@ -406,42 +362,208 @@ export async function executeBridgeAction(
   };
 }
 
+/**
+ * Executes a Slack-edited lead with the original approval token. The modal
+ * payload is covered by Slack's verified request signature, while the
+ * original HMAC token binds the capability, actor and organization. Claiming
+ * that original token before execution makes every modal copy and concurrent
+ * resubmission contend on the same database primary key; no derived token is
+ * minted, so editing cannot manufacture additional single-use approvals.
+ */
+export async function executeEditedBridgeLeadAction(
+  user: NaiaBridgeUser,
+  originalDraft: {
+    actionId: string;
+    approvalToken: string;
+    command: string;
+  },
+  editedDraft: CrmLeadDraft,
+): Promise<NaiaBridgeExecution> {
+  const originalAction = verifyApprovalToken(
+    originalDraft.approvalToken,
+    originalDraft.actionId,
+    originalDraft.command,
+    {
+      actorProfileId: user.profileId,
+      organizationId: user.organizationId,
+    },
+  );
+  if (originalAction?.kind !== "crm.createLead") {
+    return {
+      message:
+        "Jeton d'approbation invalide ou expiré (5 min). Renvoie ta commande à NAIA pour régénérer l'action.",
+      success: false,
+    };
+  }
+
+  const supabase = createServiceRoleSupabaseClient();
+  if (!supabase) {
+    return {
+      message: "Supabase service role non configuré côté serveur.",
+      success: false,
+    };
+  }
+
+  const claim = await claimApprovalToken(
+    supabase,
+    originalDraft.approvalToken,
+    user,
+  );
+  if (!claim.claimed) {
+    return { message: claim.message, success: false };
+  }
+
+  const executionUser = claim.user;
+  return executeClaimedCrmCreateAction({
+    action: { ...originalAction, payload: editedDraft },
+    crmContext: {
+      actorProfileId: executionUser.profileId,
+      organizationId: executionUser.organizationId,
+      supabase,
+    },
+    executionUser,
+  });
+}
+
+async function executeClaimedCrmCreateAction({
+  action,
+  crmContext,
+  executionUser,
+}: {
+  action: Extract<NaiaActionDraft, { kind: "crm.createLead" }>;
+  crmContext: CrmActionContext;
+  executionUser: NaiaBridgeUser;
+}): Promise<NaiaBridgeExecution> {
+  const denied = requireCrmPermission(executionUser, "create");
+  if (denied) return denied;
+
+  const draft = action.payload;
+  const status = coerceStatus(draft.status) ?? "lead-to-contact";
+  const topic = (draft.topic ?? "").trim().slice(0, 160);
+  if (topic.length < 3) {
+    return { message: "Brouillon de lead CRM invalide.", success: false };
+  }
+
+  const response = await createLeadAction(
+    {
+      companyName: draft.companyName,
+      contactEmail: draft.contactEmail,
+      contactJobTitle: draft.contactJobTitle,
+      contactLinkedinUrl: draft.contactLinkedinUrl,
+      contactName: draft.contactName,
+      contactPhone: draft.contactPhone,
+      leadDate: draft.leadDate,
+      nextAction: draft.nextAction?.slice(0, 280),
+      notes: draft.notes,
+      source: draft.source || "NAIA",
+      status,
+      tagNames: draft.tags,
+      topic,
+    },
+    crmContext,
+  );
+
+  const calendarNote =
+    response.success && draft.leadDate
+      ? response.calendarSynced
+        ? response.calendarLink
+          ? ` Adam a créé l'événement Calendar: ${response.calendarLink}`
+          : " Adam a vérifié Google Calendar."
+        : ` Adam n'a pas pu créer l'événement Calendar: ${response.calendarError ?? "connexion Google à vérifier"}`
+      : "";
+
+  return {
+    message: response.success
+      ? `Lead CRM créé: "${topic}".${calendarNote}`
+      : (response.error ?? "Création du lead impossible."),
+    success: response.success,
+  };
+}
+
 async function claimApprovalToken(
   supabase: SupabaseClient,
   approvalToken: string,
-  organizationId: string,
-): Promise<{ claimed: true } | { claimed: false; message: string }> {
+  user: NaiaBridgeUser,
+): Promise<
+  { claimed: true; user: NaiaBridgeUser } | { claimed: false; message: string }
+> {
   const tokenHash = createHash("sha256").update(approvalToken).digest("hex");
 
-  // Opportunistic purge: consumed rows are useless once the 5 minute token
-  // TTL has passed; 10 minutes keeps a safety margin for clock skew.
-  await supabase
-    .from("naia_consumed_action_tokens")
-    .delete()
-    .lt(
-      "consumed_at",
-      new Date(Date.now() - CONSUMED_TOKEN_RETENTION_MS).toISOString(),
-    );
-
-  const { error } = await supabase.from("naia_consumed_action_tokens").insert({
-    organization_id: organizationId,
-    token_hash: tokenHash,
+  // This RPC re-reads auth.users, membership role, organization, and the
+  // optional CRM lead's current scope/archived state in the same transaction
+  // that claims the token. Service-role execution therefore never trusts the
+  // actor or CRM snapshot captured during planning.
+  const { data, error } = await supabase.rpc("claim_crm_bridge_action", {
+    requested_actor_email: user.email,
+    requested_actor_profile_id: user.profileId,
+    requested_crm_lead_id: null,
+    requested_organization_id: user.organizationId,
+    requested_token_hash: tokenHash,
   });
 
-  if (!error) {
-    return { claimed: true };
+  const claimRow = Array.isArray(data) ? data[0] : data;
+  const freshRole = claimRow?.actor_role as OrganizationRole | undefined;
+
+  if (!error && freshRole && organizationRoles.includes(freshRole)) {
+    return { claimed: true, user: { ...user, role: freshRole } };
   }
 
-  if (error.code === "23505") {
+  if (error?.code === "23505") {
     return { claimed: false, message: "Cette action a déjà été validée." };
   }
 
-  // Fail closed: without a registered claim the action must not run.
-  console.error("NAIA bridge approval token claim failed:", error);
+  // Fail closed: stale identity, membership, confidentiality, archive state,
+  // or an unavailable claim ledger all prevent execution.
+  console.error("NAIA bridge approval token validation/claim failed:", error);
   return {
     claimed: false,
     message:
       "Validation impossible pour le moment (enregistrement du jeton). Réessaie dans un instant.",
+  };
+}
+
+async function executeBridgeLeadStatusAction({
+  action,
+  approvalToken,
+  status,
+  supabase,
+  user,
+}: {
+  action: Extract<NaiaActionDraft, { kind: "crm.updateLeadStatus" }>;
+  approvalToken: string;
+  status: CrmLeadStatus;
+  supabase: SupabaseClient;
+  user: NaiaBridgeUser;
+}): Promise<NaiaBridgeExecution> {
+  const tokenHash = createHash("sha256").update(approvalToken).digest("hex");
+  const { data, error } = await supabase.rpc(
+    "execute_crm_bridge_lead_status_action",
+    {
+      requested_actor_email: user.email,
+      requested_actor_profile_id: user.profileId,
+      requested_crm_lead_id: action.payload.leadId,
+      requested_organization_id: user.organizationId,
+      requested_status: status,
+      requested_token_hash: tokenHash,
+    },
+  );
+
+  if (!error && data) {
+    return {
+      message: `Statut CRM appliqué pour "${action.payload.leadLabel}".`,
+      success: true,
+    };
+  }
+
+  if (error?.code === "23505") {
+    return { message: "Cette action a déjà été validée.", success: false };
+  }
+
+  console.error("NAIA bridge atomic CRM status execution failed:", error);
+  return {
+    message:
+      "Action CRM refusée : le compte, le rôle, le périmètre ou le lead a changé depuis la préparation.",
+    success: false,
   };
 }
 
@@ -460,30 +582,72 @@ function requireCrmPermission(
 }
 
 async function fetchBridgeLeads(
-  organizationId: string,
+  user: NaiaBridgeUser,
 ): Promise<CrmLeadSummary[]> {
   const supabase = createServiceRoleSupabaseClient();
   if (!supabase) return [];
 
-  const { data, error } = await supabase
+  // Service-role clients bypass RLS. Re-check the actor against the exact
+  // auth.users cofounder allowlist before permitting confidential rows. Any
+  // missing migration/RPC/error fails closed to an empty CRM context.
+  const { data: isCofounder, error: cofounderError } = await supabase.rpc(
+    "crm_bridge_actor_is_cofounder",
+    {
+      target_organization_id: user.organizationId,
+      target_profile_id: user.profileId,
+    },
+  );
+  if (cofounderError) {
+    console.error(
+      "NAIA bridge CRM confidentiality check failed:",
+      cofounderError,
+    );
+    return [];
+  }
+
+  let query = supabase
     .from("crm_leads")
     .select(
-      `id,organization_id,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
-      company:company_id(id,name),
-      contact:contact_id(id,name,email,phone)`,
+      `id,organization_id,access_scope,topic,source,status,notes,next_action,lead_date,next_action_date,created_at,updated_at,
+      company:company_id(id,organization_id,name,access_scope,archived_at),
+      contact:contact_id(id,organization_id,name,email,phone,access_scope,archived_at)`,
     )
-    .eq("organization_id", organizationId)
+    .eq("organization_id", user.organizationId)
+    .is("archived_at", null)
+    .eq("company.organization_id", user.organizationId)
+    .is("company.archived_at", null)
+    .eq("contact.organization_id", user.organizationId)
+    .is("contact.archived_at", null);
+
+  if (isCofounder !== true) {
+    query = query
+      .eq("access_scope", "organization")
+      .eq("company.access_scope", "organization")
+      .eq("contact.access_scope", "organization");
+  }
+
+  const { data, error } = await query
     .order("created_at", { ascending: false })
     .limit(100);
 
   if (error || !data) return [];
 
   type BridgeLeadRow = {
-    company: { id: string; name: string } | null;
+    access_scope: "cofounders" | "organization";
+    company: {
+      access_scope: "cofounders" | "organization";
+      archived_at: string | null;
+      id: string;
+      name: string;
+      organization_id: string;
+    } | null;
     contact: {
+      access_scope: "cofounders" | "organization";
+      archived_at: string | null;
       email: string | null;
       id: string;
       name: string;
+      organization_id: string;
       phone: string | null;
     } | null;
     created_at: string;
@@ -499,24 +663,59 @@ async function fetchBridgeLeads(
     updated_at: string;
   };
 
-  return (data as unknown as BridgeLeadRow[]).map((row) => ({
-    companyId: row.company?.id ?? undefined,
-    companyName: row.company?.name ?? undefined,
-    contactEmail: row.contact?.email ?? undefined,
-    contactId: row.contact?.id ?? undefined,
-    contactName: row.contact?.name ?? undefined,
-    contactPhone: row.contact?.phone ?? undefined,
-    createdAt: row.created_at,
-    id: row.id,
-    leadDate: row.lead_date ?? row.next_action_date ?? undefined,
-    nextAction: row.next_action ?? undefined,
-    notes: row.notes ?? undefined,
-    organizationId: row.organization_id,
-    source: row.source ?? undefined,
-    status: row.status,
-    topic: row.topic,
-    updatedAt: row.updated_at,
-  }));
+  return (data as unknown as BridgeLeadRow[]).map((row) => {
+    const company = isVisibleBridgeRelation(
+      row.company,
+      user.organizationId,
+      isCofounder === true,
+    )
+      ? row.company
+      : null;
+    const contact = isVisibleBridgeRelation(
+      row.contact,
+      user.organizationId,
+      isCofounder === true,
+    )
+      ? row.contact
+      : null;
+
+    return {
+      accessScope: row.access_scope,
+      companyId: company?.id ?? undefined,
+      companyName: company?.name ?? undefined,
+      contactEmail: contact?.email ?? undefined,
+      contactId: contact?.id ?? undefined,
+      contactName: contact?.name ?? undefined,
+      contactPhone: contact?.phone ?? undefined,
+      createdAt: row.created_at,
+      id: row.id,
+      leadDate: row.lead_date ?? row.next_action_date ?? undefined,
+      nextAction: row.next_action ?? undefined,
+      notes: row.notes ?? undefined,
+      organizationId: row.organization_id,
+      source: row.source ?? undefined,
+      status: row.status,
+      topic: row.topic,
+      updatedAt: row.updated_at,
+    };
+  });
+}
+
+function isVisibleBridgeRelation(
+  relation: {
+    access_scope: "cofounders" | "organization";
+    archived_at: string | null;
+    organization_id: string;
+  } | null,
+  organizationId: string,
+  isCofounder: boolean,
+) {
+  return Boolean(
+    relation &&
+    relation.organization_id === organizationId &&
+    relation.archived_at === null &&
+    (isCofounder || relation.access_scope === "organization"),
+  );
 }
 
 function coerceStatus(status: string): CrmLeadStatus | null {

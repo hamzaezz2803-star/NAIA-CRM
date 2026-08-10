@@ -2,16 +2,20 @@ import "server-only";
 
 import type { SupabaseClient, User } from "@supabase/supabase-js";
 
-import { canUseMeetingNotesEmail } from "@/features/meeting-notes/access-policy";
+import { resolveGoogleCredentialActorFromSession } from "./google-credential-boundary";
+import { attestGoogleAccessToken } from "./google-token-attestation";
+import { attestGoogleScopes } from "./google-workspace-scopes";
 
-import {
-  GOOGLE_MEETING_NOTE_SCOPE,
-  hasForbiddenGoogleDriveScope,
-} from "./google-workspace-scopes";
+type ExistingGoogleConnection = {
+  encrypted_token_reference: string | null;
+  id: string;
+  scopes: string[] | null;
+  status: string;
+};
 
-// Persists the Google provider tokens returned by Supabase Auth at sign-in as
-// the user's own integration connection. Supabase does not store Google
-// refresh tokens, so the auth callback is the only chance to capture them.
+// Persists provider tokens returned by Supabase Auth. Authentication and
+// membership are re-resolved through the cookie client; credential reads and
+// writes then cross the explicit service-role boundary.
 export async function saveGoogleConnectionFromLogin({
   accessToken,
   refreshToken,
@@ -23,114 +27,223 @@ export async function saveGoogleConnectionFromLogin({
   supabase: SupabaseClient;
   user: User;
 }): Promise<{ error?: string; saved: boolean }> {
-  const { data: membership } = await supabase
-    .from("organization_memberships")
-    .select("organization_id,role")
-    .eq("profile_id", user.id)
-    .limit(1)
-    .maybeSingle();
-
-  if (!membership?.organization_id) {
-    return { error: "No organization membership for user.", saved: false };
+  let actor;
+  try {
+    actor = await resolveGoogleCredentialActorFromSession({
+      expectedProfileId: user.id,
+      supabase,
+    });
+  } catch (error) {
+    return {
+      error:
+        error instanceof Error
+          ? error.message
+          : "Google Workspace identity could not be verified.",
+      saved: false,
+    };
   }
 
-  const { data: existing } = await supabase
+  const existingResult = await actor.credentialClient
     .from("integration_connections")
-    .select("encrypted_token_reference,scopes")
-    .eq("organization_id", membership.organization_id)
+    .select("id,status,scopes,encrypted_token_reference")
+    .eq("organization_id", actor.organizationId)
     .eq("provider", "google")
-    .eq("connected_by_profile_id", user.id)
+    .eq("connected_by_profile_id", actor.profileId)
     .maybeSingle();
+  if (existingResult.error) {
+    return { error: "Google connection could not be loaded.", saved: false };
+  }
+  const existing = existingResult.data as ExistingGoogleConnection | null;
 
-  const grantedScopes = await resolveGrantedScopes(accessToken);
-  if (!grantedScopes) {
+  const attestation = await attestGoogleAccessToken({
+    accessToken,
+    intent: "user",
+  });
+  if (!attestation.ok) {
+    const quarantined = await quarantineProviderCredential({
+      accessToken,
+      actor,
+      reviewReason: "scope-attestation-failed",
+      refreshToken:
+        refreshToken ??
+        parseRefreshToken(existing?.encrypted_token_reference ?? null),
+      scopes: attestation.scopes,
+    });
+    if (!quarantined) {
+      return {
+        error: "Google connection quarantine could not be saved.",
+        saved: false,
+      };
+    }
     return {
-      error: "Google token scopes could not be verified.",
+      error: "Google token scopes could not be safely attested.",
       saved: false,
     };
   }
-  const existingScopes = Array.isArray(existing?.scopes)
-    ? (existing.scopes as string[])
-    : [];
-  const mayKeepExistingMeetGrant =
-    membership.role === "owner" &&
-    canUseMeetingNotesEmail(user.email) &&
-    existingScopes.includes(GOOGLE_MEETING_NOTE_SCOPE);
-  const hasForbiddenCurrentGrant =
-    hasForbiddenGoogleDriveScope(grantedScopes) ||
-    (grantedScopes.includes(GOOGLE_MEETING_NOTE_SCOPE) &&
-      !mayKeepExistingMeetGrant);
-  if (hasForbiddenCurrentGrant) {
-    return {
-      error: "Google returned an unauthorized Drive scope.",
-      saved: false,
-    };
+
+  const googleAccountEmail = await readGoogleAccountEmail(accessToken);
+  const sessionEmail = normalizeGoogleEmail(actor.user?.email ?? user.email);
+  if (
+    !googleAccountEmail ||
+    !sessionEmail ||
+    normalizeGoogleEmail(googleAccountEmail) !== sessionEmail
+  ) {
+    const quarantined = await quarantineProviderCredential({
+      accessToken,
+      actor,
+      externalAccountLabel:
+        googleAccountEmail ??
+        actor.user?.email ??
+        "Google Workspace Connection",
+      reviewReason: "identity-attestation-failed",
+      refreshToken:
+        refreshToken ??
+        parseRefreshToken(existing?.encrypted_token_reference ?? null),
+      scopes: attestation.scopes,
+    });
+    return quarantined
+      ? {
+          error: "Google account does not match the authenticated account.",
+          saved: false,
+        }
+      : {
+          error: "Google connection quarantine could not be saved.",
+          saved: false,
+        };
   }
 
-  const existingCredentialMayBeBroad =
-    hasForbiddenGoogleDriveScope(existingScopes);
-  // Google only returns a refresh token on explicit consent. Keep an older
-  // one only when its stored scope attestation is already narrow; otherwise
-  // persisting it could re-mint a broader access token after expiry.
+  const existingAttestation = attestGoogleScopes(existing?.scopes, "user");
   const effectiveRefreshToken =
     refreshToken ??
-    (existingCredentialMayBeBroad
-      ? null
-      : parseRefreshToken(existing?.encrypted_token_reference ?? null));
+    (existing?.status === "connected" && existingAttestation.ok
+      ? parseRefreshToken(existing.encrypted_token_reference)
+      : null);
+  const now = new Date().toISOString();
+  const tokenReference = JSON.stringify({
+    access_token: accessToken,
+    expiry_date: Date.now() + 3500 * 1000,
+    refresh_token: effectiveRefreshToken ?? undefined,
+  });
+  const externalAccountLabel =
+    googleAccountEmail ??
+    actor.user?.email ??
+    user.email ??
+    "Google Workspace Connection";
 
-  const { error } = await supabase.from("integration_connections").upsert(
-    {
-      connected_at: new Date().toISOString(),
-      connected_by_profile_id: user.id,
-      encrypted_token_reference: JSON.stringify({
-        access_token: accessToken,
-        expiry_date: Date.now() + 3500 * 1000,
-        refresh_token: effectiveRefreshToken ?? undefined,
-      }),
-      external_account_label: user.email ?? "Google Workspace Connection",
-      organization_id: membership.organization_id,
-      provider: "google",
-      scopes: [...new Set(grantedScopes)],
-      status: "connected",
-      updated_at: new Date().toISOString(),
-    },
-    { onConflict: "organization_id,provider,connected_by_profile_id" },
-  );
+  const { data: saved, error } = await actor.credentialClient
+    .from("integration_connections")
+    .upsert(
+      {
+        connected_at: now,
+        connected_by_profile_id: actor.profileId,
+        encrypted_token_reference: tokenReference,
+        external_account_label: externalAccountLabel,
+        organization_id: actor.organizationId,
+        provider: "google",
+        scopes: attestation.scopes,
+        server_review_reason: null,
+        status: "connected",
+        updated_at: now,
+      },
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    )
+    .select("id,organization_id,provider,connected_by_profile_id,status")
+    .maybeSingle();
 
-  if (error) {
-    return { error: error.message, saved: false };
+  if (
+    error ||
+    !saved ||
+    saved.organization_id !== actor.organizationId ||
+    saved.provider !== "google" ||
+    saved.connected_by_profile_id !== actor.profileId ||
+    saved.status !== "connected"
+  ) {
+    return { error: "Google connection could not be saved.", saved: false };
   }
 
   return { saved: true };
 }
 
-// The user can deny individual scopes on the consent screen; readiness must
-// see what was actually granted, not what was requested.
-async function resolveGrantedScopes(
-  accessToken: string,
-): Promise<string[] | undefined> {
+async function quarantineProviderCredential({
+  accessToken,
+  actor,
+  externalAccountLabel,
+  reviewReason,
+  refreshToken,
+  scopes,
+}: {
+  accessToken: string;
+  actor: Awaited<ReturnType<typeof resolveGoogleCredentialActorFromSession>>;
+  externalAccountLabel?: string;
+  reviewReason: "identity-attestation-failed" | "scope-attestation-failed";
+  refreshToken?: string | null;
+  scopes: string[];
+}) {
+  const now = new Date().toISOString();
+  const { data, error } = await actor.credentialClient
+    .from("integration_connections")
+    .upsert(
+      {
+        connected_at: now,
+        connected_by_profile_id: actor.profileId,
+        encrypted_token_reference: JSON.stringify({
+          access_token: accessToken,
+          expiry_date: Date.now() + 3500 * 1000,
+          refresh_token: refreshToken ?? undefined,
+        }),
+        external_account_label:
+          externalAccountLabel ??
+          actor.user?.email ??
+          "Google Workspace Connection",
+        organization_id: actor.organizationId,
+        provider: "google",
+        scopes,
+        server_review_reason: reviewReason,
+        status: "needs-review",
+        updated_at: now,
+      },
+      { onConflict: "organization_id,provider,connected_by_profile_id" },
+    )
+    .select("id,organization_id,provider,connected_by_profile_id,status")
+    .maybeSingle();
+
+  return (
+    !error &&
+    data?.organization_id === actor.organizationId &&
+    data.provider === "google" &&
+    data.connected_by_profile_id === actor.profileId &&
+    data.status === "needs-review"
+  );
+}
+
+async function readGoogleAccountEmail(accessToken: string) {
   try {
     const response = await fetch(
-      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${encodeURIComponent(accessToken)}`,
+      "https://gmail.googleapis.com/gmail/v1/users/me/profile",
+      { headers: { Authorization: `Bearer ${accessToken}` } },
     );
-    if (response.ok) {
-      const payload = (await response.json()) as { scope?: string };
-      if (payload.scope) {
-        return payload.scope.split(" ");
-      }
-    }
+    if (!response.ok) return null;
+    const payload = (await response.json()) as { emailAddress?: unknown };
+    return typeof payload.emailAddress === "string"
+      ? payload.emailAddress
+      : null;
   } catch {
-    return undefined;
+    return null;
   }
-  return undefined;
+}
+
+function normalizeGoogleEmail(value?: string | null) {
+  return value?.trim().toLocaleLowerCase("en") ?? "";
 }
 
 function parseRefreshToken(tokenReference: string | null) {
   if (!tokenReference) return null;
 
   try {
-    const parsed = JSON.parse(tokenReference) as { refresh_token?: string };
-    return parsed.refresh_token ?? null;
+    const parsed = JSON.parse(tokenReference) as { refresh_token?: unknown };
+    return typeof parsed.refresh_token === "string"
+      ? parsed.refresh_token
+      : null;
   } catch {
     return null;
   }

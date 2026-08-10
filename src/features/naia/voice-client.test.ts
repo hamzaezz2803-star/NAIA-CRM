@@ -65,6 +65,13 @@ describe("NAIA voice client", () => {
     await Promise.resolve();
 
     expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/naia/voice",
+      expect.objectContaining({
+        body: JSON.stringify({ text: "Bonjour Ali" }),
+        method: "POST",
+      }),
+    );
     expect(onStarted).not.toHaveBeenCalled();
 
     handle.pause();
@@ -127,45 +134,6 @@ describe("NAIA voice client", () => {
     expect(primed.playbackRate).toBe(VOICE_PLAYBACK_RATE);
     expect(primed.defaultPlaybackRate).toBe(VOICE_PLAYBACK_RATE);
     expect(onBlocked).not.toHaveBeenCalled();
-  });
-
-  it("announces an explicit ElevenLabs fallback voice", async () => {
-    vi.stubGlobal("Audio", FakeAudio);
-    stubObjectUrls();
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(() =>
-        Promise.resolve({
-          blob: () =>
-            Promise.resolve(new Blob(["audio-bytes"], { type: "audio/mpeg" })),
-          headers: {
-            get: (name: string) => {
-              if (name.toLowerCase() === "content-type") return "audio/mpeg";
-              if (name.toLowerCase() === "x-naia-voice-fallback") {
-                return "primary-voice-unavailable";
-              }
-              return null;
-            },
-          },
-          ok: true,
-          status: 200,
-        } as unknown as Response),
-      ),
-    );
-    const onBlocked = vi.fn();
-
-    playElevenLabsVoice({
-      onBlocked,
-      onEnded: vi.fn(),
-      onStarted: vi.fn(),
-      text: "Bonjour Ali",
-    });
-
-    await vi.waitFor(() =>
-      expect(onBlocked).toHaveBeenCalledWith(
-        expect.stringContaining("voix de secours"),
-      ),
-    );
   });
 
   it("ignores stale pause() calls once a newer playback took over", async () => {

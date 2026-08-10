@@ -2,6 +2,8 @@ import "server-only";
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+import { isExternalAiProviderEnabled } from "@/platform/ai/external-provider-security";
+
 // WhatsApp Business Cloud API helper for the NAIA bridge. Server-only: it
 // holds the permanent access token, verifies Meta webhook signatures, and
 // maps sender phone numbers to Qarizmi OS emails via WHATSAPP_USER_MAP.
@@ -197,6 +199,9 @@ export async function transcribeWhatsAppAudio(mediaId: string) {
 
   if (!accessToken) {
     throw new Error("WHATSAPP_ACCESS_TOKEN is required to download audio.");
+  }
+  if (!isExternalAiProviderEnabled("groq")) {
+    throw new Error("External Groq access is disabled.");
   }
   if (!groqApiKey) {
     throw new Error("GROQ_API_KEY is required to transcribe WhatsApp audio.");
