@@ -175,23 +175,11 @@ function getReusableVoiceAudioElement() {
   return audio;
 }
 
-export function buildNaiaVoiceUrl(text: string, voiceId?: string) {
-  const params = new URLSearchParams({
-    text: text.replace(/\s+/g, " ").slice(0, VOICE_TEXT_MAX_LENGTH),
-  });
-  if (voiceId) {
-    params.set("voiceId", voiceId);
-  }
-
-  return `/api/naia/voice?${params.toString()}`;
-}
-
 export function playElevenLabsVoice({
   onBlocked,
   onEnded,
   onStarted,
   text,
-  voiceId,
 }: {
   onBlocked: (message: string) => void;
   onEnded: () => void;
@@ -279,7 +267,7 @@ export function playElevenLabsVoice({
     window.speechSynthesis.speak(utterance);
   };
 
-  const playAudioBlob = async (blob: Blob, fallbackReason?: string) => {
+  const playAudioBlob = async (blob: Blob) => {
     if (isCancelled) return;
 
     objectUrl = URL.createObjectURL(blob);
@@ -299,11 +287,6 @@ export function playElevenLabsVoice({
     try {
       await audio.play();
       start();
-      if (fallbackReason) {
-        onBlocked(
-          "La voix NAIA officielle est indisponible. ElevenLabs utilise la voix de secours configurée.",
-        );
-      }
     } catch {
       fallbackToBrowserVoice(
         `${getBrowserName()} a bloque la lecture ElevenLabs.`,
@@ -314,16 +297,21 @@ export function playElevenLabsVoice({
   window.__naiaCurrentAudio?.pause();
   window.__naiaCurrentAudio = handle;
 
-  void fetch(buildNaiaVoiceUrl(text, voiceId), { cache: "no-store" })
+  void fetch("/api/naia/voice", {
+    body: JSON.stringify({
+      text: text.replace(/\s+/g, " ").slice(0, VOICE_TEXT_MAX_LENGTH),
+    }),
+    cache: "no-store",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json" },
+    method: "POST",
+  })
     .then(async (response) => {
       if (isCancelled) return;
 
       const contentType = response.headers.get("content-type") ?? "";
       if (response.ok && contentType.startsWith("audio/")) {
-        await playAudioBlob(
-          await response.blob(),
-          response.headers.get("x-naia-voice-fallback") ?? undefined,
-        );
+        await playAudioBlob(await response.blob());
         return;
       }
 

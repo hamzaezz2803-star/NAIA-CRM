@@ -26,6 +26,8 @@ const ACTIVE_LEAD_STATUSES = [
   "proposal-sent",
 ] as const;
 const COFOUNDER_EMAILS = new Set(["ali@qarizmi.com", "nabil@qarizmi.com"]);
+const FAST_OPERATION_TIMEOUT_MS = 5_000;
+const PROVIDER_OPERATION_TIMEOUT_MS = 12_000;
 
 export type DailyBriefTask = {
   dueAt?: string;
@@ -119,17 +121,17 @@ export async function runConfiguredDailyBriefs({
     }));
   }
 
-  const results: DailyBriefDispatchResult[] = [];
-  for (const email of getDailyBriefRecipients()) {
-    try {
-      results.push(await dispatchDailyBrief({ email, now, timeZone }));
-    } catch (error) {
-      const errorCode = dailyBriefErrorCode(error);
-      console.error("NAIA daily brief dispatch could not start:", errorCode);
-      results.push({ email, reason: errorCode, status: "failed" });
-    }
-  }
-  return results;
+  return Promise.all(
+    getDailyBriefRecipients().map(async (email) => {
+      try {
+        return await dispatchDailyBrief({ email, now, timeZone });
+      } catch (error) {
+        const errorCode = dailyBriefErrorCode(error);
+        console.error("NAIA daily brief dispatch could not start:", errorCode);
+        return { email, reason: errorCode, status: "failed" as const };
+      }
+    }),
+  );
 }
 
 export async function dispatchDailyBrief({
@@ -142,7 +144,11 @@ export async function dispatchDailyBrief({
   timeZone: string;
 }): Promise<DailyBriefDispatchResult> {
   const normalizedEmail = email.trim().toLowerCase();
-  const user = await resolveBridgeUser(normalizedEmail);
+  const user = await withTimeout(
+    resolveBridgeUser(normalizedEmail),
+    FAST_OPERATION_TIMEOUT_MS,
+    "identity_timeout",
+  );
   if (
     !user ||
     user.role !== "owner" ||
@@ -165,11 +171,15 @@ export async function dispatchDailyBrief({
   }
 
   const localDate = localDateKey(now, timeZone);
-  const claim = await claimDailyBriefRun({
-    localDate,
-    supabase,
-    user,
-  });
+  const claim = await withTimeout(
+    claimDailyBriefRun({
+      localDate,
+      supabase,
+      user,
+    }),
+    FAST_OPERATION_TIMEOUT_MS,
+    "daily_brief_claim_timeout",
+  );
   if (!claim) {
     return {
       email: normalizedEmail,
@@ -182,7 +192,11 @@ export async function dispatchDailyBrief({
   try {
     const [data, slackUser] = await Promise.all([
       loadDailyBriefData({ now, supabase, user }),
-      findSlackUserByEmail(normalizedEmail),
+      withTimeout(
+        findSlackUserByEmail(normalizedEmail),
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "slack_recipient_lookup_timeout",
+      ),
     ]);
     if (!slackUser) {
       throw new Error("slack_recipient_not_found");
@@ -194,12 +208,29 @@ export async function dispatchDailyBrief({
       now,
       timeZone,
     });
-    deliveryAttempted = true;
-    const posted = await postSlackMessage({
-      blocks: message.blocks,
-      channel: slackUser.id,
-      text: message.text,
+    const deliveryStartRecorded = await updateDailyBriefRun({
+      claimId: claim.id,
+      organizationId: user.organizationId,
+      supabase,
+      values: {
+        delivery_started_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
     });
+    if (!deliveryStartRecorded) {
+      throw new Error("daily_brief_delivery_start_ledger_failed");
+    }
+
+    deliveryAttempted = true;
+    const posted = await withTimeout(
+      postSlackMessage({
+        blocks: message.blocks,
+        channel: slackUser.id,
+        text: message.text,
+      }),
+      PROVIDER_OPERATION_TIMEOUT_MS,
+      "slack_delivery_timeout",
+    );
 
     const ledgerUpdated = await updateDailyBriefRun({
       claimId: claim.id,
@@ -233,6 +264,7 @@ export async function dispatchDailyBrief({
       supabase,
       values: {
         error_code: errorCode,
+        ...(retrySafe ? { delivery_started_at: null } : {}),
         status: retrySafe ? "failed" : "delivery_uncertain",
         updated_at: new Date().toISOString(),
       },
@@ -303,11 +335,15 @@ async function updateDailyBriefRun({
   values: Record<string, unknown>;
 }) {
   try {
-    const { error } = await supabase
-      .from("naia_daily_brief_runs")
-      .update(values)
-      .eq("id", claimId)
-      .eq("organization_id", organizationId);
+    const { error } = await withTimeout(
+      supabase
+        .from("naia_daily_brief_runs")
+        .update(values)
+        .eq("id", claimId)
+        .eq("organization_id", organizationId),
+      FAST_OPERATION_TIMEOUT_MS,
+      "daily_brief_ledger_update_timeout",
+    );
     return !error;
   } catch {
     return false;
@@ -352,10 +388,7 @@ export async function loadDailyBriefData({
       timeMin: now.toISOString(),
     },
     googleContext,
-  ).catch(() => {
-    warnings.push("calendar_unavailable");
-    return [];
-  });
+  );
   const gmailPromise = listGmailMessages(
     {
       maxResults: 20,
@@ -363,17 +396,36 @@ export async function loadDailyBriefData({
         "in:inbox is:unread newer_than:30d -in:spam -in:trash -category:promotions -category:social -category:forums",
     },
     googleContext,
-  ).catch(() => {
-    warnings.push("gmail_unavailable");
-    return [];
-  });
+  );
 
   const [tasksResult, leadsResult, calendarEvents, gmailCandidates] =
     await Promise.all([
-      tasksPromise,
-      leadsPromise,
-      calendarPromise,
-      gmailPromise,
+      withTimeout(
+        tasksPromise,
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "crm_tasks_timeout",
+      ),
+      withTimeout(
+        leadsPromise,
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "crm_leads_timeout",
+      ),
+      withTimeout(
+        calendarPromise,
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "calendar_timeout",
+      ).catch(() => {
+        warnings.push("calendar_unavailable");
+        return [];
+      }),
+      withTimeout(
+        gmailPromise,
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "gmail_timeout",
+      ).catch(() => {
+        warnings.push("gmail_unavailable");
+        return [];
+      }),
     ]);
 
   if (tasksResult.error) throw new Error("crm_tasks_unavailable");
@@ -398,6 +450,26 @@ export async function loadDailyBriefData({
     })),
     warnings: [...new Set(warnings)],
   };
+}
+
+function withTimeout<T>(
+  operation: PromiseLike<T>,
+  timeoutMs: number,
+  errorCode: string,
+): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(errorCode)), timeoutMs);
+    Promise.resolve(operation).then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 export function buildDailyBriefMessage({

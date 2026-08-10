@@ -4,11 +4,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   afterTasks: [] as Promise<unknown>[],
+  claimSlackEvent: vi.fn(),
+  createServiceRoleSupabaseClient: vi.fn(),
   fetchSlackConversationHistory: vi.fn(),
   fetchSlackUserProfile: vi.fn(),
   planBridgeCommand: vi.fn(),
   postSlackMessage: vi.fn(),
   resolveBridgeUser: vi.fn(),
+}));
+
+vi.mock("@/platform/auth/supabase-server", () => ({
+  createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
 }));
 
 vi.mock("next/server", () => ({
@@ -100,6 +106,7 @@ function messageImEvent(text: string) {
       type: "message",
       user: "U0123456789",
     },
+    event_id: "Ev0123456789",
     type: "event_callback",
   });
 }
@@ -113,6 +120,10 @@ describe("Slack events route", () => {
     vi.stubEnv("SLACK_SIGNING_SECRET", SIGNING_SECRET);
     vi.stubEnv("SLACK_BOT_TOKEN", "xoxb-test");
     mocks.afterTasks = [];
+    mocks.claimSlackEvent.mockResolvedValue({ data: true, error: null });
+    mocks.createServiceRoleSupabaseClient.mockReturnValue({
+      rpc: mocks.claimSlackEvent,
+    });
     mocks.fetchSlackUserProfile.mockResolvedValue({
       displayName: "Ali",
       email: "ali@qarizmi.com",
@@ -201,6 +212,23 @@ describe("Slack events route", () => {
     );
   });
 
+  it("claims event_id durably and never republishes a replay", async () => {
+    mocks.claimSlackEvent
+      .mockResolvedValueOnce({ data: true, error: null })
+      .mockResolvedValueOnce({ data: false, error: null });
+    const body = messageImEvent("lis mes emails gmail non lus");
+
+    const first = await POST(slackRequest(body));
+    const replay = await POST(slackRequest(body));
+    await flushAfterTasks();
+
+    expect(first.status).toBe(200);
+    expect(await replay.json()).toEqual({ ignored: "duplicate", ok: true });
+    expect(mocks.claimSlackEvent).toHaveBeenCalledTimes(2);
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
+    expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores bot messages", async () => {
     const body = JSON.stringify({
       event: {
@@ -211,6 +239,7 @@ describe("Slack events route", () => {
         type: "message",
         user: "U0123456789",
       },
+      event_id: "EvMentionStatus123",
       type: "event_callback",
     });
     const response = await POST(slackRequest(body));
@@ -354,6 +383,7 @@ describe("Slack events route", () => {
         type: "app_mention",
         user: "U0123456789",
       },
+      event_id: "EvMentionPrivate123",
       type: "event_callback",
     });
     const response = await POST(slackRequest(body));
@@ -386,6 +416,7 @@ describe("Slack events route", () => {
         type: "app_mention",
         user: "U0123456789",
       },
+      event_id: "EvMentionPrivate456",
       type: "event_callback",
     });
 

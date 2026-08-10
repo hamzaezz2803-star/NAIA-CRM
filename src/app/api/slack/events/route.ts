@@ -13,6 +13,7 @@ import {
   type NaiaBridgePlan,
 } from "@/platform/naia/bridge";
 import { encodeSlackApprovalValue } from "@/platform/naia/slack-approval";
+import { createServiceRoleSupabaseClient } from "@/platform/auth/supabase-server";
 
 // Slack Events API endpoint: DMs to the NAIA bot (message.im) and @mentions
 // (app_mention). Slack requires an ack in under 3 seconds, so the handler
@@ -35,6 +36,7 @@ type SlackEvent = {
 type SlackEventEnvelope = {
   challenge?: string;
   event?: SlackEvent;
+  event_id?: string;
   type?: string;
 };
 
@@ -83,6 +85,21 @@ export async function POST(request: Request) {
     return Response.json({ ok: true });
   }
 
+  const eventId = payload.event_id?.trim();
+  if (!eventId || !/^Ev[A-Za-z0-9_-]{1,253}$/.test(eventId)) {
+    return Response.json({ error: "Invalid Slack event id" }, { status: 400 });
+  }
+  const claim = await claimSlackEvent(eventId);
+  if (claim === null) {
+    return Response.json(
+      { error: "Slack event claim unavailable" },
+      { status: 503 },
+    );
+  }
+  if (!claim) {
+    return Response.json({ ignored: "duplicate", ok: true });
+  }
+
   const channel = event.channel as string;
   const slackUserId = event.user as string;
   // Mentions answer in a thread to keep channels readable; DMs answer inline.
@@ -104,6 +121,18 @@ export async function POST(request: Request) {
   });
 
   return Response.json({ ok: true });
+}
+
+async function claimSlackEvent(eventId: string) {
+  const supabase = createServiceRoleSupabaseClient();
+  if (!supabase) return null;
+
+  const { data, error } = await supabase.rpc("claim_slack_event", {
+    requested_event_id: eventId,
+    requested_ttl_seconds: 86_400,
+  });
+  if (error || typeof data !== "boolean") return null;
+  return data;
 }
 
 function isActionableEvent(event: SlackEvent | undefined): event is SlackEvent {

@@ -176,6 +176,14 @@ describe("Groq model router", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("keeps production internal callers off when the founder-route flag is on", () => {
+    vi.stubEnv("NODE_ENV", "production");
+    vi.stubEnv("EXTERNAL_AI_GROQ_ENABLED", "true");
+
+    expect(getGroqApiKey()).toBeUndefined();
+    expect(getGroqApiKey("founder-route")).toBe("test-key");
+  });
+
   it.each([
     ["oversized message", 100, "x".repeat(16_001)],
     ["oversized token budget", 1_201, "Réponds"],

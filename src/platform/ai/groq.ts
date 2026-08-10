@@ -2,6 +2,11 @@ import "server-only";
 
 import type { ZodType } from "zod";
 
+import {
+  isExternalAiProviderEnabled,
+  type ExternalAiSurface,
+} from "@/platform/ai/external-provider-security";
+
 const GROQ_CHAT_COMPLETIONS_URL =
   "https://api.groq.com/openai/v1/chat/completions";
 const DEFAULT_REQUEST_TIMEOUT_MS = 12_000;
@@ -55,6 +60,7 @@ type JsonSchema = Record<string, unknown>;
 type GroqBaseRequest = {
   maxTokens: number;
   messages: GroqMessage[];
+  providerSurface?: ExternalAiSurface;
   temperature: number;
   workload?: GroqWorkload;
 };
@@ -89,7 +95,8 @@ type GroqRequestBody = {
   temperature: number;
 };
 
-export function getGroqApiKey() {
+export function getGroqApiKey(surface: ExternalAiSurface = "internal") {
+  if (!isExternalAiProviderEnabled("groq", surface)) return undefined;
   return (
     process.env.GROQ_API_KEY?.trim() ||
     process.env.GROQ_KEY?.trim() ||
@@ -123,9 +130,10 @@ export async function completeGroqJson<T>({
   schemaName,
   temperature,
   workload = "orchestrator",
+  providerSurface,
 }: GroqJsonRequest<T>): Promise<GroqCompletion<T> | null> {
   if (!isBoundedGroqRequest({ maxTokens, messages })) return null;
-  const apiKey = getGroqApiKey();
+  const apiKey = getGroqApiKey(providerSurface);
   if (!apiKey) return null;
 
   const models = getRequestModels(workload);
@@ -174,9 +182,10 @@ export async function completeGroqText({
   messages,
   temperature,
   workload = "orchestrator",
+  providerSurface,
 }: GroqTextRequest): Promise<GroqCompletion<string> | null> {
   if (!isBoundedGroqRequest({ maxTokens, messages })) return null;
-  const apiKey = getGroqApiKey();
+  const apiKey = getGroqApiKey(providerSurface);
   if (!apiKey) return null;
 
   const models = getRequestModels(workload);

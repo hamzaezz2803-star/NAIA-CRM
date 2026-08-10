@@ -47,8 +47,9 @@ Required for real Supabase authentication:
 - `NEXT_PUBLIC_SUPABASE_URL`
 - `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`
 - `SUPABASE_SERVICE_ROLE_KEY` for server-only privileged tasks when implemented
-- `AUTH_ALLOWED_EMAIL_DOMAIN`, defaulting to `qarizmi.com`
-- `AUTH_ALLOWED_EMAILS`, optional comma-separated exact allowlist
+- `AUTH_ALLOWED_EMAIL_DOMAIN`, a development-only fallback
+- `AUTH_ALLOWED_EMAILS`, mandatory in production and restricted to the exact
+  reviewed Ali/Nabil addresses
 
 Current hosted Supabase project:
 
@@ -104,15 +105,14 @@ The production app is deployed on Vercel at `https://os.qarizmi.com`. Connect Su
 
 Auth is invite-only from the app perspective: there is no public signup UI.
 For production, create users in Supabase Auth and disable public email signups
-in the Supabase dashboard. Set `AUTH_ALLOWED_EMAILS` in Vercel when access
-should be limited to exact people instead of the whole Qarizmi domain.
+in the Supabase dashboard. Production fails closed unless
+`AUTH_ALLOWED_EMAILS` contains the reviewed cofounders; it never falls back to
+the Qarizmi domain.
 
 Current production access is limited to:
 
 - `ali@qarizmi.com`
 - `nabil@qarizmi.com`
-- `hamza@qarizmi.com`
-- `wissal@qarizmi.com`
 
 These users can sign in with an emailed magic link. Password sign-in remains
 available for accounts with a password.

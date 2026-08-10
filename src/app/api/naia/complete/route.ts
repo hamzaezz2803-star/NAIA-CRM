@@ -1,14 +1,23 @@
 import {
+  buildNaiaContext,
   naiaSections,
   type NaiaSectionId,
 } from "@/features/naia/operating-data";
 import { completeGroqText, getGroqApiKey } from "@/platform/ai/groq";
+import {
+  authorizeExternalAiRequest,
+  consumeExternalAiQuota,
+  EXTERNAL_AI_POLICIES,
+  isJsonRequest,
+  readBoundedRequestBody,
+} from "@/platform/ai/external-provider-security";
 
 type CompletePayload = {
-  context?: unknown;
   prompt?: string;
   sectionId?: NaiaSectionId;
 };
+
+const policy = EXTERNAL_AI_POLICIES.naiaCompletion;
 
 const sectionLabels: Record<NaiaSectionId, string> = {
   overview: "cockpit executif",
@@ -20,10 +29,24 @@ const sectionLabels: Record<NaiaSectionId, string> = {
 };
 
 export async function POST(request: Request) {
+  const authorization = await authorizeExternalAiRequest(request, policy);
+  if (!authorization.allowed) return authorization.response;
+
+  if (!isJsonRequest(request)) {
+    return Response.json({ error: "invalid-content-type" }, { status: 415 });
+  }
+
   let payload: CompletePayload;
 
   try {
-    payload = (await request.json()) as CompletePayload;
+    const boundedBody = await readBoundedRequestBody(
+      request,
+      policy.maxBodyBytes,
+    );
+    if (!boundedBody.ok) return boundedBody.response;
+    payload = JSON.parse(
+      new TextDecoder().decode(boundedBody.bytes),
+    ) as CompletePayload;
   } catch {
     return Response.json(
       {
@@ -36,14 +59,14 @@ export async function POST(request: Request) {
 
   const sectionId = parseSectionId(payload.sectionId);
   const prompt = parsePrompt(payload.prompt);
-  const apiKey = getGroqApiKey();
+  const apiKey = getGroqApiKey("founder-route");
 
   if (!apiKey) {
-    return Response.json({
-      output: fallbackAnswer(sectionId, prompt),
-      mode: "local",
-    });
+    return Response.json({ error: "missing-groq-key" }, { status: 503 });
   }
+
+  const quotaRejection = await consumeExternalAiQuota(authorization, policy);
+  if (quotaRejection) return quotaRejection;
 
   const completion = await completeGroqText({
     maxTokens: 700,
@@ -55,13 +78,14 @@ export async function POST(request: Request) {
       },
       {
         content: JSON.stringify({
-          context: payload.context,
+          context: buildNaiaContext(sectionId),
           module: sectionLabels[sectionId],
           prompt,
         }),
         role: "user",
       },
     ],
+    providerSurface: "founder-route",
     temperature: 0.35,
   });
 

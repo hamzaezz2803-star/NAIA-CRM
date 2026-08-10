@@ -1,190 +1,114 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+const mocks = vi.hoisted(() => ({
+  authorizeExternalAiRequest: vi.fn(),
+  consumeExternalAiQuota: vi.fn(),
+  fetchExternalAi: vi.fn(),
+}));
+
+vi.mock("@/platform/ai/external-provider-security", async (importOriginal) => {
+  const actual =
+    await importOriginal<
+      typeof import("@/platform/ai/external-provider-security")
+    >();
+  return {
+    ...actual,
+    authorizeExternalAiRequest: mocks.authorizeExternalAiRequest,
+    consumeExternalAiQuota: mocks.consumeExternalAiQuota,
+    fetchExternalAi: mocks.fetchExternalAi,
+  };
+});
+
 import { GET, POST } from "./route";
+
+function voiceRequest(payload: unknown, declaredLength?: number) {
+  const body = JSON.stringify(payload);
+  return new Request("https://os.qarizmi.com/api/naia/voice", {
+    body,
+    headers: {
+      "Content-Length": String(declaredLength ?? Buffer.byteLength(body)),
+      "Content-Type": "application/json",
+      Origin: "https://os.qarizmi.com",
+      "Sec-Fetch-Site": "same-origin",
+    },
+    method: "POST",
+  });
+}
 
 describe("NAIA voice route", () => {
   beforeEach(() => {
     vi.stubEnv("ELEVENLABS_API_KEY", "test-elevenlabs-key");
     vi.stubEnv("ELEVENLABS_VOICE_ID", "officialVoice123");
-    vi.stubEnv("ELEVENLABS_FALLBACK_VOICE_ID", "rescueVoice456");
+    mocks.authorizeExternalAiRequest.mockResolvedValue({
+      allowed: true,
+      profileId: "profile-ali",
+      supabase: {},
+    });
+    mocks.consumeExternalAiQuota.mockResolvedValue(null);
+    mocks.fetchExternalAi.mockResolvedValue(
+      new Response("audio-bytes", {
+        headers: { "Content-Type": "audio/mpeg" },
+        status: 200,
+      }),
+    );
   });
 
   afterEach(() => {
     vi.unstubAllEnvs();
-    vi.unstubAllGlobals();
+    vi.clearAllMocks();
   });
 
-  it("always uses the official voice and ignores a GET voice override", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response("audio-bytes", {
-        headers: { "Content-Type": "audio/mpeg" },
-        status: 200,
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
+  it("rejects GET without touching ElevenLabs", async () => {
+    const response = await GET();
 
-    const response = await GET(
-      new Request(
-        "http://localhost/api/naia/voice?text=Bonjour%20Ali&voiceId=requestVoice999",
-      ),
-    );
-
-    expect(response.status).toBe(200);
-    expect(response.headers.get("X-NAIA-Voice-Id")).toBe("officialVoice123");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toContain("officialVoice123");
-    expect(fetchMock.mock.calls[0][0]).not.toContain("requestVoice999");
+    expect(response.status).toBe(405);
+    expect(response.headers.get("Allow")).toBe("POST");
+    expect(mocks.fetchExternalAi).not.toHaveBeenCalled();
   });
 
-  it("always uses the official voice and ignores a POST voice override", async () => {
-    const fetchMock = vi.fn().mockResolvedValueOnce(
-      new Response("audio-bytes", {
-        headers: { "Content-Type": "audio/mpeg" },
-        status: 200,
-      }),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
+  it("uses one bounded provider call and ignores voice overrides", async () => {
     const response = await POST(
-      new Request("http://localhost/api/naia/voice", {
-        body: JSON.stringify({
-          text: "Bonjour Ali",
-          voiceId: "requestVoice999",
-        }),
-        headers: { "Content-Type": "application/json" },
-        method: "POST",
-      }),
+      voiceRequest({ text: "Bonjour Ali", voiceId: "requestVoice999" }),
     );
 
     expect(response.status).toBe(200);
-    expect(response.headers.get("X-NAIA-Voice-Id")).toBe("officialVoice123");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(fetchMock.mock.calls[0][0]).toContain("officialVoice123");
-    expect(fetchMock.mock.calls[0][0]).not.toContain("requestVoice999");
+    expect(response.headers.get("X-NAIA-Voice-Provider")).toBe("elevenlabs");
+    expect(mocks.fetchExternalAi).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchExternalAi.mock.calls[0][0]).toContain(
+      "officialVoice123",
+    );
+    expect(mocks.fetchExternalAi.mock.calls[0][0]).not.toContain(
+      "requestVoice999",
+    );
   });
 
-  it("uses browser fallback when the official voice is not configured", async () => {
-    vi.stubEnv("ELEVENLABS_VOICE_ID", "");
-    const fetchMock = vi.fn();
-    vi.stubGlobal("fetch", fetchMock);
+  it("rejects oversized text before quota or provider work", async () => {
+    const response = await POST(voiceRequest({ text: "a".repeat(1201) }));
 
-    const response = await GET(
-      new Request("http://localhost/api/naia/voice?text=Bonjour%20Ali"),
-    );
-    const body = (await response.json()) as {
-      mode?: string;
-      reason?: string;
-    };
-
-    expect(response.status).toBe(503);
-    expect(body).toEqual({
-      mode: "browser",
-      reason: "missing-elevenlabs-config",
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(413);
+    expect(mocks.consumeExternalAiQuota).not.toHaveBeenCalled();
+    expect(mocks.fetchExternalAi).not.toHaveBeenCalled();
   });
 
-  it("uses the explicit rescue voice when ElevenLabs rejects the official voice", async () => {
-    vi.stubEnv("ELEVENLABS_VOICE_ID", "restrictedPrimary789");
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        Response.json(
-          {
-            detail: {
-              code: "paid_plan_required",
-              message: "The configured voice is unavailable on this plan.",
-            },
-          },
-          { status: 402 },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response("audio-bytes", {
-          headers: { "Content-Type": "audio/mpeg" },
-          status: 200,
-        }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await GET(
-      new Request("http://localhost/api/naia/voice?text=Bonjour%20Ali"),
+  it("returns quota 429 without touching the provider", async () => {
+    mocks.consumeExternalAiQuota.mockResolvedValue(
+      Response.json({ error: "external-ai-quota-exceeded" }, { status: 429 }),
     );
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("X-NAIA-Voice-Id")).toBe("rescueVoice456");
-    expect(response.headers.get("X-NAIA-Voice-Fallback")).toBe(
-      "paid_plan_required",
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(fetchMock.mock.calls[0][0]).toContain("restrictedPrimary789");
-    expect(fetchMock.mock.calls[1][0]).toContain("rescueVoice456");
+    const response = await POST(voiceRequest({ text: "Bonjour Ali" }));
+
+    expect(response.status).toBe(429);
+    expect(mocks.fetchExternalAi).not.toHaveBeenCalled();
   });
 
-  it("uses browser fallback when no explicit rescue voice is configured", async () => {
-    vi.stubEnv("ELEVENLABS_VOICE_ID", "primaryWithoutRescue789");
-    vi.stubEnv("ELEVENLABS_FALLBACK_VOICE_ID", "");
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        Response.json(
-          { detail: { code: "paid_plan_required" } },
-          { status: 402 },
-        ),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const response = await GET(
-      new Request("http://localhost/api/naia/voice?text=Bonjour%20Ali"),
+  it("does not make a second paid call after an upstream rejection", async () => {
+    mocks.fetchExternalAi.mockResolvedValue(
+      Response.json({ detail: "paid plan required" }, { status: 402 }),
     );
-    const body = (await response.json()) as {
-      mode?: string;
-      reason?: string;
-    };
+
+    const response = await POST(voiceRequest({ text: "Bonjour Ali" }));
 
     expect(response.status).toBe(502);
-    expect(body.mode).toBe("browser");
-    expect(body.reason).toBe("elevenlabs-error");
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("short-circuits a known restricted primary to the explicit rescue voice", async () => {
-    vi.stubEnv("ELEVENLABS_VOICE_ID", "memoizedPrimary789");
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        Response.json(
-          { detail: { code: "paid_plan_required" } },
-          { status: 402 },
-        ),
-      )
-      .mockResolvedValueOnce(
-        new Response("audio-bytes", {
-          headers: { "Content-Type": "audio/mpeg" },
-          status: 200,
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response("audio-bytes", {
-          headers: { "Content-Type": "audio/mpeg" },
-          status: 200,
-        }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const first = await GET(
-      new Request("http://localhost/api/naia/voice?text=Bonjour%20Ali"),
-    );
-    const second = await GET(
-      new Request("http://localhost/api/naia/voice?text=Encore%20Ali"),
-    );
-
-    expect(first.headers.get("X-NAIA-Voice-Id")).toBe("rescueVoice456");
-    expect(second.headers.get("X-NAIA-Voice-Id")).toBe("rescueVoice456");
-    expect(second.headers.get("X-NAIA-Voice-Fallback")).toBe(
-      "primary-voice-unavailable",
-    );
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(fetchMock.mock.calls[2][0]).toContain("rescueVoice456");
+    expect(mocks.fetchExternalAi).toHaveBeenCalledTimes(1);
   });
 });
