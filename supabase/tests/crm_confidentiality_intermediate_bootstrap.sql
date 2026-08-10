@@ -32,6 +32,11 @@ $$;
 
 create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
+-- Supabase grants its API roles schema usage for installed extensions. Mirror
+-- that platform baseline in this standalone disposable database so fixtures
+-- exercise the authenticated RPC path instead of failing in their own hash
+-- setup before the RPC is reached.
+grant usage on schema extensions to anon, authenticated, service_role;
 
 create schema if not exists storage;
 grant usage on schema storage to anon, authenticated, service_role;
