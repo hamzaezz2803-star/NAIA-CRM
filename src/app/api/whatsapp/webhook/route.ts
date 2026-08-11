@@ -128,11 +128,9 @@ export async function POST(request: Request) {
     return Response.json({ ok: true });
   }
 
-  after(async () => {
-    for (const message of messages) {
-      await handleInboundMessage(message);
-    }
-  });
+  for (const message of messages) {
+    await handleInboundMessage(message);
+  }
 
   return Response.json({ ok: true });
 }
@@ -153,12 +151,15 @@ function extractInboundMessages(
   }
 
   for (const entry of payload.entry ?? []) {
-    if (entry.id !== expectedBusinessAccountId) continue;
+    if (entry.id && String(entry.id).trim() !== expectedBusinessAccountId)
+      continue;
 
     for (const change of entry.changes ?? []) {
       if (
         change.field !== "messages" ||
-        change.value?.metadata?.phone_number_id !== expectedPhoneNumberId
+        (change.value?.metadata?.phone_number_id &&
+          String(change.value.metadata.phone_number_id).trim() !==
+            expectedPhoneNumberId)
       ) {
         continue;
       }
