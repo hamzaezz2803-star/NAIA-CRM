@@ -5,12 +5,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   afterRegistrationError: undefined as Error | undefined,
   afterTasks: [] as Array<() => Promise<void> | void>,
-  claimInboundMessage: vi.fn(),
   claimPendingAction: vi.fn(),
+  drainWhatsAppInboundQueue: vi.fn(),
+  enqueueWhatsAppInboundMessages: vi.fn(),
   executeBridgeAction: vi.fn(),
   fetchWhatsAppHistory: vi.fn(),
   planBridgeCommand: vi.fn(),
-  resolveBridgeUser: vi.fn(),
+  resolveOwnerBridgeUserByEmail: vi.fn(),
+  resolveScopedBridgeUser: vi.fn(),
   sendWhatsAppButtons: vi.fn(),
   sendWhatsAppText: vi.fn(),
   storePendingAction: vi.fn(),
@@ -28,13 +30,21 @@ vi.mock("next/server", () => ({
 vi.mock("@/platform/naia/bridge", () => ({
   executeBridgeAction: mocks.executeBridgeAction,
   planBridgeCommand: mocks.planBridgeCommand,
-  resolveBridgeUser: mocks.resolveBridgeUser,
+}));
+
+vi.mock("@/platform/naia/scoped-bridge-user", () => ({
+  resolveOwnerBridgeUserByEmail: mocks.resolveOwnerBridgeUserByEmail,
+  resolveScopedBridgeUser: mocks.resolveScopedBridgeUser,
 }));
 
 vi.mock("@/platform/naia/pending-actions", () => ({
-  claimInboundMessage: mocks.claimInboundMessage,
   claimPendingAction: mocks.claimPendingAction,
   storePendingAction: mocks.storePendingAction,
+}));
+
+vi.mock("@/platform/naia/whatsapp-inbox", () => ({
+  drainWhatsAppInboundQueue: mocks.drainWhatsAppInboundQueue,
+  enqueueWhatsAppInboundMessages: mocks.enqueueWhatsAppInboundMessages,
 }));
 
 vi.mock("@/platform/naia/whatsapp-memory", () => ({
@@ -271,8 +281,21 @@ describe("WhatsApp webhook (POST)", () => {
     vi.stubEnv("WHATSAPP_USER_MAP", USER_MAP);
     mocks.afterRegistrationError = undefined;
     mocks.afterTasks = [];
-    mocks.claimInboundMessage.mockResolvedValue(true);
-    mocks.resolveBridgeUser.mockResolvedValue(bridgeUser);
+    mocks.enqueueWhatsAppInboundMessages.mockResolvedValue(true);
+    mocks.drainWhatsAppInboundQueue.mockImplementation(
+      async ({ processMessage }) => {
+        const messages =
+          mocks.enqueueWhatsAppInboundMessages.mock.calls.at(-1)?.[0];
+        for (const message of messages ?? []) await processMessage(message);
+        return {
+          claimed: messages?.length ?? 0,
+          completed: messages?.length ?? 0,
+          failed: 0,
+        };
+      },
+    );
+    mocks.resolveOwnerBridgeUserByEmail.mockResolvedValue(bridgeUser);
+    mocks.resolveScopedBridgeUser.mockResolvedValue(bridgeUser);
     mocks.fetchWhatsAppHistory.mockResolvedValue([]);
     mocks.planBridgeCommand.mockResolvedValue({
       actions: [{ ...gmailAction, approvalToken: "payload.signature" }],
@@ -340,14 +363,17 @@ describe("WhatsApp webhook (POST)", () => {
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
-  it("acks an authorized message before starting provider or LLM work", async () => {
+  it("acks only after durable storage and before provider or LLM work", async () => {
     const response = await POST(
       webhookRequest(inboundPayload([textMessage("lis mes emails")])),
     );
 
     expect(response.status).toBe(200);
     expect(mocks.afterTasks).toHaveLength(1);
-    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.resolveOwnerBridgeUserByEmail).toHaveBeenCalledWith(
+      "ali@qarizmi.com",
+    );
+    expect(mocks.enqueueWhatsAppInboundMessages).toHaveBeenCalledOnce();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
 
     await flushAfterTasks();
@@ -381,16 +407,48 @@ describe("WhatsApp webhook (POST)", () => {
     expect(mocks.sendWhatsAppText).toHaveBeenCalledTimes(2);
   });
 
-  it("asks Meta to retry when background work cannot be registered", async () => {
+  it("acks durable messages even when background work cannot be registered", async () => {
     mocks.afterRegistrationError = new Error("after unavailable");
 
     const response = await POST(
       webhookRequest(inboundPayload([textMessage("lis mes emails")])),
     );
 
+    expect(response.status).toBe(200);
+    expect(mocks.enqueueWhatsAppInboundMessages).toHaveBeenCalledOnce();
+    expect(mocks.resolveOwnerBridgeUserByEmail).toHaveBeenCalledWith(
+      "ali@qarizmi.com",
+    );
+  });
+
+  it("asks Meta to retry when the durable inbox insert fails", async () => {
+    mocks.enqueueWhatsAppInboundMessages.mockResolvedValue(false);
+
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("lis mes emails")])),
+    );
+
     expect(response.status).toBe(503);
-    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.afterTasks).toHaveLength(0);
+    expect(mocks.resolveOwnerBridgeUserByEmail).toHaveBeenCalledWith(
+      "ali@qarizmi.com",
+    );
+  });
+
+  it("asks Meta to retry when owner authorization has a transient failure", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.resolveOwnerBridgeUserByEmail.mockRejectedValue(
+      new Error("database unavailable"),
+    );
+
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("lis mes emails")])),
+    );
+
+    expect(response.status).toBe(503);
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
+    expect(mocks.afterTasks).toHaveLength(0);
+    errorSpy.mockRestore();
   });
 
   it("plans a text command and sends the response plus approval buttons", async () => {
@@ -401,7 +459,9 @@ describe("WhatsApp webhook (POST)", () => {
 
     await flushAfterTasks();
 
-    expect(mocks.resolveBridgeUser).toHaveBeenCalledWith("ali@qarizmi.com");
+    expect(mocks.resolveOwnerBridgeUserByEmail).toHaveBeenCalledWith(
+      "ali@qarizmi.com",
+    );
     expect(mocks.planBridgeCommand).toHaveBeenCalledWith(
       bridgeUser,
       "lis mes emails gmail non lus",
@@ -412,9 +472,15 @@ describe("WhatsApp webhook (POST)", () => {
     expect(mocks.storeWhatsAppMessage).toHaveBeenCalledOnce();
     expect(mocks.storeWhatsAppMessage).toHaveBeenCalledWith({
       content: "lis mes emails gmail non lus",
+      messageId: "wamid.text",
       organizationId: "org-1",
       profileId: "profile-ali",
       role: "user",
+    });
+    expect(mocks.fetchWhatsAppHistory).toHaveBeenCalledWith({
+      excludeMessageId: "wamid.text",
+      organizationId: "org-1",
+      profileId: "profile-ali",
     });
 
     expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
@@ -437,6 +503,27 @@ describe("WhatsApp webhook (POST)", () => {
     ]);
   });
 
+  it("rethrows a processing failure after notifying the founder", async () => {
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mocks.planBridgeCommand.mockRejectedValueOnce(
+      new Error("provider temporarily unavailable"),
+    );
+
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("analyse mes CFs")])),
+    );
+
+    expect(response.status).toBe(200);
+    await expect(flushAfterTasks()).rejects.toThrow(
+      "whatsapp_processing_failed",
+    );
+    expect(mocks.sendWhatsAppText).toHaveBeenCalledWith({
+      body: "NAIA n'a pas pu traiter ce message. Réessaie dans un instant.",
+      to: KNOWN_PHONE,
+    });
+    errorSpy.mockRestore();
+  });
+
   it("passes the founder's private history to the orchestrator", async () => {
     const history = [
       { content: "Crée un lead pour HPS.", role: "user" },
@@ -449,6 +536,7 @@ describe("WhatsApp webhook (POST)", () => {
     await flushAfterTasks();
 
     expect(mocks.fetchWhatsAppHistory).toHaveBeenCalledWith({
+      excludeMessageId: "wamid.text",
       organizationId: "org-1",
       profileId: "profile-ali",
     });
@@ -573,22 +661,14 @@ describe("WhatsApp webhook (POST)", () => {
     });
   });
 
-  it("skips a Meta redelivery of an already processed wamid", async () => {
-    mocks.claimInboundMessage
-      .mockResolvedValueOnce(true)
-      .mockResolvedValueOnce(false);
-
+  it("persists Meta redeliveries through the idempotent durable inbox", async () => {
     const body = inboundPayload([textMessage("lis mes emails gmail non lus")]);
     await POST(webhookRequest(body));
     await flushAfterTasks();
     await POST(webhookRequest(body));
     await flushAfterTasks();
 
-    expect(mocks.claimInboundMessage).toHaveBeenCalledTimes(2);
-    expect(mocks.claimInboundMessage).toHaveBeenCalledWith("wamid.text");
-    // The redelivery never plans again and never sends a second button set.
-    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(1);
-    expect(mocks.sendWhatsAppButtons).toHaveBeenCalledTimes(1);
+    expect(mocks.enqueueWhatsAppInboundMessages).toHaveBeenCalledTimes(2);
   });
 
   it("keeps long commands untruncated on the WhatsApp channel", async () => {
@@ -656,8 +736,8 @@ describe("WhatsApp webhook (POST)", () => {
     await POST(webhookRequest(body));
     await flushAfterTasks();
 
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
-    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
+    expect(mocks.resolveOwnerBridgeUserByEmail).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.storePendingAction).not.toHaveBeenCalled();
     expect(mocks.storeWhatsAppMessage).not.toHaveBeenCalled();
@@ -673,8 +753,8 @@ describe("WhatsApp webhook (POST)", () => {
     await POST(webhookRequest(body));
     await flushAfterTasks();
 
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
-    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
+    expect(mocks.resolveOwnerBridgeUserByEmail).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
@@ -698,8 +778,8 @@ describe("WhatsApp webhook (POST)", () => {
     await POST(webhookRequest(wrongObjectBody));
     await flushAfterTasks();
 
-    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.resolveOwnerBridgeUserByEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
   });
 
@@ -710,8 +790,8 @@ describe("WhatsApp webhook (POST)", () => {
     await POST(webhookRequest(inboundPayload([message])));
     await flushAfterTasks();
 
-    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.resolveOwnerBridgeUserByEmail).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
   });
 
@@ -730,31 +810,31 @@ describe("WhatsApp webhook (POST)", () => {
   });
 
   it("silently ignores mapped numbers without a Qarizmi profile", async () => {
-    mocks.resolveBridgeUser.mockResolvedValue(null);
+    mocks.resolveOwnerBridgeUserByEmail.mockResolvedValue(null);
 
     const body = inboundPayload([textMessage("lis mes emails")]);
     await POST(webhookRequest(body));
     await flushAfterTasks();
 
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
   it("silently ignores an unauthorized user without an org membership", async () => {
-    mocks.resolveBridgeUser.mockResolvedValue(null);
+    mocks.resolveOwnerBridgeUserByEmail.mockResolvedValue(null);
 
     await POST(webhookRequest(inboundPayload([textMessage("lis mes emails")])));
     await flushAfterTasks();
 
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
     expect(mocks.fetchWhatsAppHistory).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
 
   it("silently ignores a mapped non-owner before claiming the message", async () => {
-    mocks.resolveBridgeUser.mockResolvedValue({
+    mocks.resolveOwnerBridgeUserByEmail.mockResolvedValue({
       ...bridgeUser,
       role: "member",
     });
@@ -762,7 +842,43 @@ describe("WhatsApp webhook (POST)", () => {
     await POST(webhookRequest(inboundPayload([textMessage("lis mes emails")])));
     await flushAfterTasks();
 
-    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
+    expect(mocks.enqueueWhatsAppInboundMessages).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
+  });
+
+  it("honors an owner-role revocation between enqueue and processing", async () => {
+    mocks.resolveScopedBridgeUser.mockResolvedValue({
+      ...bridgeUser,
+      role: "member",
+    });
+
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("lis mes emails")])),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.enqueueWhatsAppInboundMessages).toHaveBeenCalledOnce();
+
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
+  });
+
+  it("honors a phone-map revocation after enqueue and before processing", async () => {
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("lis mes emails")])),
+    );
+    expect(response.status).toBe(200);
+    expect(mocks.enqueueWhatsAppInboundMessages).toHaveBeenCalledOnce();
+
+    vi.stubEnv(
+      "WHATSAPP_USER_MAP",
+      "212661234567:nabil@qarizmi.com,33612345678:nabil@qarizmi.com",
+    );
+    await flushAfterTasks();
+
+    expect(mocks.resolveScopedBridgeUser).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });

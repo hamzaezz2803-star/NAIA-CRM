@@ -21,6 +21,7 @@ const PUBLIC_PATH_PREFIXES = [
   "/api/whatsapp/webhook",
   "/api/meeting-notes/worker",
   "/api/cron/naia-daily-brief",
+  "/api/cron/naia-whatsapp-inbox",
 ];
 
 export async function middleware(request: NextRequest) {

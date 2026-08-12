@@ -162,15 +162,18 @@ describe("authentication middleware", () => {
     expect(mocks.createServerClient).not.toHaveBeenCalled();
   });
 
-  it("lets the cookie-less Vercel cron reach its bearer-protected route", async () => {
-    const response = await middleware(
-      new NextRequest("https://os.qarizmi.com/api/cron/naia-daily-brief"),
-    );
+  it.each(["naia-daily-brief", "naia-whatsapp-inbox"])(
+    "lets the cookie-less %s Vercel cron reach its bearer-protected route",
+    async (route) => {
+      const response = await middleware(
+        new NextRequest(`https://os.qarizmi.com/api/cron/${route}`),
+      );
 
-    expect(response.status).toBe(200);
-    expect(response.headers.get("x-middleware-next")).toBe("1");
-    expect(mocks.createServerClient).not.toHaveBeenCalled();
-  });
+      expect(response.status).toBe(200);
+      expect(response.headers.get("x-middleware-next")).toBe("1");
+      expect(mocks.createServerClient).not.toHaveBeenCalled();
+    },
+  );
 });
 
 function googleClaims({

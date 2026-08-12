@@ -9,11 +9,13 @@ const WHATSAPP_MESSAGE_CONTENT_LIMIT = 4096;
 
 export async function storeWhatsAppMessage({
   content,
+  messageId,
   organizationId,
   profileId,
   role,
 }: {
   content: string;
+  messageId: string;
   organizationId: string;
   profileId: string;
   role: "user";
@@ -22,19 +24,24 @@ export async function storeWhatsAppMessage({
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, WHATSAPP_MESSAGE_CONTENT_LIMIT);
-  if (!normalizedContent) return;
+  const normalizedMessageId = messageId.trim().slice(0, 512);
+  if (!normalizedContent || !normalizedMessageId) return;
 
   const supabase = createServiceRoleSupabaseClient();
   if (!supabase) return;
 
   const { error } = await supabase
     .from("naia_private_whatsapp_messages")
-    .insert({
-      content: normalizedContent,
-      organization_id: organizationId,
-      profile_id: profileId,
-      role,
-    });
+    .upsert(
+      {
+        content: normalizedContent,
+        organization_id: organizationId,
+        profile_id: profileId,
+        role,
+        wamid: normalizedMessageId,
+      },
+      { ignoreDuplicates: true, onConflict: "wamid" },
+    );
 
   if (error) {
     console.error("NAIA WhatsApp message storage failed:", error);
@@ -42,10 +49,12 @@ export async function storeWhatsAppMessage({
 }
 
 export async function fetchWhatsAppHistory({
+  excludeMessageId,
   limit = WHATSAPP_HISTORY_LIMIT,
   organizationId,
   profileId,
 }: {
+  excludeMessageId?: string;
   limit?: number;
   organizationId: string;
   profileId: string;
@@ -62,14 +71,15 @@ export async function fetchWhatsAppHistory({
     );
 
   const safeLimit = Math.max(1, Math.min(limit, WHATSAPP_HISTORY_LIMIT));
+  const normalizedExcludedId = excludeMessageId?.trim();
   const { data, error } = await supabase
     .from("naia_private_whatsapp_messages")
-    .select("role,content")
+    .select("role,content,wamid")
     .eq("organization_id", organizationId)
     .eq("profile_id", profileId)
     .eq("role", "user")
     .order("created_at", { ascending: false })
-    .limit(safeLimit);
+    .limit(safeLimit + (normalizedExcludedId ? 1 : 0));
 
   if (error) {
     console.error("NAIA WhatsApp history read failed:", error);
@@ -78,6 +88,10 @@ export async function fetchWhatsAppHistory({
 
   return (data ?? [])
     .filter(isConversationRow)
+    .filter(
+      (row) => !normalizedExcludedId || row.wamid !== normalizedExcludedId,
+    )
+    .slice(0, safeLimit)
     .map((row) => ({ content: row.content, role: row.role }))
     .reverse();
 }
@@ -85,9 +99,20 @@ export async function fetchWhatsAppHistory({
 function isConversationRow(value: unknown): value is {
   content: string;
   role: "user";
+  wamid?: string | null;
 } {
   if (!value || typeof value !== "object") return false;
 
-  const row = value as { content?: unknown; role?: unknown };
-  return typeof row.content === "string" && row.role === "user";
+  const row = value as {
+    content?: unknown;
+    role?: unknown;
+    wamid?: unknown;
+  };
+  return (
+    typeof row.content === "string" &&
+    row.role === "user" &&
+    (row.wamid === undefined ||
+      row.wamid === null ||
+      typeof row.wamid === "string")
+  );
 }

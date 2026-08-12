@@ -29,6 +29,7 @@ function createFakeSupabase(results: FakeResult[]) {
       "lt",
       "order",
       "select",
+      "upsert",
     ]) {
       builder[method] = (...args: unknown[]) => {
         calls.push({ args, method });
@@ -56,20 +57,26 @@ describe("private WhatsApp memory", () => {
 
     await storeWhatsAppMessage({
       content: "  Crée   le lead HPS  ",
+      messageId: "wamid.command-1",
       organizationId: "org-1",
       profileId: "profile-ali",
       role: "user",
     });
 
-    const insert = fake.queries[0].find((call) => call.method === "insert");
+    const upsert = fake.queries[0].find((call) => call.method === "upsert");
     expect(fake.from).toHaveBeenCalledWith("naia_private_whatsapp_messages");
-    expect(insert?.args[0]).toEqual({
+    expect(upsert?.args[0]).toEqual({
       content: "Crée le lead HPS",
       organization_id: "org-1",
       profile_id: "profile-ali",
       role: "user",
+      wamid: "wamid.command-1",
     });
-    expect(insert?.args[0]).not.toHaveProperty("phone");
+    expect(upsert?.args[1]).toEqual({
+      ignoreDuplicates: true,
+      onConflict: "wamid",
+    });
+    expect(upsert?.args[0]).not.toHaveProperty("phone");
   });
 
   it("does not write an empty message", async () => {
@@ -78,6 +85,7 @@ describe("private WhatsApp memory", () => {
 
     await storeWhatsAppMessage({
       content: "   ",
+      messageId: "wamid.command-2",
       organizationId: "org-1",
       profileId: "profile-ali",
       role: "user",
@@ -124,6 +132,36 @@ describe("private WhatsApp memory", () => {
       { content: "Crée un lead", role: "user" },
       { content: "Abdeslam est le contact", role: "user" },
     ]);
+  });
+
+  it("excludes the replayed wamid while retaining the prior history window", async () => {
+    const fake = createFakeSupabase([
+      { data: null, error: null },
+      {
+        data: [
+          { content: "Commande rejouée", role: "user", wamid: "wamid.current" },
+          ...Array.from({ length: 8 }, (_, index) => ({
+            content: `Contexte ${8 - index}`,
+            role: "user",
+            wamid: `wamid.previous-${8 - index}`,
+          })),
+        ],
+        error: null,
+      },
+    ]);
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(fake.client);
+
+    const history = await fetchWhatsAppHistory({
+      excludeMessageId: "wamid.current",
+      organizationId: "org-1",
+      profileId: "profile-ali",
+    });
+
+    expect(fake.queries[1]).toContainEqual({ args: [9], method: "limit" });
+    expect(history).toHaveLength(8);
+    expect(history.map((message) => message.content)).not.toContain(
+      "Commande rejouée",
+    );
   });
 
   it("returns no history when the database read fails", async () => {

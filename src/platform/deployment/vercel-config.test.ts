@@ -22,4 +22,11 @@ describe("Vercel production placement", () => {
       schedule: "30 8,9 * * *",
     });
   });
+
+  it("recovers durable WhatsApp inbox work every minute", () => {
+    expect(vercelConfig.crons).toContainEqual({
+      path: "/api/cron/naia-whatsapp-inbox",
+      schedule: "* * * * *",
+    });
+  });
 });

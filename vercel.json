@@ -5,6 +5,10 @@
     {
       "path": "/api/cron/naia-daily-brief",
       "schedule": "30 8,9 * * *"
+    },
+    {
+      "path": "/api/cron/naia-whatsapp-inbox",
+      "schedule": "* * * * *"
     }
   ]
 }

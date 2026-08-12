@@ -107,10 +107,17 @@ conversation continuity:
 supabase db push
 ```
 
-The bridge still answers without command history if the service-role client is
-not configured, but production must have `SUPABASE_SERVICE_ROLE_KEY` so
-pending approvals, deduplication, and founder command context are durable
-across deployments.
+Production must have `SUPABASE_SERVICE_ROLE_KEY`. Pending approvals, the
+private founder command context, and every authorized inbound message are
+stored server-side. The webhook returns HTTP 200 only after the inbound queue
+insert succeeds; a `CRON_SECRET`-protected recovery route drains interrupted
+work every minute. Each queued message keeps the exact profile and organization
+that authorized it; the worker also rechecks the current phone-to-email map and
+that exact owner membership before it reads providers or CRM data. Private
+command history stores the same Meta `wamid` with a uniqueness constraint, so
+lease recovery cannot append the current command twice to the LLM context.
+Temporary authorization or processing failures are retried; definitive access
+revocation is acknowledged without provider, CRM, history, or LLM access.
 
 ## 7. Acceptance test
 
@@ -128,6 +135,9 @@ across deployments.
 7. Confirm in Qarizmi OS that only the explicitly approved CRM action exists.
 8. After template approval, explicitly trigger one brief in a safe test window
    and verify its `wamid` is recorded before enabling the daily channel.
+9. Temporarily interrupt one local inbox worker after enqueue, then run the
+   recovery route and confirm the command is claimed once in sender order and
+   has exactly one private-history row for its `wamid`.
 
 ## Operations
 
