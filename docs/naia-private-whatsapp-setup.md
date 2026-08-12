@@ -68,6 +68,9 @@ WHATSAPP_VERIFY_TOKEN=<new random value shared only with Meta>
 WHATSAPP_APP_SECRET=<Meta app secret>
 WHATSAPP_USER_MAP=<founder phone:Qarizmi email pairs>
 GROQ_WHISPER_LANGUAGE=auto
+WHATSAPP_DAILY_BRIEF_TEMPLATE_NAME=naia_daily_brief
+WHATSAPP_DAILY_BRIEF_TEMPLATE_LANGUAGE=fr
+NAIA_DAILY_BRIEF_CHANNELS=slack
 ```
 
 Use international sender numbers without `+`, spaces, or punctuation in
@@ -76,6 +79,10 @@ Never use a `NEXT_PUBLIC_` prefix.
 
 After changing Vercel variables, redeploy the application. Existing
 deployments do not automatically receive newly added values.
+
+Keep the daily-brief channels set to `slack` until Meta approves the Utility
+template documented in `docs/naia-daily-brief.md` and the owner accepts Meta's
+current template-message pricing. Then change it to `slack,whatsapp`.
 
 ## 5. Configure the Meta webhook
 
@@ -119,6 +126,8 @@ across deployments.
 6. Send a normal guest message from an unlisted number. The Airbnb WhatsApp
    experience must remain unchanged and NAIA must send no response.
 7. Confirm in Qarizmi OS that only the explicitly approved CRM action exists.
+8. After template approval, explicitly trigger one brief in a safe test window
+   and verify its `wamid` is recorded before enabling the daily channel.
 
 ## Operations
 

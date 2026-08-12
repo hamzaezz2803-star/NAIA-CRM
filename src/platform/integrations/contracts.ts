@@ -49,12 +49,27 @@ export const plannedIntegrationProviders = [
     ],
   },
   {
-    capabilities: ["Message drafts", "Approval-based sending", "Contacts"],
-    envVars: ["WHATSAPP_BUSINESS_ACCOUNT_ID"],
-    isImplemented: false,
+    capabilities: [
+      "Commandes NAIA texte et vocales",
+      "Contexte conversationnel privé",
+      "Actions avec validation humaine",
+      "Brief quotidien par template approuvé",
+    ],
+    envVars: [
+      "WHATSAPP_ACCESS_TOKEN",
+      "WHATSAPP_APP_SECRET",
+      "WHATSAPP_BUSINESS_ACCOUNT_ID",
+      "WHATSAPP_PHONE_NUMBER_ID",
+      "WHATSAPP_USER_MAP",
+      "WHATSAPP_VERIFY_TOKEN",
+    ],
+    isImplemented: true,
     provider: "whatsapp",
     label: "WhatsApp",
-    plannedScopes: ["Contacts", "Message drafts", "Approval-based sending"],
+    plannedScopes: [
+      "whatsapp_business_management",
+      "whatsapp_business_messaging",
+    ],
   },
   {
     capabilities: ["Outlook", "SharePoint", "Teams"],

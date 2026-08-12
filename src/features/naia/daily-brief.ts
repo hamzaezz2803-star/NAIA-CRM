@@ -21,6 +21,12 @@ import {
   postSlackMessage,
 } from "@/platform/integrations/slack";
 import { resolveBridgeUser, type NaiaBridgeUser } from "@/platform/naia/bridge";
+import {
+  isWhatsAppMessageRejectedError,
+  resolveWhatsAppPhone,
+  sendWhatsAppTemplate,
+  truncateToLimit,
+} from "@/platform/naia/whatsapp";
 
 const DEFAULT_RECIPIENT = "ali@qarizmi.com";
 const DEFAULT_TIME_ZONE = "Africa/Casablanca";
@@ -31,6 +37,11 @@ const DAILY_BRIEF_CRM_STATUSES = GMAIL_TRIAGE_CRM_STATUSES.filter(
 );
 const FAST_OPERATION_TIMEOUT_MS = 5_000;
 const PROVIDER_OPERATION_TIMEOUT_MS = 12_000;
+const DEFAULT_DAILY_BRIEF_CHANNELS = "slack";
+const DEFAULT_WHATSAPP_TEMPLATE_NAME = "naia_daily_brief";
+const DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE = "fr";
+
+export type DailyBriefChannel = "slack" | "whatsapp";
 
 export type DailyBriefTask = {
   dueAt?: string;
@@ -68,9 +79,16 @@ export type DailyBriefMessage = {
 };
 
 export type DailyBriefDispatchResult = {
+  channel: DailyBriefChannel;
   email: string;
   reason?: string;
   status: "failed" | "sent" | "skipped";
+};
+
+export type WhatsAppDailyBriefTemplate = {
+  bodyParameters: string[];
+  languageCode: string;
+  name: string;
 };
 
 type DailyBriefRunRow = {
@@ -114,6 +132,22 @@ export function getDailyBriefTimeZone() {
   return process.env.NAIA_DAILY_BRIEF_TIME_ZONE?.trim() || DEFAULT_TIME_ZONE;
 }
 
+export function getDailyBriefChannels(
+  value = process.env.NAIA_DAILY_BRIEF_CHANNELS,
+): DailyBriefChannel[] {
+  const channels = (value ?? DEFAULT_DAILY_BRIEF_CHANNELS)
+    .split(",")
+    .map((channel) => channel.trim().toLowerCase())
+    .filter(
+      (channel): channel is DailyBriefChannel =>
+        channel === "slack" || channel === "whatsapp",
+    );
+
+  return [
+    ...new Set(channels.length > 0 ? channels : ["slack"]),
+  ] as DailyBriefChannel[];
+}
+
 export function isDailyBriefDispatchWindow(
   now: Date,
   timeZone = getDailyBriefTimeZone(),
@@ -128,8 +162,12 @@ export async function runConfiguredDailyBriefs({
   now?: Date;
 } = {}): Promise<DailyBriefDispatchResult[]> {
   const timeZone = getDailyBriefTimeZone();
+  const deliveries = getDailyBriefRecipients().flatMap((email) =>
+    getDailyBriefChannels().map((channel) => ({ channel, email })),
+  );
   if (!isDailyBriefDispatchWindow(now, timeZone)) {
-    return getDailyBriefRecipients().map((email) => ({
+    return deliveries.map(({ channel, email }) => ({
+      channel,
       email,
       reason: "outside_local_dispatch_window",
       status: "skipped" as const,
@@ -137,23 +175,30 @@ export async function runConfiguredDailyBriefs({
   }
 
   return Promise.all(
-    getDailyBriefRecipients().map(async (email) => {
+    deliveries.map(async ({ channel, email }) => {
       try {
-        return await dispatchDailyBrief({ email, now, timeZone });
+        return await dispatchDailyBrief({ channel, email, now, timeZone });
       } catch (error) {
         const errorCode = dailyBriefErrorCode(error);
         console.error("NAIA daily brief dispatch could not start:", errorCode);
-        return { email, reason: errorCode, status: "failed" as const };
+        return {
+          channel,
+          email,
+          reason: errorCode,
+          status: "failed" as const,
+        };
       }
     }),
   );
 }
 
 export async function dispatchDailyBrief({
+  channel = "slack",
   email,
   now,
   timeZone,
 }: {
+  channel?: DailyBriefChannel;
   email: string;
   now: Date;
   timeZone: string;
@@ -170,6 +215,7 @@ export async function dispatchDailyBrief({
     !COFOUNDER_EMAILS.has(normalizedEmail)
   ) {
     return {
+      channel,
       email: normalizedEmail,
       reason: "recipient_not_authorized",
       status: "skipped",
@@ -179,6 +225,7 @@ export async function dispatchDailyBrief({
   const supabase = createServiceRoleSupabaseClient();
   if (!supabase) {
     return {
+      channel,
       email: normalizedEmail,
       reason: "supabase_service_role_unavailable",
       status: "failed",
@@ -188,6 +235,7 @@ export async function dispatchDailyBrief({
   const localDate = localDateKey(now, timeZone);
   const claim = await withTimeout(
     claimDailyBriefRun({
+      channel,
       localDate,
       supabase,
       user,
@@ -197,6 +245,7 @@ export async function dispatchDailyBrief({
   );
   if (!claim) {
     return {
+      channel,
       email: normalizedEmail,
       reason: "already_claimed_for_local_date",
       status: "skipped",
@@ -207,22 +256,36 @@ export async function dispatchDailyBrief({
   try {
     const [data, slackUser] = await Promise.all([
       loadDailyBriefData({ now, supabase, user }),
-      withTimeout(
-        findSlackUserByEmail(normalizedEmail),
-        PROVIDER_OPERATION_TIMEOUT_MS,
-        "slack_recipient_lookup_timeout",
-      ),
+      channel === "slack"
+        ? withTimeout(
+            findSlackUserByEmail(normalizedEmail),
+            PROVIDER_OPERATION_TIMEOUT_MS,
+            "slack_recipient_lookup_timeout",
+          )
+        : Promise.resolve(null),
     ]);
-    if (!slackUser) {
+    if (channel === "slack" && !slackUser)
       throw new Error("slack_recipient_not_found");
-    }
 
+    const displayName =
+      user.fullName ?? slackUser?.displayName ?? normalizedEmail;
     const message = buildDailyBriefMessage({
       data,
-      displayName: user.fullName ?? slackUser.displayName ?? normalizedEmail,
+      displayName,
       now,
       timeZone,
     });
+    const whatsappRecipient =
+      channel === "whatsapp"
+        ? resolveWhatsAppPhone(normalizedEmail)
+        : undefined;
+    if (channel === "whatsapp" && !whatsappRecipient) {
+      throw new Error("whatsapp_recipient_not_found");
+    }
+    const whatsappTemplate =
+      channel === "whatsapp"
+        ? buildWhatsAppDailyBriefTemplate({ data, displayName, now, timeZone })
+        : undefined;
     const deliveryStartRecorded = await updateDailyBriefRun({
       claimId: claim.id,
       organizationId: user.organizationId,
@@ -237,15 +300,32 @@ export async function dispatchDailyBrief({
     }
 
     deliveryAttempted = true;
-    const posted = await withTimeout(
-      postSlackMessage({
-        blocks: message.blocks,
-        channel: slackUser.id,
-        text: message.text,
-      }),
-      PROVIDER_OPERATION_TIMEOUT_MS,
-      "slack_delivery_timeout",
-    );
+    let deliveryReceipt: Record<string, unknown>;
+    if (channel === "slack") {
+      const posted = await withTimeout(
+        postSlackMessage({
+          blocks: message.blocks,
+          channel: slackUser!.id,
+          text: message.text,
+        }),
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "slack_delivery_timeout",
+      );
+      deliveryReceipt = {
+        slack_channel_id: posted.channel ?? slackUser!.id,
+        slack_message_ts: posted.ts ?? null,
+      };
+    } else {
+      const posted = await withTimeout(
+        sendWhatsAppTemplate({
+          ...whatsappTemplate!,
+          to: whatsappRecipient!,
+        }),
+        PROVIDER_OPERATION_TIMEOUT_MS,
+        "whatsapp_delivery_timeout",
+      );
+      deliveryReceipt = { whatsapp_message_id: posted.messageId };
+    }
 
     const ledgerUpdated = await updateDailyBriefRun({
       claimId: claim.id,
@@ -254,8 +334,7 @@ export async function dispatchDailyBrief({
       values: {
         error_code: null,
         sent_at: new Date().toISOString(),
-        slack_channel_id: posted.channel ?? slackUser.id,
-        slack_message_ts: posted.ts ?? null,
+        ...deliveryReceipt,
         status: "sent",
         updated_at: new Date().toISOString(),
       },
@@ -263,16 +342,21 @@ export async function dispatchDailyBrief({
     if (!ledgerUpdated) {
       console.error("NAIA daily brief sent but its ledger update failed.");
       return {
+        channel,
         email: normalizedEmail,
         reason: "daily_brief_sent_ledger_update_failed",
         status: "failed",
       };
     }
 
-    return { email: normalizedEmail, status: "sent" };
+    return { channel, email: normalizedEmail, status: "sent" };
   } catch (error) {
     const errorCode = dailyBriefErrorCode(error);
-    const retrySafe = !deliveryAttempted || isSlackMessageRejectedError(error);
+    const retrySafe =
+      !deliveryAttempted ||
+      (channel === "slack"
+        ? isSlackMessageRejectedError(error)
+        : isWhatsAppMessageRejectedError(error));
     const ledgerUpdated = await updateDailyBriefRun({
       claimId: claim.id,
       organizationId: user.organizationId,
@@ -290,6 +374,7 @@ export async function dispatchDailyBrief({
         errorCode,
       );
       return {
+        channel,
         email: normalizedEmail,
         reason: "daily_brief_ledger_update_failed",
         status: "failed",
@@ -297,15 +382,22 @@ export async function dispatchDailyBrief({
     }
 
     console.error("NAIA daily brief failed:", errorCode);
-    return { email: normalizedEmail, reason: errorCode, status: "failed" };
+    return {
+      channel,
+      email: normalizedEmail,
+      reason: errorCode,
+      status: "failed",
+    };
   }
 }
 
 async function claimDailyBriefRun({
+  channel,
   localDate,
   supabase,
   user,
 }: {
+  channel: DailyBriefChannel;
   localDate: string;
   supabase: SupabaseClient;
   user: NaiaBridgeUser;
@@ -313,6 +405,7 @@ async function claimDailyBriefRun({
   const { data, error } = await supabase
     .from("naia_daily_brief_runs")
     .insert({
+      delivery_channel: channel,
       local_date: localDate,
       organization_id: user.organizationId,
       profile_id: user.profileId,
@@ -325,6 +418,7 @@ async function claimDailyBriefRun({
   if (error?.code === "23505") {
     const { data: reclaimed, error: reclaimError } = await supabase
       .rpc("reclaim_naia_daily_brief_run", {
+        p_delivery_channel: channel,
         p_local_date: localDate,
         p_organization_id: user.organizationId,
         p_profile_id: user.profileId,
@@ -512,7 +606,19 @@ function withTimeout<T>(
   });
 }
 
-export function buildDailyBriefMessage({
+type DailyBriefContent = {
+  calendarUnavailable: boolean;
+  dateLabel: string;
+  firstName: string;
+  gmailUnavailable: boolean;
+  mailLines: string[];
+  todayLines: string[];
+  urgentLines: string[];
+  warnings: string[];
+  weekLines: string[];
+};
+
+function buildDailyBriefContent({
   data,
   displayName,
   now,
@@ -522,7 +628,7 @@ export function buildDailyBriefMessage({
   displayName: string;
   now: Date;
   timeZone: string;
-}): DailyBriefMessage {
+}): DailyBriefContent {
   const today = localDateKey(now, timeZone);
   const weekEnd = addDaysToDateKey(today, 7);
   const firstName = displayName.trim().split(/\s+/)[0] || "Ali";
@@ -645,6 +751,42 @@ export function buildDailyBriefMessage({
     timeZone,
   }).format(now);
 
+  return {
+    calendarUnavailable,
+    dateLabel,
+    firstName,
+    gmailUnavailable,
+    mailLines,
+    todayLines,
+    urgentLines,
+    warnings: data.warnings,
+    weekLines,
+  };
+}
+
+export function buildDailyBriefMessage({
+  data,
+  displayName,
+  now,
+  timeZone,
+}: {
+  data: DailyBriefData;
+  displayName: string;
+  now: Date;
+  timeZone: string;
+}): DailyBriefMessage {
+  const content = buildDailyBriefContent({ data, displayName, now, timeZone });
+  const {
+    dateLabel,
+    firstName,
+    gmailUnavailable,
+    mailLines,
+    todayLines,
+    urgentLines,
+    warnings,
+    weekLines,
+  } = content;
+
   const blocks: unknown[] = [
     {
       text: { text: `Briefing NAIA — ${dateLabel}`, type: "plain_text" },
@@ -668,10 +810,10 @@ export function buildDailyBriefMessage({
     ),
   ];
 
-  if (data.warnings.length > 0) {
+  if (warnings.length > 0) {
     blocks.push(
       sectionBlock(
-        `Sources indisponibles pendant ce briefing : ${data.warnings
+        `Sources indisponibles pendant ce briefing : ${warnings
           .map((warning) => cleanSlackText(formatWarning(warning), 80))
           .join(", ")}.`,
       ),
@@ -690,6 +832,79 @@ export function buildDailyBriefMessage({
     blocks,
     text: fallbackSections.join("\n"),
   };
+}
+
+export function buildWhatsAppDailyBriefTemplate({
+  data,
+  displayName,
+  now,
+  timeZone,
+}: {
+  data: DailyBriefData;
+  displayName: string;
+  now: Date;
+  timeZone: string;
+}): WhatsAppDailyBriefTemplate {
+  const content = buildDailyBriefContent({ data, displayName, now, timeZone });
+  const mailEmpty = content.gmailUnavailable
+    ? "Gmail indisponible : fils non vérifiés."
+    : "Aucun échange humain récent à traiter.";
+  const warningLine =
+    content.warnings.length > 0
+      ? `Sources non vérifiées : ${content.warnings
+          .map(formatWarning)
+          .join(", ")}.`
+      : "";
+
+  return {
+    bodyParameters: [
+      cleanWhatsAppBriefText(content.firstName, 30),
+      cleanWhatsAppBriefText(content.dateLabel, 50),
+      formatWhatsAppBriefLines(
+        content.urgentLines,
+        160,
+        "Rien de critique détecté.",
+      ),
+      formatWhatsAppBriefLines(
+        content.todayLines,
+        180,
+        "Aucune échéance détectée.",
+      ),
+      formatWhatsAppBriefLines(content.weekLines, 110, "Aucun élément."),
+      formatWhatsAppBriefLines(
+        [...content.mailLines, ...(warningLine ? [warningLine] : [])],
+        180,
+        mailEmpty,
+      ),
+    ],
+    languageCode:
+      process.env.WHATSAPP_DAILY_BRIEF_TEMPLATE_LANGUAGE?.trim() ||
+      DEFAULT_WHATSAPP_TEMPLATE_LANGUAGE,
+    name:
+      process.env.WHATSAPP_DAILY_BRIEF_TEMPLATE_NAME?.trim() ||
+      DEFAULT_WHATSAPP_TEMPLATE_NAME,
+  };
+}
+
+function formatWhatsAppBriefLines(
+  lines: string[],
+  maxLength: number,
+  empty: string,
+) {
+  const value = lines.length
+    ? lines.map((line) => `• ${cleanWhatsAppBriefText(line, 240)}`).join(" · ")
+    : empty;
+  return cleanWhatsAppBriefText(value, maxLength);
+}
+
+function cleanWhatsAppBriefText(value: string, maxLength: number) {
+  const clean = value
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/ +/g, " ")
+    .trim();
+  if (clean.length <= maxLength) return clean;
+  return `${truncateToLimit(clean, Math.max(0, maxLength - 3)).trimEnd()}...`;
 }
 
 function hasPendingDailyBriefAction(lead: DailyBriefLead) {

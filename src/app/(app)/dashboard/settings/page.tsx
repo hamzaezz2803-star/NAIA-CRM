@@ -135,12 +135,12 @@ function getSystemIntegrations(
       id: "whatsapp",
       name: "WhatsApp",
       description:
-        "Brouillons ouvrables dans WhatsApp. Aucun envoi Business API n'est fait automatiquement.",
+        "Bridge privé avec NAIA via la Cloud API. Le brief quotidien est envoyé automatiquement uniquement avec un template Meta approuvé et après activation explicite du canal WhatsApp.",
       status: whatsapp?.status ?? "not-implemented",
       icon: <MessageCircle className="h-5 w-5" />,
       detail:
         whatsapp?.detail ??
-        "Connecteur Business API à implémenter derrière approbation humaine.",
+        "Les identifiants Business Cloud API et la liste privée des numéros autorisés sont requis côté serveur.",
     },
   ];
 }

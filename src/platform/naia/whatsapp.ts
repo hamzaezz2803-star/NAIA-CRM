@@ -19,6 +19,25 @@ export const WHATSAPP_BUTTON_TITLE_LIMIT = 20;
 export const WHATSAPP_BUTTON_ID_LIMIT = 256;
 export const WHATSAPP_MAX_BUTTONS = 3;
 export const WHATSAPP_MAX_AUDIO_BYTES = 10 * 1024 * 1024;
+export const WHATSAPP_TEMPLATE_PARAMETER_LIMIT = 1024;
+
+export type WhatsAppMessageResult = {
+  messageId: string;
+  recipientId?: string;
+};
+
+export class WhatsAppMessageRejectedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "WhatsAppMessageRejectedError";
+  }
+}
+
+export function isWhatsAppMessageRejectedError(
+  error: unknown,
+): error is WhatsAppMessageRejectedError {
+  return error instanceof WhatsAppMessageRejectedError;
+}
 
 // Meta signs every webhook delivery with
 // `sha256=HMAC_SHA256(app_secret, raw_body)` in X-Hub-Signature-256. The raw
@@ -55,8 +74,7 @@ export function verifyWhatsAppSignature({
 // entries so a hand-edited env value keeps working. A number mapped to two
 // DIFFERENT emails is a misconfiguration and fails closed: the number is
 // removed entirely instead of silently impersonating the last entry.
-export const DEFAULT_WHATSAPP_USER_MAP =
-  "212661234567:ali@qarizmi.com,212640347045:hamza@qarizmi.com,212664505007:wissal@qarizmi.com";
+export const DEFAULT_WHATSAPP_USER_MAP = "";
 
 export function parseWhatsAppUserMap(
   raw = process.env.WHATSAPP_USER_MAP ?? DEFAULT_WHATSAPP_USER_MAP,
@@ -111,6 +129,28 @@ export function resolveWhatsAppEmail(
   return parseWhatsAppUserMap(raw).get(normalized);
 }
 
+export function resolveWhatsAppPhone(
+  email: string,
+  raw = process.env.WHATSAPP_USER_MAP,
+): string | undefined {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (!normalizedEmail) return undefined;
+
+  let match: string | undefined;
+  for (const [phone, mappedEmail] of parseWhatsAppUserMap(raw)) {
+    if (mappedEmail !== normalizedEmail) continue;
+    if (match && match !== phone) {
+      console.warn(
+        "WHATSAPP_USER_MAP maps one email to multiple numbers; outbound delivery is disabled until the map is fixed.",
+      );
+      return undefined;
+    }
+    match = phone;
+  }
+
+  return match;
+}
+
 // Truncates without ever splitting a UTF-16 surrogate pair: a half emoji at
 // the cut point makes the Graph API reject the whole payload.
 export function truncateToLimit(value: string, limit: number): string {
@@ -130,8 +170,8 @@ export async function sendWhatsAppText({
 }: {
   body: string;
   to: string;
-}): Promise<void> {
-  await postWhatsAppMessage({
+}): Promise<WhatsAppMessageResult> {
+  return postWhatsAppMessage({
     text: {
       body: truncateToLimit(body, WHATSAPP_TEXT_BODY_LIMIT),
       preview_url: false,
@@ -157,7 +197,7 @@ export async function sendWhatsAppButtons({
   bodyText: string;
   buttons: WhatsAppReplyButton[];
   to: string;
-}): Promise<void> {
+}): Promise<WhatsAppMessageResult> {
   if (buttons.length === 0 || buttons.length > WHATSAPP_MAX_BUTTONS) {
     throw new Error(
       `WhatsApp interactive messages need 1 to ${WHATSAPP_MAX_BUTTONS} buttons.`,
@@ -177,7 +217,7 @@ export async function sendWhatsAppButtons({
     }
   }
 
-  await postWhatsAppMessage({
+  return postWhatsAppMessage({
     interactive: {
       action: {
         buttons: buttons.map((button) => ({
@@ -196,6 +236,59 @@ export async function sendWhatsAppButtons({
     to,
     type: "interactive",
   });
+}
+
+export async function sendWhatsAppTemplate({
+  bodyParameters,
+  languageCode,
+  name,
+  to,
+}: {
+  bodyParameters: string[];
+  languageCode: string;
+  name: string;
+  to: string;
+}): Promise<WhatsAppMessageResult> {
+  const normalizedName = name.trim();
+  const normalizedLanguage = languageCode.trim();
+  if (!/^[a-z0-9_]{1,512}$/.test(normalizedName)) {
+    throw new Error("Invalid WhatsApp template name.");
+  }
+  if (!/^[a-z]{2,3}(?:_[A-Z]{2})?$/.test(normalizedLanguage)) {
+    throw new Error("Invalid WhatsApp template language code.");
+  }
+  if (bodyParameters.length === 0) {
+    throw new Error("WhatsApp template body parameters are required.");
+  }
+
+  return postWhatsAppMessage({
+    template: {
+      components: [
+        {
+          parameters: bodyParameters.map((value) => ({
+            text: truncateToLimit(
+              normalizeWhatsAppTemplateParameter(value) || "Aucun élément",
+              WHATSAPP_TEMPLATE_PARAMETER_LIMIT,
+            ),
+            type: "text",
+          })),
+          type: "body",
+        },
+      ],
+      language: { code: normalizedLanguage },
+      name: normalizedName,
+    },
+    to,
+    type: "template",
+  });
+}
+
+function normalizeWhatsAppTemplateParameter(value: string) {
+  return value
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "")
+    .replace(/ +/g, " ")
+    .trim();
 }
 
 export async function transcribeWhatsAppAudio(mediaId: string) {
@@ -320,7 +413,9 @@ export async function transcribeWhatsAppAudio(mediaId: string) {
   return transcript;
 }
 
-async function postWhatsAppMessage(payload: Record<string, unknown>) {
+async function postWhatsAppMessage(
+  payload: Record<string, unknown>,
+): Promise<WhatsAppMessageResult> {
   const accessToken = process.env.WHATSAPP_ACCESS_TOKEN;
   const phoneNumberId = process.env.WHATSAPP_PHONE_NUMBER_ID;
 
@@ -348,8 +443,26 @@ async function postWhatsAppMessage(payload: Record<string, unknown>) {
 
   if (!response.ok) {
     const detail = await readWhatsAppError(response);
-    throw new Error(`WhatsApp Cloud API rejected the message: ${detail}`);
+    throw new WhatsAppMessageRejectedError(
+      `WhatsApp Cloud API rejected the message: ${detail}`,
+    );
   }
+
+  const result = (await response.json()) as {
+    contacts?: Array<{ wa_id?: string }>;
+    messages?: Array<{ id?: string }>;
+  };
+  const messageId = result.messages?.[0]?.id?.trim();
+  if (!messageId) {
+    throw new Error(
+      "WhatsApp Cloud API accepted the request without a receipt.",
+    );
+  }
+
+  return {
+    messageId,
+    recipientId: result.contacts?.[0]?.wa_id?.trim() || undefined,
+  };
 }
 
 async function readWhatsAppError(response: Response) {

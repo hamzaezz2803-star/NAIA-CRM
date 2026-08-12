@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     "check_leads.js",
     "scratch/**",
     "docs/design/**",
+    ".worktrees/**",
   ]),
 ]);
 

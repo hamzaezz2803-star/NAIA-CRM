@@ -7,7 +7,9 @@ vi.mock("@/platform/integrations/google-workspace", () => ({
 
 import {
   buildDailyBriefMessage,
+  buildWhatsAppDailyBriefTemplate,
   cleanSlackText,
+  getDailyBriefChannels,
   getDailyBriefRecipients,
   isDailyBriefDispatchWindow,
   loadDailyBriefData,
@@ -66,6 +68,14 @@ describe("NAIA daily briefing", () => {
     ).toEqual(["ali@qarizmi.com", "nabil@qarizmi.com"]);
   });
 
+  it("enables only supported, deduplicated delivery channels", () => {
+    expect(getDailyBriefChannels("slack, whatsapp,SLACK,invalid")).toEqual([
+      "slack",
+      "whatsapp",
+    ]);
+    expect(getDailyBriefChannels("")).toEqual(["slack"]);
+  });
+
   it("builds urgent, daily, weekly and cautious email sections", () => {
     const message = buildDailyBriefMessage({
       data: data({
@@ -122,6 +132,55 @@ describe("NAIA daily briefing", () => {
     expect(serialized).not.toContain("&amp;amp;");
     expect(serialized).toContain("lu sans réponse");
     expect(serialized).toContain("GitHub/Dependabot");
+  });
+
+  it("renders the WhatsApp template from the same brief sections", () => {
+    const template = buildWhatsAppDailyBriefTemplate({
+      data: data({
+        calendarEvents: [
+          {
+            id: "event-1",
+            start: "2026-08-10T10:00:00+01:00",
+            title: "Meeting TGCC",
+          },
+        ],
+        leads: [
+          {
+            id: "lead-1",
+            nextAction: "Envoyer le devis",
+            nextActionDate: "2026-08-09",
+            status: "to-follow-up",
+            topic: "Atlas Telecom",
+          },
+        ],
+        tasks: [
+          {
+            dueAt: "2026-08-08T12:00:00.000Z",
+            id: "task-1",
+            status: "todo",
+            title: "Préparer le pitch",
+          },
+        ],
+      }),
+      displayName: "Ali EL ABBASSY",
+      now: new Date("2026-08-10T08:30:00.000Z"),
+      timeZone: TIME_ZONE,
+    });
+
+    expect(template).toMatchObject({
+      languageCode: "fr",
+      name: "naia_daily_brief",
+    });
+    expect(template.bodyParameters).toHaveLength(6);
+    expect(template.bodyParameters.join(" ")).toContain("Préparer le pitch");
+    expect(template.bodyParameters.join(" ")).toContain("Atlas Telecom");
+    expect(template.bodyParameters.join(" ")).toContain("Meeting TGCC");
+    expect(template.bodyParameters.every((value) => value.length <= 180)).toBe(
+      true,
+    );
+    expect(
+      template.bodyParameters.every((value) => !/[\r\n\t]/.test(value)),
+    ).toBe(true);
   });
 
   it("neutralizes Slack mentions and markup from provider data", () => {

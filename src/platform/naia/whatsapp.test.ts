@@ -3,10 +3,13 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  isWhatsAppMessageRejectedError,
   normalizeWhatsAppPhone,
   parseWhatsAppUserMap,
   resolveWhatsAppEmail,
+  resolveWhatsAppPhone,
   sendWhatsAppButtons,
+  sendWhatsAppTemplate,
   sendWhatsAppText,
   transcribeWhatsAppAudio,
   truncateToLimit,
@@ -134,9 +137,9 @@ describe("WHATSAPP_USER_MAP parsing", () => {
     expect(map.size).toBe(1);
   });
 
-  it("returns default map or empty map when the env value is missing or empty", () => {
+  it("has no committed fallback numbers when the env value is missing or empty", () => {
     expect(parseWhatsAppUserMap("").size).toBe(0);
-    expect(parseWhatsAppUserMap(undefined).size).toBeGreaterThan(0);
+    expect(parseWhatsAppUserMap(undefined).size).toBe(0);
   });
 
   it("resolves emails by normalized phone and refuses unknown numbers", () => {
@@ -150,6 +153,31 @@ describe("WHATSAPP_USER_MAP parsing", () => {
 
   it("normalizes phones to Cloud API digits", () => {
     expect(normalizeWhatsAppPhone("+212 661-234-567")).toBe("212661234567");
+  });
+
+  it("resolves the unique outbound phone for an email", () => {
+    const raw = "212661234567:ali@qarizmi.com,33612345678:nabil@qarizmi.com";
+
+    expect(resolveWhatsAppPhone("ALI@QARIZMI.COM", raw)).toBe("212661234567");
+    expect(resolveWhatsAppPhone("unknown@qarizmi.com", raw)).toBeUndefined();
+  });
+
+  it("fails closed when an email maps to multiple outbound phones", () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    try {
+      expect(
+        resolveWhatsAppPhone(
+          "ali@qarizmi.com",
+          "212661234567:ali@qarizmi.com,33612345678:ali@qarizmi.com",
+        ),
+      ).toBeUndefined();
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining("multiple numbers"),
+      );
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
 
@@ -196,7 +224,9 @@ describe("WhatsApp Cloud API senders", () => {
   });
 
   it("posts a text message to the phone number endpoint", async () => {
-    await sendWhatsAppText({ body: "Bonjour", to: "212661234567" });
+    await expect(
+      sendWhatsAppText({ body: "Bonjour", to: "212661234567" }),
+    ).resolves.toEqual({ messageId: "wamid.1" });
 
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe("https://graph.facebook.com/v21.0/1234567890/messages");
@@ -210,6 +240,51 @@ describe("WhatsApp Cloud API senders", () => {
       to: "212661234567",
       type: "text",
     });
+  });
+
+  it("posts an approved template with bounded body parameters", async () => {
+    await sendWhatsAppTemplate({
+      bodyParameters: [
+        "Ali",
+        "mardi 12 août 2026",
+        "Aucun\nretard\tou incident",
+      ],
+      languageCode: "fr",
+      name: "naia_daily_brief",
+      to: "212661234567",
+    });
+
+    const payload = JSON.parse(fetchMock.mock.calls[0][1].body);
+    expect(payload).toMatchObject({
+      template: {
+        components: [
+          {
+            parameters: [
+              { text: "Ali", type: "text" },
+              { text: "mardi 12 août 2026", type: "text" },
+              { text: "Aucun retard ou incident", type: "text" },
+            ],
+            type: "body",
+          },
+        ],
+        language: { code: "fr" },
+        name: "naia_daily_brief",
+      },
+      to: "212661234567",
+      type: "template",
+    });
+  });
+
+  it("rejects invalid template identifiers before calling Meta", async () => {
+    await expect(
+      sendWhatsAppTemplate({
+        bodyParameters: ["Ali"],
+        languageCode: "french",
+        name: "NAIA Daily Brief",
+        to: "212661234567",
+      }),
+    ).rejects.toThrow(/template name/);
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("posts an interactive reply-button message and truncates titles to 20 characters", async () => {
@@ -295,9 +370,28 @@ describe("WhatsApp Cloud API senders", () => {
       ),
     );
 
-    await expect(
-      sendWhatsAppText({ body: "Bonjour", to: "212661234567" }),
-    ).rejects.toThrow(/Re-engagement message/);
+    const error = await sendWhatsAppText({
+      body: "Bonjour",
+      to: "212661234567",
+    }).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.message).toMatch(/Re-engagement message/);
+    expect(isWhatsAppMessageRejectedError(error)).toBe(true);
+  });
+
+  it("treats a successful response without a message receipt as ambiguous", async () => {
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ messages: [] }), { status: 200 }),
+    );
+
+    const error = await sendWhatsAppText({
+      body: "Bonjour",
+      to: "212661234567",
+    }).catch((caught) => caught);
+
+    expect(error.message).toMatch(/without a receipt/);
+    expect(isWhatsAppMessageRejectedError(error)).toBe(false);
   });
 
   it("requires the access token and phone number id", async () => {

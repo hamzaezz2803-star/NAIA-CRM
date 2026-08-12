@@ -2,16 +2,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   createServiceRoleSupabaseClient: vi.fn(),
+  createServerSupabaseClient: vi.fn(),
   findSlackUserByEmail: vi.fn(),
   isSlackMessageRejectedError: vi.fn(),
+  isWhatsAppMessageRejectedError: vi.fn(),
   listGmailThreadMetadata: vi.fn(),
   listGoogleCalendarEvents: vi.fn(),
   postSlackMessage: vi.fn(),
   resolveBridgeUser: vi.fn(),
+  resolveWhatsAppPhone: vi.fn(),
+  sendWhatsAppTemplate: vi.fn(),
 }));
 
 vi.mock("@/platform/auth/supabase-server", () => ({
   createServiceRoleSupabaseClient: mocks.createServiceRoleSupabaseClient,
+  createServerSupabaseClient: mocks.createServerSupabaseClient,
 }));
 
 vi.mock("@/platform/integrations/google-workspace", () => ({
@@ -27,6 +32,13 @@ vi.mock("@/platform/integrations/slack", () => ({
 
 vi.mock("@/platform/naia/bridge", () => ({
   resolveBridgeUser: mocks.resolveBridgeUser,
+}));
+
+vi.mock("@/platform/naia/whatsapp", () => ({
+  isWhatsAppMessageRejectedError: mocks.isWhatsAppMessageRejectedError,
+  resolveWhatsAppPhone: mocks.resolveWhatsAppPhone,
+  sendWhatsAppTemplate: mocks.sendWhatsAppTemplate,
+  truncateToLimit: (value: string, limit: number) => value.slice(0, limit),
 }));
 
 import {
@@ -112,11 +124,17 @@ function createSupabaseMock({
 describe("NAIA daily brief dispatch", () => {
   beforeEach(() => {
     vi.stubEnv("NAIA_DAILY_BRIEF_RECIPIENTS", "ali@qarizmi.com");
+    vi.stubEnv("NAIA_DAILY_BRIEF_CHANNELS", "slack");
     vi.stubEnv("NAIA_DAILY_BRIEF_TIME_ZONE", TIME_ZONE);
     mocks.resolveBridgeUser.mockResolvedValue(OWNER);
     mocks.listGmailThreadMetadata.mockResolvedValue([]);
     mocks.listGoogleCalendarEvents.mockResolvedValue([]);
     mocks.isSlackMessageRejectedError.mockReturnValue(false);
+    mocks.isWhatsAppMessageRejectedError.mockReturnValue(false);
+    mocks.resolveWhatsAppPhone.mockReturnValue("212661234567");
+    mocks.sendWhatsAppTemplate.mockResolvedValue({
+      messageId: "wamid.daily-1",
+    });
     mocks.findSlackUserByEmail.mockResolvedValue({
       displayName: "Ali",
       email: "ali@qarizmi.com",
@@ -148,6 +166,7 @@ describe("NAIA daily brief dispatch", () => {
         timeZone: TIME_ZONE,
       }),
     ).resolves.toEqual({
+      channel: "slack",
       email: "intern@qarizmi.com",
       reason: "recipient_not_authorized",
       status: "skipped",
@@ -166,6 +185,7 @@ describe("NAIA daily brief dispatch", () => {
 
     await expect(runConfiguredDailyBriefs({ now: NOW })).resolves.toEqual([
       {
+        channel: "slack",
         email: "ali@qarizmi.com",
         reason: "identity_unavailable",
         status: "failed",
@@ -206,8 +226,8 @@ describe("NAIA daily brief dispatch", () => {
     releaseAli?.(OWNER);
 
     await expect(running).resolves.toEqual([
-      { email: "ali@qarizmi.com", status: "sent" },
-      { email: "nabil@qarizmi.com", status: "sent" },
+      { channel: "slack", email: "ali@qarizmi.com", status: "sent" },
+      { channel: "slack", email: "nabil@qarizmi.com", status: "sent" },
     ]);
   });
 
@@ -221,7 +241,11 @@ describe("NAIA daily brief dispatch", () => {
         now: NOW,
         timeZone: TIME_ZONE,
       }),
-    ).resolves.toEqual({ email: "ali@qarizmi.com", status: "sent" });
+    ).resolves.toEqual({
+      channel: "slack",
+      email: "ali@qarizmi.com",
+      status: "sent",
+    });
 
     expect(mocks.listGmailThreadMetadata).toHaveBeenCalledWith(
       {
@@ -253,6 +277,89 @@ describe("NAIA daily brief dispatch", () => {
     );
     expect(supabase.update.mock.invocationCallOrder[0]).toBeLessThan(
       mocks.postSlackMessage.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("sends the same founder brief through an approved WhatsApp template", async () => {
+    const supabase = createSupabaseMock();
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
+
+    await expect(
+      dispatchDailyBrief({
+        channel: "whatsapp",
+        email: OWNER.email,
+        now: NOW,
+        timeZone: TIME_ZONE,
+      }),
+    ).resolves.toEqual({
+      channel: "whatsapp",
+      email: OWNER.email,
+      status: "sent",
+    });
+
+    expect(mocks.findSlackUserByEmail).not.toHaveBeenCalled();
+    expect(mocks.postSlackMessage).not.toHaveBeenCalled();
+    expect(mocks.resolveWhatsAppPhone).toHaveBeenCalledWith(OWNER.email);
+    expect(mocks.sendWhatsAppTemplate).toHaveBeenCalledWith({
+      bodyParameters: expect.arrayContaining([
+        "Ali",
+        expect.stringContaining("lundi"),
+      ]),
+      languageCode: "fr",
+      name: "naia_daily_brief",
+      to: "212661234567",
+    });
+    expect(supabase.insert).toHaveBeenCalledWith(
+      expect.objectContaining({ delivery_channel: "whatsapp" }),
+    );
+    expect(supabase.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: "sent",
+        whatsapp_message_id: "wamid.daily-1",
+      }),
+    );
+  });
+
+  it("keeps Slack and WhatsApp as separate cron deliveries", async () => {
+    vi.stubEnv("NAIA_DAILY_BRIEF_CHANNELS", "slack,whatsapp");
+    const supabase = createSupabaseMock();
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
+
+    await expect(runConfiguredDailyBriefs({ now: NOW })).resolves.toEqual([
+      { channel: "slack", email: OWNER.email, status: "sent" },
+      { channel: "whatsapp", email: OWNER.email, status: "sent" },
+    ]);
+    expect(mocks.postSlackMessage).toHaveBeenCalledOnce();
+    expect(mocks.sendWhatsAppTemplate).toHaveBeenCalledOnce();
+  });
+
+  it("does not cross the delivery fence when no WhatsApp number is mapped", async () => {
+    const supabase = createSupabaseMock();
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
+    mocks.resolveWhatsAppPhone.mockReturnValue(undefined);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await expect(
+      dispatchDailyBrief({
+        channel: "whatsapp",
+        email: OWNER.email,
+        now: NOW,
+        timeZone: TIME_ZONE,
+      }),
+    ).resolves.toEqual({
+      channel: "whatsapp",
+      email: OWNER.email,
+      reason: "whatsapp_recipient_not_found",
+      status: "failed",
+    });
+
+    expect(mocks.sendWhatsAppTemplate).not.toHaveBeenCalled();
+    expect(supabase.update).toHaveBeenCalledTimes(1);
+    expect(supabase.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        delivery_started_at: null,
+        status: "failed",
+      }),
     );
   });
 
@@ -289,11 +396,13 @@ describe("NAIA daily brief dispatch", () => {
     await expect(
       dispatchDailyBrief({ email: OWNER.email, now: NOW, timeZone: TIME_ZONE }),
     ).resolves.toEqual({
+      channel: "slack",
       email: OWNER.email,
       reason: "already_claimed_for_local_date",
       status: "skipped",
     });
     expect(supabase.rpc).toHaveBeenCalledWith("reclaim_naia_daily_brief_run", {
+      p_delivery_channel: "slack",
       p_local_date: "2026-08-10",
       p_organization_id: "org-1",
       p_profile_id: "profile-ali",
@@ -310,7 +419,11 @@ describe("NAIA daily brief dispatch", () => {
 
     await expect(
       dispatchDailyBrief({ email: OWNER.email, now: NOW, timeZone: TIME_ZONE }),
-    ).resolves.toEqual({ email: OWNER.email, status: "sent" });
+    ).resolves.toEqual({
+      channel: "slack",
+      email: OWNER.email,
+      status: "sent",
+    });
     expect(mocks.postSlackMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -326,6 +439,7 @@ describe("NAIA daily brief dispatch", () => {
     await expect(
       dispatchDailyBrief({ email: OWNER.email, now: NOW, timeZone: TIME_ZONE }),
     ).resolves.toEqual({
+      channel: "slack",
       email: OWNER.email,
       reason: "daily_brief_sent_ledger_update_failed",
       status: "failed",
@@ -344,6 +458,7 @@ describe("NAIA daily brief dispatch", () => {
     await expect(
       dispatchDailyBrief({ email: OWNER.email, now: NOW, timeZone: TIME_ZONE }),
     ).resolves.toEqual({
+      channel: "slack",
       email: OWNER.email,
       reason: "network_timeout",
       status: "failed",
@@ -371,6 +486,24 @@ describe("NAIA daily brief dispatch", () => {
 
     expect(supabase.update).toHaveBeenCalledWith(
       expect.objectContaining({ status: "failed" }),
+    );
+  });
+
+  it("never auto-retries an ambiguous WhatsApp transport outcome", async () => {
+    const supabase = createSupabaseMock();
+    mocks.createServiceRoleSupabaseClient.mockReturnValue(supabase.client);
+    mocks.sendWhatsAppTemplate.mockRejectedValue(new Error("network timeout"));
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    await dispatchDailyBrief({
+      channel: "whatsapp",
+      email: OWNER.email,
+      now: NOW,
+      timeZone: TIME_ZONE,
+    });
+
+    expect(supabase.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "delivery_uncertain" }),
     );
   });
 });

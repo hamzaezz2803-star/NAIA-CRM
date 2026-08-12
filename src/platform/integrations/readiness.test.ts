@@ -62,6 +62,26 @@ describe("integration readiness", () => {
     );
   });
 
+  it("reports server-configured WhatsApp as connected without a user OAuth row", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(null);
+    vi.stubEnv("WHATSAPP_ACCESS_TOKEN", "access-token");
+    vi.stubEnv("WHATSAPP_APP_SECRET", "app-secret");
+    vi.stubEnv("WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1");
+    vi.stubEnv("WHATSAPP_PHONE_NUMBER_ID", "phone-number-1");
+    vi.stubEnv("WHATSAPP_USER_MAP", "212600000000:ali@qarizmi.com");
+    vi.stubEnv("WHATSAPP_VERIFY_TOKEN", "verify-token");
+
+    const readiness = await getIntegrationReadiness();
+    const whatsapp = readiness.find((item) => item.provider === "whatsapp");
+
+    expect(whatsapp).toMatchObject({
+      detail:
+        "Bridge WhatsApp Business Cloud API et verification des webhooks configures cote serveur.",
+      missingEnvVars: [],
+      status: "connected",
+    });
+  });
+
   it("reports a connected legacy broad Drive credential as needs-review", async () => {
     vi.stubEnv("GOOGLE_CLIENT_ID", "client-id");
     vi.stubEnv("GOOGLE_CLIENT_SECRET", "client-secret");

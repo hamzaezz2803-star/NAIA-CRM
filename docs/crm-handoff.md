@@ -340,8 +340,10 @@ fallback when that voice is unavailable.
 The private daily brief reads organization-scoped active CRM tasks and leads,
 then combines them with the configured founder's own Calendar and Gmail read
 results. Only Ali or Nabil with the `owner` role can be configured, and the
-output is sent to the exact Slack account resolved by email. No CRM, Gmail, or
-Calendar mutation is part of this workflow.
+output is sent to the exact Slack account resolved by email. The optional
+WhatsApp copy uses the same source data and an approved Utility template sent
+to the unique founder number resolved from `WHATSAPP_USER_MAP`. No CRM, Gmail,
+or Calendar mutation is part of this workflow.
 
 Both CRM reads explicitly require `archived_at is null`, including when the
 brief runs with a service-role client that bypasses RLS. Archiving a demo lead
@@ -352,10 +354,12 @@ Production activation has two prerequisites that are not performed by a Vercel
 Preview or by repository CI: apply
 `supabase/migrations/20260809221355_naia_daily_brief_runs.sql`, then configure a
 high-entropy `CRON_SECRET` in the Vercel Production environment before the
-production deployment registers `vercel.json`. The migration creates the
-service-role-only ledger and the atomic `reclaim_naia_daily_brief_run` RPC.
-Only rows in the explicit `failed` state can be reclaimed; `sending`, `sent`,
-and `delivery_uncertain` remain non-retryable to prevent duplicate Slack DMs.
+production deployment registers `vercel.json`. The migrations create the
+service-role-only ledger and the atomic `reclaim_naia_daily_brief_run` RPC. The
+multichannel migration adds a separate Slack/WhatsApp key and Meta receipt so
+one delivery cannot suppress or duplicate the other. Only explicit failed or
+provably stale pre-delivery rows can be reclaimed; `sent` and
+`delivery_uncertain` remain non-retryable.
 See `docs/naia-daily-brief.md` for the full release sequence and acceptance
 checks.
 

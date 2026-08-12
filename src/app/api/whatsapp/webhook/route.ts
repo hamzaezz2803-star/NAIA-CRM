@@ -37,6 +37,8 @@ import {
 const APPROVE_PREFIX = "naia_approve:";
 const DISMISS_PREFIX = "naia_dismiss:";
 
+export const maxDuration = 60;
+
 // WhatsApp drafts live in the database (not in button values), so commands
 // keep the full web-cockpit budget instead of Slack's 500-character limit.
 const WHATSAPP_COMMAND_MAX_LENGTH = 2000;
@@ -128,8 +130,22 @@ export async function POST(request: Request) {
     return Response.json({ ok: true });
   }
 
-  for (const message of messages) {
-    await handleInboundMessage(message);
+  try {
+    // Meta can batch consecutive messages in one webhook. Keep the batch in
+    // one background task so contextual follow-ups are planned and answered
+    // in the same order in which the user sent them.
+    after(async () => {
+      for (const message of messages) {
+        await handleInboundMessage(message);
+      }
+    });
+  } catch {
+    // Meta retries non-2xx webhook deliveries. No processing lease has been
+    // claimed yet, so a retry is preferable to silently losing the command.
+    return Response.json(
+      { error: "WhatsApp processing could not be scheduled" },
+      { status: 503 },
+    );
   }
 
   return Response.json({ ok: true });
@@ -197,7 +213,7 @@ async function handleInboundMessage(message: AuthorizedWhatsAppInboundMessage) {
 
   try {
     const user = await resolveBridgeUser(message.authorizedEmail);
-    if (!user) {
+    if (!user || user.role !== "owner") {
       return;
     }
 

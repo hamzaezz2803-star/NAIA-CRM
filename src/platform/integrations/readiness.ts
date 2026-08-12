@@ -64,13 +64,17 @@ export async function getIntegrationReadiness(): Promise<IntegrationHealth[]> {
       };
     }
 
-    if (provider.provider === "slack") {
+    if (provider.provider === "slack" || provider.provider === "whatsapp") {
       const isConfigured = missingEnvVars.length === 0;
+      const configuredDetail =
+        provider.provider === "slack"
+          ? "Bot Slack et verification des webhooks configures cote serveur."
+          : "Bridge WhatsApp Business Cloud API et verification des webhooks configures cote serveur.";
 
       return {
         capabilities: [...provider.capabilities],
         detail: isConfigured
-          ? "Bot Slack et verification des webhooks configures cote serveur."
+          ? configuredDetail
           : `Variables manquantes: ${missingEnvVars.join(", ")}.`,
         envVars: [...provider.envVars],
         externalAccountLabel: undefined,
@@ -195,9 +199,10 @@ async function getConnectionRows(): Promise<IntegrationConnectionRow[]> {
 
   if (!membership?.organization_id) return [];
 
-  // Personal providers are always reported for the acting user. Slack does
-  // not create rows here: its readiness comes from server-only environment
-  // variables because the bridge is installed once for the organization.
+  // Personal providers are always reported for the acting user. Slack and
+  // WhatsApp do not create rows here: their readiness comes from server-only
+  // environment variables because each bridge is installed once for the
+  // organization.
   const { data, error } = await supabase
     .from("integration_connections")
     .select("provider,status,external_account_label,scopes")

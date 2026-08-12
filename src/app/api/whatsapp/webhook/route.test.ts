@@ -3,7 +3,8 @@ import { createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  afterTasks: [] as Promise<unknown>[],
+  afterRegistrationError: undefined as Error | undefined,
+  afterTasks: [] as Array<() => Promise<void> | void>,
   claimInboundMessage: vi.fn(),
   claimPendingAction: vi.fn(),
   executeBridgeAction: vi.fn(),
@@ -19,7 +20,8 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("next/server", () => ({
   after: (task: () => Promise<void>) => {
-    mocks.afterTasks.push(Promise.resolve().then(task));
+    if (mocks.afterRegistrationError) throw mocks.afterRegistrationError;
+    mocks.afterTasks.push(task);
   },
 }));
 
@@ -198,7 +200,8 @@ function audioMessage(id = "media-audio-1", from = KNOWN_PHONE) {
 }
 
 async function flushAfterTasks() {
-  await Promise.all(mocks.afterTasks);
+  const tasks = mocks.afterTasks.splice(0);
+  await Promise.all(tasks.map((task) => task()));
 }
 
 describe("WhatsApp webhook verification (GET)", () => {
@@ -266,6 +269,7 @@ describe("WhatsApp webhook (POST)", () => {
     vi.stubEnv("WHATSAPP_BUSINESS_ACCOUNT_ID", BUSINESS_ACCOUNT_ID);
     vi.stubEnv("WHATSAPP_PHONE_NUMBER_ID", PHONE_NUMBER_ID);
     vi.stubEnv("WHATSAPP_USER_MAP", USER_MAP);
+    mocks.afterRegistrationError = undefined;
     mocks.afterTasks = [];
     mocks.claimInboundMessage.mockResolvedValue(true);
     mocks.resolveBridgeUser.mockResolvedValue(bridgeUser);
@@ -334,6 +338,59 @@ describe("WhatsApp webhook (POST)", () => {
     expect(response.status).toBe(200);
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
+  });
+
+  it("acks an authorized message before starting provider or LLM work", async () => {
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("lis mes emails")])),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.afterTasks).toHaveLength(1);
+    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+
+    await flushAfterTasks();
+    expect(mocks.planBridgeCommand).toHaveBeenCalledOnce();
+  });
+
+  it("processes a Meta message batch in one ordered background task", async () => {
+    const first = {
+      ...textMessage("crée un lead pour HPS"),
+      id: "wamid.batch-1",
+    };
+    const followUp = {
+      ...textMessage("Abdeslam est le contact"),
+      id: "wamid.batch-2",
+    };
+
+    const response = await POST(
+      webhookRequest(inboundPayload([first, followUp])),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mocks.afterTasks).toHaveLength(1);
+
+    await flushAfterTasks();
+
+    expect(mocks.planBridgeCommand).toHaveBeenCalledTimes(2);
+    expect(mocks.planBridgeCommand.mock.calls.map((call) => call[1])).toEqual([
+      "crée un lead pour HPS",
+      "Abdeslam est le contact",
+    ]);
+    expect(mocks.sendWhatsAppText).toHaveBeenCalledTimes(2);
+  });
+
+  it("asks Meta to retry when background work cannot be registered", async () => {
+    mocks.afterRegistrationError = new Error("after unavailable");
+
+    const response = await POST(
+      webhookRequest(inboundPayload([textMessage("lis mes emails")])),
+    );
+
+    expect(response.status).toBe(503);
+    expect(mocks.resolveBridgeUser).not.toHaveBeenCalled();
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
   });
 
   it("plans a text command and sends the response plus approval buttons", async () => {
@@ -692,6 +749,20 @@ describe("WhatsApp webhook (POST)", () => {
 
     expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
     expect(mocks.fetchWhatsAppHistory).not.toHaveBeenCalled();
+    expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
+    expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
+  });
+
+  it("silently ignores a mapped non-owner before claiming the message", async () => {
+    mocks.resolveBridgeUser.mockResolvedValue({
+      ...bridgeUser,
+      role: "member",
+    });
+
+    await POST(webhookRequest(inboundPayload([textMessage("lis mes emails")])));
+    await flushAfterTasks();
+
+    expect(mocks.claimInboundMessage).not.toHaveBeenCalled();
     expect(mocks.planBridgeCommand).not.toHaveBeenCalled();
     expect(mocks.sendWhatsAppText).not.toHaveBeenCalled();
   });
