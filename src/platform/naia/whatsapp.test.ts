@@ -144,8 +144,8 @@ describe("WHATSAPP_USER_MAP parsing", () => {
 
     expect(resolveWhatsAppEmail("212661234567", raw)).toBe("ali@qarizmi.com");
     expect(resolveWhatsAppEmail("+212661234567", raw)).toBe("ali@qarizmi.com");
-    expect(resolveWhatsAppEmail("999999999999", raw)).toBeNull();
-    expect(resolveWhatsAppEmail("", raw)).toBeNull();
+    expect(resolveWhatsAppEmail("999999999999", raw)).toBeUndefined();
+    expect(resolveWhatsAppEmail("", raw)).toBeUndefined();
   });
 
   it("normalizes phones to Cloud API digits", () => {

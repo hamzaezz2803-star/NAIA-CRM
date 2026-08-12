@@ -24,7 +24,7 @@ export const WHATSAPP_MAX_AUDIO_BYTES = 10 * 1024 * 1024;
 // `sha256=HMAC_SHA256(app_secret, raw_body)` in X-Hub-Signature-256. The raw
 // body must be read as text before any JSON.parse, and compared timing-safe.
 export function verifyWhatsAppSignature({
-  appSecret = process.env.WHATSAPP_APP_SECRET,
+  appSecret = process.env.WHATSAPP_APP_SECRET?.trim(),
   body,
   signature,
 }: {
@@ -34,10 +34,13 @@ export function verifyWhatsAppSignature({
 }): boolean {
   if (!appSecret || !signature) return false;
 
-  const expected = `sha256=${createHmac("sha256", appSecret)
+  const cleanAppSecret = appSecret.trim();
+  const cleanSignature = signature.trim();
+
+  const expected = `sha256=${createHmac("sha256", cleanAppSecret)
     .update(body, "utf8")
     .digest("hex")}`;
-  const signatureBuffer = Buffer.from(signature);
+  const signatureBuffer = Buffer.from(cleanSignature);
   const expectedBuffer = Buffer.from(expected);
 
   return (
@@ -101,11 +104,11 @@ export function normalizeWhatsAppPhone(value: string): string {
 export function resolveWhatsAppEmail(
   phone: string,
   raw = process.env.WHATSAPP_USER_MAP,
-): string | null {
+): string | undefined {
   const normalized = normalizeWhatsAppPhone(phone);
-  if (!normalized) return null;
+  if (!normalized) return undefined;
 
-  return parseWhatsAppUserMap(raw).get(normalized) ?? null;
+  return parseWhatsAppUserMap(raw).get(normalized);
 }
 
 // Truncates without ever splitting a UTF-16 surrogate pair: a half emoji at
