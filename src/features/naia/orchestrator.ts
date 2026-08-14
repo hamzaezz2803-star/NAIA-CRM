@@ -1267,6 +1267,26 @@ function isCrmStatusDefinitionQuestion(normalizedCommand: string) {
 }
 
 function isCrmReadQuestion(normalizedCommand: string) {
+  if (
+    includesAny(normalizedCommand, [
+      "cette semaine",
+      "cette quinzaine",
+      "ce mois",
+      "aujourd hui",
+      "demain",
+      "priorite",
+      "priorites",
+      "synthese",
+      "recap",
+      "resume",
+      "analyse",
+      "pourquoi",
+      "comment",
+    ])
+  ) {
+    return false;
+  }
+
   const tokens = tokenSet(normalizedCommand);
   const asksForCountOrList =
     hasAnyToken(tokens, [

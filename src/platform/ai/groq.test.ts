@@ -176,12 +176,15 @@ describe("Groq model router", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("keeps production internal callers off when the founder-route flag is on", () => {
+  it("enables production callers when EXTERNAL_AI_GROQ_ENABLED is true", () => {
     vi.stubEnv("NODE_ENV", "production");
     vi.stubEnv("EXTERNAL_AI_GROQ_ENABLED", "true");
 
-    expect(getGroqApiKey()).toBeUndefined();
+    expect(getGroqApiKey()).toBe("test-key");
     expect(getGroqApiKey("founder-route")).toBe("test-key");
+
+    vi.stubEnv("EXTERNAL_AI_GROQ_ENABLED", "false");
+    expect(getGroqApiKey()).toBeUndefined();
   });
 
   it.each([

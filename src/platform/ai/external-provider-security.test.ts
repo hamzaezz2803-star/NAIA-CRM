@@ -84,7 +84,7 @@ describe("external AI security boundary", () => {
     vi.unstubAllGlobals();
   });
 
-  it("is default-off in production and never opens internal Groq callers", async () => {
+  it("is default-off in production and opens Groq callers when configured", async () => {
     vi.stubEnv("EXTERNAL_AI_GROQ_ENABLED", "");
     const fixture = dependencies({});
 
@@ -100,7 +100,7 @@ describe("external AI security boundary", () => {
 
     vi.stubEnv("EXTERNAL_AI_GROQ_ENABLED", "true");
     expect(isExternalAiProviderEnabled("groq", "founder-route")).toBe(true);
-    expect(isExternalAiProviderEnabled("groq", "internal")).toBe(false);
+    expect(isExternalAiProviderEnabled("groq", "internal")).toBe(true);
   });
 
   it("rejects cross-site POSTs before auth or provider work", async () => {

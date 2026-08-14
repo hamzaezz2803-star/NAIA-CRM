@@ -82,10 +82,11 @@ export function isExternalAiProviderEnabled(
   provider: ExternalAiProvider,
   surface: ExternalAiSurface = "internal",
 ) {
+  void surface;
   const configured = process.env[providerFlag(provider)]?.trim().toLowerCase();
   if (configured === "false") return false;
   if (process.env.NODE_ENV === "production") {
-    return surface === "founder-route" && configured === "true";
+    return configured === "true";
   }
   return true;
 }
