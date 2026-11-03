@@ -300,7 +300,8 @@ describe("NAIA orchestrate route", () => {
     expect(systemPrompt).toContain("question générale");
     expect(systemPrompt).toContain("Ne prétends jamais avoir exécuté");
     expect(userPrompt.operatingContext.cashFlow).toContain("Oct.");
-    expect(userPrompt.operatingContext.pipeline).toContain("Atlas Process");
+    // The simulated pipeline is withheld so it cannot mix with crmSnapshot.
+    expect(userPrompt.operatingContext.pipeline).toBeUndefined();
     expect(userPrompt.operatingContext.projects).toContain("Sahara Logistics");
     expect(userPrompt.operatingContext.staffing).toContain(
       "Full-stack Next.js",

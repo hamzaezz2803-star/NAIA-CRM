@@ -253,7 +253,7 @@ export async function planNaiaAssistant({
               topic: lead.topic,
             })),
           suggestedAgentId: localResult.agent.id,
-          operatingContext: buildNaiaOperatingContext(),
+          operatingContext: buildSimulatedOperatingContext(),
           privateKnowledge: resolvedPrivateKnowledge,
           realGoogleCalendar: undefined,
         }),
@@ -1087,6 +1087,21 @@ function formatMailDate(value?: string) {
     day: "numeric",
     month: "short",
   }).format(date);
+}
+
+// The simulated pipeline would compete with the real crmSnapshot, and the
+// model blends both into CRM answers, so only non-CRM simulated data is sent.
+function buildSimulatedOperatingContext() {
+  const context = buildNaiaOperatingContext();
+  return {
+    cashFlow: context.cashFlow,
+    followUps: context.followUps,
+    projects: context.projects,
+    risks: context.risks,
+    staffing: context.staffing,
+    summary:
+      "Simulated working data for cash flow, projects, staffing, client payment follow-ups and risks only. The CRM pipeline comes exclusively from crmSnapshot.",
+  };
 }
 
 function buildSystemPrompt() {
