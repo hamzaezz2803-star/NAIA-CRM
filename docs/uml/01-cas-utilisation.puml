@@ -1,0 +1,52 @@
+@startuml 01-cas-utilisation
+' Diagramme global de cas d'utilisation — NAIA-os (vue simplifiée)
+!pragma layout smetana
+skinparam packageStyle rectangle
+skinparam shadowing false
+skinparam usecase {
+  BackgroundColor #FDFBF7
+  BorderColor #8C6D3F
+}
+
+title NAIA-os — Cas d'utilisation
+
+actor "Utilisateur" as User
+actor "Administrateur" as Admin
+Admin -|> User
+
+rectangle "Système NAIA-os" {
+  usecase "S'authentifier" as UC_Auth
+  usecase "Gérer les leads\n(pipeline)" as UC_Leads
+  usecase "Gérer les clients\net contacts" as UC_Clients
+  usecase "Suivre les relances" as UC_Relances
+  usecase "Gérer les tâches" as UC_Taches
+  usecase "Gérer les meetings" as UC_Meetings
+  usecase "Générer un pitch" as UC_Pitch
+  usecase "Créer le dossier\nDrive client" as UC_Drive
+  usecase "Assistance IA\n(saisie, brouillons)" as UC_IA
+  usecase "Configurer la\nplateforme" as UC_Config
+}
+
+actor "Google Workspace" as Google <<système>>
+actor "Service IA (Groq)" as IA <<système>>
+
+User --> UC_Auth
+User --> UC_Leads
+User --> UC_Clients
+User --> UC_Relances
+User --> UC_Taches
+User --> UC_Meetings
+User --> UC_Pitch
+Admin --> UC_Config
+
+UC_Leads ..> UC_Clients : <<include>>
+UC_Drive ..> UC_Leads : <<extend>>\n[lead en « Meeting fixé »]
+UC_IA ..> UC_Leads : <<extend>>
+UC_IA ..> UC_Relances : <<extend>>
+
+UC_Auth --> Google
+UC_Meetings --> Google
+UC_Drive --> Google
+UC_Pitch --> Google
+UC_IA --> IA
+@enduml
