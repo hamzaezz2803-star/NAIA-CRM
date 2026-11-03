@@ -74,9 +74,8 @@ export async function GET(request: NextRequest) {
       status: 403,
     });
   }
-  const isMeetingNotesFounder =
-    actor.role === "owner" && canUseMeetingNotesEmail(user.email);
-  if (meetingNotesIntent && !isMeetingNotesFounder) {
+  const canUseMeetingNotes = canUseMeetingNotesEmail(user.email);
+  if (meetingNotesIntent && !canUseMeetingNotes) {
     return new NextResponse("Meeting Intelligence access required", {
       status: 403,
     });
@@ -149,7 +148,7 @@ export async function GET(request: NextRequest) {
         });
       }
       return new NextResponse("Google returned unauthorized OAuth scopes", {
-        status: meetingNotesIntent && !isMeetingNotesFounder ? 403 : 400,
+        status: meetingNotesIntent && !canUseMeetingNotes ? 403 : 400,
       });
     }
 

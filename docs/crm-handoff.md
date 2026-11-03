@@ -252,8 +252,10 @@ Safe defaults:
 - Create Drive client folders through the organization service account under
   the cofounders shared-drive `clients` folder (`MAYA_DRIVE_OUTPUT_FOLDER_ID`),
   one folder per client company — not the earlier shared Hamza folder and not
-  per-lead folders. Keep pitch and proposal IP scoped to co-founder access:
-  `/proposals` and `/dashboard/drives` are owner-only.
+  per-lead folders. Pitch and proposal surfaces follow organization membership:
+  `/proposals` and `/dashboard/drives` are open to every organization role
+  since `20261103140000_open_meetings_and_docs_generator_to_all_roles.sql`,
+  which also opens Meetings and Maya RLS to any organization member.
 - Keep provider actions such as email, WhatsApp, Google Drive, Calendar sync,
   and delete flows behind a human approval foundation.
 - Treat `viewer` as read-only. CRM insert/update policies use

@@ -71,15 +71,15 @@ describe("Meeting history page", () => {
     );
   });
 
-  it("does not fetch private history for another account", async () => {
+  it("does not fetch history for a session without an email", async () => {
     mocks.getAppSession.mockResolvedValue({
-      user: { email: "stagiaire@qarizmi.com", role: "member" },
+      user: { email: "", role: "member" },
     });
 
     render(await MeetingHistoryPage());
 
     expect(
-      screen.getByText("Les comptes rendus sont réservés à Ali et Nabil."),
+      screen.getByText("Connecte-toi pour accéder aux comptes rendus."),
     ).toBeInTheDocument();
     expect(mocks.fetchMeetingIntelligenceAction).not.toHaveBeenCalled();
   });

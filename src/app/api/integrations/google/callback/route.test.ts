@@ -201,14 +201,14 @@ describe("GET /api/integrations/google/callback", () => {
     );
   });
 
-  it("revalidates founder role before exchanging a meeting intent", async () => {
+  it("revalidates the session email before exchanging a meeting intent", async () => {
     const member = fixture({
       membership: {
         organization_id: "org-1",
         profile_id: "user-1",
         role: "member",
       },
-      user: { email: "stagiaire@qarizmi.com", id: "user-1" },
+      user: { email: "", id: "user-1" },
     });
     installFixture(member);
     const fetchMock = vi.fn();

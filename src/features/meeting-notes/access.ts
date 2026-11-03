@@ -16,7 +16,7 @@ export async function requireMeetingNotesAccess() {
   } = await supabase.auth.getUser();
 
   if (error || !user || !canUseMeetingNotesEmail(user.email)) {
-    throw new Error("Meeting Intelligence est réservé à Ali et Nabil.");
+    throw new Error("Meeting Intelligence nécessite une session connectée.");
   }
 
   const { data: membership } = await supabase
@@ -26,9 +26,9 @@ export async function requireMeetingNotesAccess() {
     .limit(1)
     .maybeSingle();
 
-  if (!membership?.organization_id || membership.role !== "owner") {
+  if (!membership?.organization_id) {
     throw new Error(
-      "Meeting Intelligence nécessite un compte cofondateur owner.",
+      "Meeting Intelligence nécessite une appartenance à l'organisation.",
     );
   }
 

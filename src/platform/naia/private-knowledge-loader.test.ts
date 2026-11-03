@@ -78,18 +78,12 @@ describe("NAIA private knowledge Drive loader", () => {
     expect(shared).toBeUndefined();
     expect(mocks.listMayaDriveDeckFiles).not.toHaveBeenCalled();
 
-    const nonCofounder = await loadNaiaPrivateKnowledge({
-      actor: { ...actor, email: "hamza@qarizmi.com" },
+    const withoutEmail = await loadNaiaPrivateKnowledge({
+      actor: { ...actor, email: "", role: "member" },
       allowPersonalData: true,
       command: "Que sais-tu sur Qarizmi ?",
     });
-    const nonOwner = await loadNaiaPrivateKnowledge({
-      actor: { ...actor, role: "member" },
-      allowPersonalData: true,
-      command: "Que sais-tu sur Qarizmi ?",
-    });
-    expect(nonCofounder).toBeUndefined();
-    expect(nonOwner).toBeUndefined();
+    expect(withoutEmail).toBeUndefined();
     expect(mocks.listMayaDriveDeckFiles).not.toHaveBeenCalled();
 
     const first = await loadNaiaPrivateKnowledge({

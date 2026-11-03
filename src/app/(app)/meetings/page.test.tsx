@@ -108,13 +108,13 @@ describe("Meetings page", () => {
     );
   });
 
-  it("does not load private meeting data for another account", async () => {
+  it("does not load meeting data for a session without an email", async () => {
     mocks.getAppSession.mockResolvedValue({
       authMode: "supabase",
       isSupabaseConfigured: true,
       organization: { name: "Qarizmi", slug: "qarizmi" },
       user: {
-        email: "stagiaire@qarizmi.com",
+        email: "",
         name: "Stagiaire",
         role: "member",
       },
@@ -123,7 +123,7 @@ describe("Meetings page", () => {
     render(await MeetingsPage());
 
     expect(
-      screen.getByText("Les notes de meeting sont réservées à Ali et Nabil."),
+      screen.getByText("Connecte-toi pour accéder aux notes de meeting."),
     ).toBeInTheDocument();
     expect(mocks.listGoogleCalendarEvents).not.toHaveBeenCalled();
     expect(mocks.fetchMeetingIntelligenceAction).not.toHaveBeenCalled();
