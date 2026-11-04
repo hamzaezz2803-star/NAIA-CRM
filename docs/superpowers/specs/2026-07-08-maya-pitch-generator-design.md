@@ -24,7 +24,7 @@ Current source library folder:
 
 Drive folder:
 
-`https://drive.google.com/drive/folders/1IeekoGpVpIwGRHsYjS1cuvPnSP9OJsmH`
+Configured server-side through `MAYA_DRIVE_SOURCE_FOLDER_ID` (the real id is not stored in the repository).
 
 Generated client folders should be created under the existing private `Client development/Pitch` root configured by `GOOGLE_DRIVE_CLIENT_FOLDER_PARENT_ID`, not inside the source library folder.
 

@@ -311,9 +311,8 @@ stored CRM URL when resolving a destination.
 To activate pitch copying, independently review and download the native Teaser
 without editing it, calculate its digest locally with
 `shasum -a 256 <approved-teaser.pptx>`, then set the lowercase result as the
-server-only `MAYA_PITCH_TEMPLATE_SHA256`. The read-only Drive capture verified
-on 2026-08-09 is
-`7e499cb1dcfb92167cf223f6e1ef91a5bb3167c62c3524998b7354f32a5f03ab`.
+server-only `MAYA_PITCH_TEMPLATE_SHA256`. The real digest is kept only in the
+deployment environment (Vercel), never in the repository.
 Never derive or update that value from an automatic generation request. Changing
 the Drive file requires a fresh human review and a deliberate digest rotation;
 leaving the variable blank keeps both the queue and the write action blocked.
