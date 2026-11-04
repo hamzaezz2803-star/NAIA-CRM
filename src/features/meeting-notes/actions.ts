@@ -519,7 +519,7 @@ export async function syncGeminiMeetingNotesAction(rawInput: unknown = {}) {
     const claim = geminiSyncClaimSchema.parse(rawClaim);
     if (claim.action === "denied") {
       throw new Error(
-        "La synchronisation Gemini est réservée au cofondateur owner connecté.",
+        "La synchronisation Gemini est réservée aux membres connectés de l'organisation.",
       );
     }
     if (claim.action === "busy") {

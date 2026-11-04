@@ -24,7 +24,7 @@ export default async function MeetingHistoryPage() {
               className="mt-0.5 h-5 w-5 shrink-0"
               aria-hidden="true"
             />
-            <p>Les comptes rendus sont réservés à Ali et Nabil.</p>
+            <p>Connecte-toi pour accéder aux comptes rendus.</p>
           </div>
         </div>
       </main>

@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  MAYA_COFUNDER_EMAILS,
   canTriggerMayaPitchGenerationRole,
   canUseMayaPitchGeneratorEmail,
 } from "./access-policy";
@@ -17,31 +16,27 @@ vi.mock("@/platform/auth/supabase-server", () => ({
 import { requireMayaPitchGenerationAccess } from "./access";
 
 describe("Maya pitch generator access", () => {
-  it("allows only Ali and Nabil by email", () => {
+  it("allows any signed-in organization member", () => {
     expect(canUseMayaPitchGeneratorEmail("ali@qarizmi.com")).toBe(true);
-    expect(canUseMayaPitchGeneratorEmail("nabil@qarizmi.com")).toBe(true);
-    expect(canUseMayaPitchGeneratorEmail("hamza@qarizmi.com")).toBe(false);
-    expect(canUseMayaPitchGeneratorEmail("wissal@qarizmi.com")).toBe(false);
+    expect(canUseMayaPitchGeneratorEmail("hamza@qarizmi.com")).toBe(true);
+    expect(canUseMayaPitchGeneratorEmail(" wissal@qarizmi.com ")).toBe(true);
   });
 
-  it("normalizes email case and spacing", () => {
-    expect(canUseMayaPitchGeneratorEmail(" NABIL@QARIZMI.COM ")).toBe(true);
-  });
-
-  it("keeps the allowlist explicit", () => {
-    expect(MAYA_COFUNDER_EMAILS).toEqual([
-      "ali@qarizmi.com",
-      "nabil@qarizmi.com",
-    ]);
+  it("fails closed without an email", () => {
+    expect(canUseMayaPitchGeneratorEmail(undefined)).toBe(false);
+    expect(canUseMayaPitchGeneratorEmail("  ")).toBe(false);
   });
 });
 
 describe("Maya pitch generation role policy", () => {
-  it("only lets owner roles trigger a generation", () => {
-    expect(canTriggerMayaPitchGenerationRole("owner")).toBe(true);
-    expect(canTriggerMayaPitchGenerationRole("admin")).toBe(false);
-    expect(canTriggerMayaPitchGenerationRole("member")).toBe(false);
-    expect(canTriggerMayaPitchGenerationRole("viewer")).toBe(false);
+  it("lets every organization role trigger a generation", () => {
+    for (const role of ["owner", "admin", "member", "viewer"]) {
+      expect(canTriggerMayaPitchGenerationRole(role)).toBe(true);
+    }
+  });
+
+  it("rejects unknown or missing roles", () => {
+    expect(canTriggerMayaPitchGenerationRole("guest")).toBe(false);
     expect(canTriggerMayaPitchGenerationRole(null)).toBe(false);
   });
 });
@@ -51,13 +46,23 @@ describe("requireMayaPitchGenerationAccess", () => {
     mocks.createServerSupabaseClient.mockReset();
   });
 
-  it("refuses generation for a cofounder with a member role", async () => {
+  it("allows generation for a member role", async () => {
     mocks.createServerSupabaseClient.mockResolvedValue(
       makeSupabaseStub({ role: "member" }),
     );
 
+    await expect(requireMayaPitchGenerationAccess()).resolves.toMatchObject({
+      role: "member",
+    });
+  });
+
+  it("refuses generation for an unknown role", async () => {
+    mocks.createServerSupabaseClient.mockResolvedValue(
+      makeSupabaseStub({ role: "guest" }),
+    );
+
     await expect(requireMayaPitchGenerationAccess()).rejects.toThrow(
-      "La génération de pitch Maya est réservée au rôle owner",
+      "nécessite un rôle reconnu",
     );
   });
 

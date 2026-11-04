@@ -36,7 +36,7 @@ export function MayaPitchQueue({ result }: { result: MayaPitchQueueResult }) {
           <div>
             <h2 className="font-semibold">Accès restreint</h2>
             <p className="mt-1 text-sm leading-6">
-              Maya Docs Generator est limité à Ali et Nabil. {result.reason}
+              Maya Docs Generator est indisponible. {result.reason}
             </p>
           </div>
         </div>

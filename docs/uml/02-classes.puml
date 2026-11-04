@@ -1,0 +1,89 @@
+@startuml 02-classes
+' Diagramme global de classes — NAIA-os (vue simplifiée)
+!pragma layout smetana
+skinparam classAttributeIconSize 0
+skinparam shadowing false
+skinparam class {
+  BackgroundColor #FDFBF7
+  BorderColor #8C6D3F
+}
+hide empty members
+
+title NAIA-os — Diagramme de classes
+
+class Organisation {
+  - nom : String
+}
+
+class Utilisateur {
+  - nom : String
+  - email : String
+  - role : Role
+  + seConnecter()
+}
+
+class Entreprise {
+  - nom : String
+  - urlDossierDrive : String
+}
+
+class Contact {
+  - nom : String
+  - email : String
+}
+
+class Lead {
+  - sujet : String
+  - statut : StatutLead
+  - prochaineAction : String
+  + changerStatut()
+  + marquerActionFaite()
+}
+
+class Relance {
+  - date : DateTime
+  - commentaire : String
+}
+
+class Tache {
+  - titre : String
+  - statut : StatutTache
+}
+
+class Meeting {
+  - titre : String
+  - date : DateTime
+  + lancerTraitement()
+}
+
+class CompteRendu {
+  - notes : String
+  - statutRevue : String
+  + approuver()
+}
+
+class Pitch {
+  - nomFichier : String
+  + generer()
+}
+
+enum Role {
+  owner
+  admin
+  member
+  viewer
+}
+
+Organisation "1" *-- "1..*" Utilisateur : regroupe >
+Organisation "1" *-- "0..*" Entreprise
+Entreprise "1" o-- "0..*" Contact : emploie >
+Entreprise "1" -- "0..*" Lead : concerne <
+Contact "0..1" -- "0..*" Lead
+Lead "1" *-- "0..*" Relance : historise >
+Lead "0..1" -- "0..*" Tache : génère >
+Utilisateur "0..1" -- "0..*" Tache : assigné à <
+Lead "0..1" -- "0..*" Meeting : prépare >
+Meeting "1" *-- "0..*" CompteRendu : produit >
+Lead "1" -- "0..*" Pitch : pour <
+Utilisateur ..> Role
+@enduml

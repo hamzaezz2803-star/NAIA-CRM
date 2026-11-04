@@ -66,7 +66,7 @@ export default async function MeetingsPage() {
               className="mt-0.5 h-5 w-5 shrink-0"
               aria-hidden="true"
             />
-            <p>Les notes de meeting sont réservées à Ali et Nabil.</p>
+            <p>Connecte-toi pour accéder aux notes de meeting.</p>
           </div>
         </div>
       </main>

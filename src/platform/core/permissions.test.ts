@@ -27,23 +27,13 @@ describe("platform permissions", () => {
     );
   });
 
-  it("grants Docs Generator access to owners only", () => {
-    expect(
-      hasPermission("owner", { module: "proposals", action: "read" }),
-    ).toBe(true);
-
-    for (const role of ["admin", "member", "viewer"] as const) {
+  it("grants Docs Generator access to every role", () => {
+    for (const role of ["owner", "admin", "member", "viewer"] as const) {
       expect(hasPermission(role, { module: "proposals", action: "read" })).toBe(
-        false,
+        true,
       );
+      expect(canAccessModule(role, "proposals")).toBe(true);
     }
-  });
-
-  it("hides the proposals module from non-owner roles", () => {
-    expect(canAccessModule("owner", "proposals")).toBe(true);
-    expect(canAccessModule("admin", "proposals")).toBe(false);
-    expect(canAccessModule("member", "proposals")).toBe(false);
-    expect(canAccessModule("viewer", "proposals")).toBe(false);
   });
 
   it("keeps regular modules visible to every role", () => {

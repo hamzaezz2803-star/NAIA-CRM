@@ -18,9 +18,7 @@ export async function requireMayaPitchGeneratorAccess() {
   } = await supabase.auth.getUser();
 
   if (error || !user || !canUseMayaPitchGeneratorEmail(user.email)) {
-    throw new Error(
-      "Maya pitch generator access is restricted to Ali and Nabil.",
-    );
+    throw new Error("Maya pitch generator requires a signed-in user.");
   }
 
   const { data: membership } = await supabase
@@ -45,15 +43,15 @@ export async function requireMayaPitchGeneratorAccess() {
 }
 
 /**
- * Stricter gate for the Drive-writing action itself: cloning is never
- * automatic and stays reserved to owner roles.
+ * Gate for the Drive-writing action itself: cloning is never automatic and
+ * requires a recognized organization role.
  */
 export async function requireMayaPitchGenerationAccess() {
   const access = await requireMayaPitchGeneratorAccess();
 
   if (!canTriggerMayaPitchGenerationRole(access.role)) {
     throw new Error(
-      "La génération de pitch Maya est réservée au rôle owner : demande à un cofondateur owner de lancer la génération.",
+      "La génération de pitch Maya nécessite un rôle reconnu dans l'organisation.",
     );
   }
 

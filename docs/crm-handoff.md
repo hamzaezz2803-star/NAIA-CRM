@@ -252,8 +252,10 @@ Safe defaults:
 - Create Drive client folders through the organization service account under
   the cofounders shared-drive `clients` folder (`MAYA_DRIVE_OUTPUT_FOLDER_ID`),
   one folder per client company — not the earlier shared Hamza folder and not
-  per-lead folders. Keep pitch and proposal IP scoped to co-founder access:
-  `/proposals` and `/dashboard/drives` are owner-only.
+  per-lead folders. Pitch and proposal surfaces follow organization membership:
+  `/proposals` and `/dashboard/drives` are open to every organization role
+  since `20261103140000_open_meetings_and_docs_generator_to_all_roles.sql`,
+  which also opens Meetings and Maya RLS to any organization member.
 - Keep provider actions such as email, WhatsApp, Google Drive, Calendar sync,
   and delete flows behind a human approval foundation.
 - Treat `viewer` as read-only. CRM insert/update policies use
@@ -309,9 +311,8 @@ stored CRM URL when resolving a destination.
 To activate pitch copying, independently review and download the native Teaser
 without editing it, calculate its digest locally with
 `shasum -a 256 <approved-teaser.pptx>`, then set the lowercase result as the
-server-only `MAYA_PITCH_TEMPLATE_SHA256`. The read-only Drive capture verified
-on 2026-08-09 is
-`7e499cb1dcfb92167cf223f6e1ef91a5bb3167c62c3524998b7354f32a5f03ab`.
+server-only `MAYA_PITCH_TEMPLATE_SHA256`. The real digest is kept only in the
+deployment environment (Vercel), never in the repository.
 Never derive or update that value from an automatic generation request. Changing
 the Drive file requires a fresh human review and a deliberate digest rotation;
 leaving the variable blank keeps both the queue and the write action blocked.

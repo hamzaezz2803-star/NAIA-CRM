@@ -1,0 +1,34 @@
+@startuml 04-sequence-marquer-action-faite
+' Diagramme de séquence 2 — Marquer la prochaine action comme faite (vue simplifiée)
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+autonumber
+
+title Séquence 2 — Marquer une action comme faite
+
+actor "Utilisateur" as U
+boundary "Interface" as UI
+control "Serveur" as S
+database "Base de données" as DB
+
+U -> UI : Clique sur « Fait »
+activate UI
+UI -> S : Marquer l'action comme faite
+activate S
+S -> DB : Mettre à jour le lead
+activate DB
+
+alt Rôle non autorisé (viewer)
+  DB --> S : Accès refusé
+  S --> UI : Erreur
+  UI --> U : Affiche « accès refusé »
+else Rôle autorisé
+  DB -> DB : Action = faite\nTâche liée = terminée
+  DB --> S : Succès
+  deactivate DB
+  S --> UI : Succès
+  deactivate S
+  UI --> U : Affiche la carte comme « Fait »
+end
+deactivate UI
+@enduml

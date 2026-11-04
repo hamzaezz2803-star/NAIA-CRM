@@ -1,0 +1,35 @@
+@startuml 03-sequence-creer-lead
+' Diagramme de séquence 1 — Créer un lead (vue simplifiée)
+skinparam shadowing false
+skinparam sequenceMessageAlign center
+autonumber
+
+title Séquence 1 — Créer un lead
+
+actor "Utilisateur" as U
+boundary "Interface" as UI
+control "Serveur" as S
+database "Base de données" as DB
+
+U -> UI : Remplit et valide le formulaire
+activate UI
+UI -> S : Créer le lead
+activate S
+
+alt Utilisateur non connecté
+  S --> UI : Erreur « non authentifié »
+  UI --> U : Affiche l'erreur
+else Utilisateur connecté
+  S -> DB : Enregistrer entreprise, contact et lead
+  activate DB
+  DB --> S : Lead créé
+  deactivate DB
+  opt Date de meeting renseignée
+    S -> S : Ajouter l'événement à Google Calendar
+  end
+  S --> UI : Succès
+  deactivate S
+  UI --> U : Affiche le lead dans le pipeline
+end
+deactivate UI
+@enduml

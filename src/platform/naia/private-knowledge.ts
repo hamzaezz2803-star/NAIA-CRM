@@ -67,7 +67,6 @@ export async function loadNaiaPrivateKnowledge({
   if (
     !actor ||
     !allowPersonalData ||
-    actor.role !== "owner" ||
     !canUseMayaPitchGeneratorEmail(actor.email) ||
     !hasMayaDriveFolderConfig()
   ) {

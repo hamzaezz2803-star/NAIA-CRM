@@ -21,16 +21,19 @@ export const rolePermissions: Record<OrganizationRole, Permission[]> = {
   admin: [
     { module: "settings", action: "update" },
     { module: "crm", action: "manage" },
+    { module: "proposals", action: "manage" },
     { module: "automations", action: "approve" },
   ],
   member: [
     { module: "dashboard", action: "read" },
     { module: "crm", action: "create" },
     { module: "crm", action: "update" },
+    { module: "proposals", action: "manage" },
   ],
   viewer: [
     { module: "dashboard", action: "read" },
     { module: "crm", action: "read" },
+    { module: "proposals", action: "manage" },
   ],
 };
 
@@ -47,8 +50,8 @@ export function hasPermission(
 }
 
 // Modules gated behind a permission. Every other module stays visible to all
-// members. Docs Generator (Maya) outputs land in the cofounders-only shared
-// drive, so the module itself is owner-only to protect client IP.
+// members. Docs Generator (Maya) is granted to every role above, so this gate
+// only rejects sessions without a recognized organization role.
 export const moduleAccessRequirements: Partial<
   Record<PlatformModuleId, Permission>
 > = {
